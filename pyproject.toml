@@ -43,5 +43,8 @@ Homepage = "https://github.com/scATrans/scatrans"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+scatrans = ["data/*.parquet", "data/*.md"]
+
 [tool.setuptools_scm]
 write_to = "src/scatrans/_version.py"

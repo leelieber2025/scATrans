@@ -62,19 +62,20 @@ def add_gene_features(
     import anndata as ad  # local import to avoid hard dep at top
 
     if gene_feature_file is None:
-        # Try to find bundled mouse features
-        pkg_dir = Path(__file__).parent.parent.parent  # rough guess
-        candidate = pkg_dir / "data" / "mouse_2020A_gene_features.parquet"
+        # Robust lookup that works for both `pip install -e .` and regular installs
+        # because data/ now lives inside src/scatrans/data/
+        here = Path(__file__).resolve().parent
+        candidate = here / "data" / "mouse_2020A_gene_features.parquet"
         if candidate.exists():
             gene_feature_file = candidate
             if verbose:
                 logger.info(f"Using bundled gene features: {gene_feature_file}")
         else:
             warnings.warn(
-                "No gene_feature_file provided and no bundled features found. "
+                "No gene_feature_file provided and bundled mouse_2020A_gene_features.parquet "
+                "was not found next to the package. "
                 "Bias correction will be skipped (gene_length/intron_number = NaN). "
-                "You can generate features with generate_gene_features_from_gtf() "
-                "or provide a precomputed table.",
+                "Reinstall the package or provide the file path explicitly.",
                 UserWarning
             )
             adata.var[gene_length_col] = fillna
