@@ -27,3 +27,7 @@ def test_advanced_runs_or_skips():
         assert res.uns['scatrans']['mode'] in ['advanced', 'heuristic_fallback_from_advanced']
     except ImportError:
         pytest.skip("scvelo not available")
+
+def test_generate_gene_features_cli_exists():
+    from scatrans.generate_gene_features import main
+    assert callable(main)

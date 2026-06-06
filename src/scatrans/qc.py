@@ -9,22 +9,6 @@ def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", wa
     Calculate the global fraction of unspliced reads across all cells.
     Generates a warning if the fraction is abnormally high (e.g., > 50-60%),
     which could indicate nuclear enrichment or genomic DNA contamination.
-    
-    Parameters
-    ----------
-    adata : AnnData
-        The annotated data matrix.
-    spliced_key : str, optional (default: 'spliced')
-        Layer key for spliced counts.
-    unspliced_key : str, optional (default: 'unspliced')
-        Layer key for unspliced counts.
-    warn_threshold : float, optional (default: 0.5)
-        Threshold above which a warning is triggered.
-        
-    Returns
-    -------
-    float
-        The overall unspliced fraction.
     """
     if spliced_key not in adata.layers or unspliced_key not in adata.layers:
         raise ValueError(f"Layers '{spliced_key}' and/or '{unspliced_key}' not found in adata.")

@@ -23,7 +23,7 @@ try:
     from . import _version
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.6.18"
+    VERSION = "0.7.0-dev"
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,7 @@ def _pseudobulk_with_layers(
     adata, sample_col, groupby, layers=("spliced", "unspliced"),
     x_layer=None, use_total_for_x=False, min_cells=10, min_counts=1000,
 ):
+    """Internal helper. After layer normalization in active_score(), layers are always 'spliced'/'unspliced'."""
     if sample_col not in adata.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found.")
     if groupby not in adata.obs.columns:
@@ -452,7 +453,10 @@ def _compute_moments_velocity_delta(
     else:
         used_precomputed = False
         if "spliced" not in adata_comp.layers or "unspliced" not in adata_comp.layers:
-            raise ValueError("Advanced mode requires 'spliced' and 'unspliced' layers.")
+            raise ValueError(
+                "Advanced mode requires 'spliced' and 'unspliced' layers "
+                "(after any automatic kb_python 'mature'/'nascent' remapping)."
+            )
 
         n_obs = adata_comp.n_obs
         if n_obs < 5:
@@ -560,6 +564,8 @@ def active_score(
     advanced_use_precomputed: bool = False,
     allow_advanced_pseudobulk: bool = False,
     advanced_recompute_neighbors: bool = True,
+    spliced_layer: str = "spliced",
+    unspliced_layer: str = "unspliced",
 ):
     """
     Identify actively transcribed genes.
@@ -569,6 +575,12 @@ def active_score(
     - mode="advanced": Uses scVelo moments for neighborhood smoothing on contrast subset,
       then applies the same group-wise ratio delta + Huber bias correction.
       Experimental but more robust to noise.
+
+    Layer name support:
+    - Standard Scanpy/velocyto: 'spliced' and 'unspliced' (default)
+    - kb_python (--lamanno / velocity mode): 'mature' (spliced) and 'nascent' (unspliced)
+      → Automatically detected and remapped if standard names are missing.
+    You can also manually specify custom layer names via `spliced_layer` / `unspliced_layer`.
     """
     # ==================== EARLY VALIDATION ====================
     if mode not in {"heuristic", "advanced"}:
@@ -642,8 +654,40 @@ def active_score(
     if reference_group not in adata_input.obs[groupby].astype(str).unique():
         raise ValueError(f"reference_group '{reference_group}' not found.")
 
+    # ====================== LAYER NAME HANDLING (kb_python support) ======================
+    available_layers = list(adata_input.layers.keys())
+
+    # Auto-detect kb_python layers if standard names are missing
+    if spliced_layer not in available_layers or unspliced_layer not in available_layers:
+        if "mature" in available_layers and "nascent" in available_layers:
+            logger.warning(
+                "Standard 'spliced'/'unspliced' layers not found in adata.layers. "
+                "Auto-detected kb_python layers → using 'mature' as spliced (mature mRNA) "
+                "and 'nascent' as unspliced (nascent pre-mRNA). "
+                "All internal processing will use standard names after remapping. "
+                "You can override with spliced_layer= / unspliced_layer= if needed."
+            )
+            spliced_layer = "mature"
+            unspliced_layer = "nascent"
+        else:
+            raise ValueError(
+                f"Required layers not found. "
+                f"Expected '{spliced_layer}' + '{unspliced_layer}' (or kb_python 'mature' + 'nascent'). "
+                f"Available layers: {available_layers}"
+            )
+
+    # Normalize to standard internal layer names so all existing code works unchanged
+    if spliced_layer != "spliced" or unspliced_layer != "unspliced":
+        if spliced_layer in adata_input.layers and unspliced_layer in adata_input.layers:
+            adata_input.layers["spliced"] = adata_input.layers[spliced_layer].copy()
+            adata_input.layers["unspliced"] = adata_input.layers[unspliced_layer].copy()
+            logger.info(
+                f"Layer remapping applied: '{spliced_layer}' → 'spliced', "
+                f"'{unspliced_layer}' → 'unspliced' (internal use only)"
+            )
+
     if "spliced" not in adata_input.layers or "unspliced" not in adata_input.layers:
-        raise ValueError("Both 'spliced' and 'unspliced' layers are required.")
+        raise ValueError("Both 'spliced' and 'unspliced' layers are required after layer handling.")
 
     keep_mask = adata_input.obs[groupby].astype(str).isin([target_group, reference_group])
     adata = adata_input[keep_mask].copy()

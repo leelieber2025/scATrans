@@ -38,6 +38,10 @@ dependencies = [
 [project.optional-dependencies]
 advanced = ["scvelo>=0.3.0"]
 dev = ["pytest>=7.0"]
+gene_features = ["gtfparse>=1.3.0"]
+
+[project.scripts]
+generate-gene-features = "scatrans.generate_gene_features:main"
 
 [project.urls]
 Homepage = "https://github.com/scATrans/scatrans"

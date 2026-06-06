@@ -1,16 +1,17 @@
 """
-scATrans — Preprocessing & bias correction module
+scATrans pp_bias.py
 
-Handles gene length / intron number features for splicing bias correction.
-Fully flexible: supports any number of gene feature versions (mouse, human, or future species)
-by selecting from the files present in the data/ directory.
+Gene feature handling and bias correction utilities:
+- generate_gene_features_from_gtf() : build gene_length + intron_number table from GTF
+- add_gene_features() : attach features to AnnData.var for use in active_score()
+- list_available_gene_features() : helper to discover bundled parquet files
 """
 
+import os
+import logging
+from pathlib import Path
 import pandas as pd
 import numpy as np
-import os
-from pathlib import Path
-import logging
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -19,7 +20,7 @@ logger.addHandler(logging.NullHandler())
 def list_available_gene_features():
     """
     List all available gene feature parquet files in the package data directory.
-    
+
     Returns
     -------
     list of str
@@ -27,16 +28,16 @@ def list_available_gene_features():
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data")
-    
+
     if not os.path.exists(data_dir):
         logger.warning("⚠️ Data directory not found.")
         return []
-    
+
     files = [f for f in os.listdir(data_dir) if f.endswith(".parquet")]
     if not files:
         logger.warning("⚠️ No gene feature files found in data/ directory.")
         return []
-    
+
     logger.info("📋 Available gene feature files:")
     for f in sorted(files):
         print(f"   • {f}")
@@ -49,7 +50,7 @@ def generate_gene_features_from_gtf(
     organism: str = "mouse"
 ):
     """
-    Generate gene features parquet from a GTF file (for developers/maintainers).
+    Generate gene features parquet from a GTF file (for developers/maintainers and CLI).
 
     Parameters
     ----------
@@ -65,7 +66,7 @@ def generate_gene_features_from_gtf(
     except ImportError:
         raise ImportError(
             "gtfparse is required to generate gene features. "
-            "Install with: pip install 'scatrans[gene_features]'"
+            "Install with: pip install 'scatrans[gene_features]' or pip install gtfparse"
         )
 
     if output_name is None:
@@ -127,13 +128,13 @@ def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_feat
     if gene_features_path is not None:
         final_path = gene_features_path
         print(f"   Using custom path: {final_path}")
-    
+
     # Priority 2: Filename in package data/
     elif gene_feature_file is not None:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         final_path = os.path.join(current_dir, "data", gene_feature_file)
         print(f"   Using specified feature file: {gene_feature_file}")
-    
+
     # Priority 3: Default based on organism (backward compatible)
     else:
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -146,8 +147,12 @@ def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_feat
         available = list_available_gene_features()
         raise FileNotFoundError(
             f"Gene features file not found: {final_path}\n"
-            f"Available files: {available}\n"
-            f"Please use gene_feature_file=... or provide gene_features_path."
+            f"Available files in package data/: {available}\n\n"
+            f"💡 Solutions:\n"
+            f"  1. Use the CLI to generate it:\n"
+            f"     generate-gene-features --gtf /path/to/genes.gtf --output {os.path.basename(final_path)}\n"
+            f"  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
+            f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='mouse_2020A_gene_features.parquet')"
         )
 
     try:

@@ -20,7 +20,6 @@ ORA_COLUMNS = [
 def _log_info(msg: str, verbose: bool = True) -> None:
     if verbose:
         logger.info(msg)
-        # print(msg)  # Removed in favor of unified logging
 
 
 def _warn_user(msg: str) -> None:
@@ -141,61 +140,6 @@ def _bh_p_adjust(pvalues: np.ndarray) -> np.ndarray:
     return out
 
 
-def _compute_es_vectorized(hits: np.ndarray, scores: np.ndarray, p: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
-    hits = np.asarray(hits, dtype=bool)
-    scores = np.asarray(scores, dtype=float)
-    if hits.ndim != 2 or scores.ndim != 2:
-        raise ValueError("hits and scores must be 2D arrays")
-    if hits.shape != scores.shape:
-        raise ValueError(f"hits and scores must have same shape, got {hits.shape} and {scores.shape}")
-    n_perms, N = hits.shape
-    Nh = hits.sum(axis=1)
-    Nm = N - Nh
-    valid_mask = (Nh > 0) & (Nm > 0)
-    Nm_safe = np.maximum(Nm, 1)
-    hit_weights = (np.abs(scores) ** p) * hits
-    norm_hits = hit_weights.sum(axis=1, keepdims=True)
-    norm_hits[norm_hits == 0] = 1.0
-    Phit = hit_weights / norm_hits
-    Pmiss = (~hits).astype(float) / Nm_safe[:, None]
-    running_sum = np.cumsum(Phit - Pmiss, axis=1)
-    max_es = running_sum.max(axis=1)
-    min_es = running_sum.min(axis=1)
-    es = np.where(np.abs(max_es) >= np.abs(min_es), max_es, min_es)
-    es[~valid_mask] = 0.0
-    return es, running_sum
-
-
-def _compute_gsea_fdr(obs_nes: np.ndarray, null_nes: np.ndarray, monotonic: bool = True) -> np.ndarray:
-    obs_nes = np.asarray(obs_nes, dtype=float)
-    null_flat = np.asarray(null_nes, dtype=float).ravel()
-    if not np.isfinite(obs_nes).all() or not np.isfinite(null_flat).all():
-        raise ValueError("obs_nes and null_nes must contain only finite values.")
-    fdrs = np.ones_like(obs_nes, dtype=float)
-    obs_pos = obs_nes[obs_nes >= 0]
-    obs_neg = obs_nes[obs_nes < 0]
-    null_pos = null_flat[null_flat >= 0]
-    null_neg = null_flat[null_flat < 0]
-    for i, nes in enumerate(obs_nes):
-        if nes >= 0:
-            null_tail = np.mean(null_pos >= nes) if len(null_pos) > 0 else 1.0
-            obs_tail = np.mean(obs_pos >= nes) if len(obs_pos) > 0 else 1.0
-        else:
-            null_tail = np.mean(null_neg <= nes) if len(null_neg) > 0 else 1.0
-            obs_tail = np.mean(obs_neg <= nes) if len(obs_neg) > 0 else 1.0
-        fdrs[i] = min(null_tail / obs_tail, 1.0) if obs_tail > 0 else 1.0
-    if monotonic:
-        pos_idx = np.where(obs_nes >= 0)[0]
-        if len(pos_idx) > 0:
-            order = pos_idx[np.argsort(-obs_nes[pos_idx])]
-            fdrs[order] = np.minimum.accumulate(fdrs[order])
-        neg_idx = np.where(obs_nes < 0)[0]
-        if len(neg_idx) > 0:
-            order = neg_idx[np.argsort(obs_nes[neg_idx])]
-            fdrs[order] = np.minimum.accumulate(fdrs[order])
-    return fdrs
-
-
 def run_enrichment(
     gene_list: Iterable[Any],
     gene_sets: Union[Mapping[str, Iterable[Any]], str],
@@ -224,7 +168,6 @@ def run_enrichment(
     all_gs_genes = set().union(*term_to_genes.values()) if term_to_genes else set()
     if background is not None:
         if isinstance(background, str) and background.lower() == "all":
-            # Special case: use all genes from gene sets or assume caller will provide adata later? But for now support as flag
             universe = all_gs_genes
         else:
             bg = set(_clean_gene_list(background, gene_case=gene_case))
@@ -303,13 +246,11 @@ def run_kegg(
 ) -> pd.DataFrame:
     """
     KEGG pathway enrichment (wrapper around run_enrichment).
-    Defaults to the latest KEGG library (KEGG_2026) verified available in gseapy.
     """
     org_map = {"mouse": "Mouse", "mmu": "Mouse", "human": "Human", "hsa": "Human"}
     gseapy_org = org_map.get(str(organism).lower())
     if gseapy_org is None:
         raise ValueError(f"Unsupported organism '{organism}' for run_kegg")
-    # Use latest available KEGG libraries (user-verified as of 2026)
     kegg_lib_map = {"Mouse": "KEGG_2026", "Human": "KEGG_2026"}
     if kegg_library is None:
         kegg_library = kegg_lib_map[gseapy_org]

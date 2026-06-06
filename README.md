@@ -11,65 +11,47 @@ A lightweight, beginner-friendly Python package to **identify genes that are cur
 
 The result is a composite **Active Score** (0–100) that highlights "active driver" genes.
 
-> **Current Status (v0.7+)**: Fully production-ready Dual-Track engine + complete publication-quality plotting (`pl.*`) and enrichment modules. All core features, bias correction, permutation testing, and visualizations are implemented and tested.
+> **Current Status**: Fully production-ready Dual-Track engine + complete publication-quality plotting (`pl.*`) and enrichment modules.
 
-Made with ❤️ by the scATrans team (original concept by [@leelieber2025](https://github.com/leelieber2025))
-
----
-
-## ✨ Key Features (Implemented)
-
-| Feature                        | Status          | Notes |
-|--------------------------------|-----------------|-------|
-| **Dual-Track Engine**          | ✅ Full         | `mode="heuristic"` (fast) or `mode="advanced"` (scVelo moments + robust) |
-| **Huber Bias Correction**      | ✅ Full         | Corrects for gene length & intron number bias |
-| **Composite Active Scoring**   | ✅ Full         | Weighted combination of logFC + velocity residual + p-value |
-| **Permutation Testing**        | ✅ Full         | Empirical p-values / FDR for the composite score |
-| **PyDESeq2 + Scanpy DE**       | ✅ Full         | Supports both pseudobulk and single-cell DE backends |
-| **Built-in Diagnostic Plot**   | ✅ Full         | `active_score(..., show_plot=True)` shows logFC vs velocity residual scatter |
-| **Gene Feature Attachment**    | ✅ Full         | `add_gene_features()` (uses bundled mouse data or your own parquet/CSV) |
-| **Metadata Recording**         | ✅ Full         | Everything stored in `adata.uns["scatrans"]` for reproducibility |
-| **Functional Enrichment**      | ✅ Full         | `run_enrichment()` (hypergeometric ORA), `run_kegg()`, `simplify_enrichment()` (Jaccard redundancy reduction). Full gseapy power under the hood. |
-| **Publication Plots**          | ✅ Full         | `scat.pl.comet_plot()` (recommended signature), `volcano_plot()`, `volcano_3d()`, `bias_diagnostic_plot()` (unique!), `enrich_dotplot()`, `enrich_barplot()`, `active_score_rankplot()`, `active_genes_heatmap()`. All vector/PDF ready, adjustableText + seaborn powered. |
+Made with ❤️ by the scATrans team.
 
 ---
 
-## 📦 Installation
+## ✨ Installation
 
 ```bash
 # Basic
 pip install scatrans
 
-# With advanced mode (scVelo moments) + optional enrichment
-pip install "scatrans[advanced]" gseapy
+# With advanced mode (scVelo) + gene feature generation CLI + enrichment
+pip install "scatrans[advanced,gene_features]" gseapy
 ```
 
-**From source (recommended while under active development)**:
+> **📦 Bundled data**: The package ships with `src/scatrans/data/mouse_2020A_gene_features.parquet`  
+> (precomputed gene_length + intron_number for mouse). It is automatically included during installation  
+> and used as the default by `add_gene_features(adata)`.
+
+**From source (recommended for development)**:
 
 ```bash
 git clone https://github.com/scATrans/scatrans.git
 cd scatrans
-pip install -e ".[advanced]"
+pip install -e ".[advanced,gene_features]"
 ```
 
 ---
 
-## 🚀 Quick Start (Working Example)
+## 🚀 Quick Start
 
 ```python
 import scanpy as sc
 import scatrans as scat
-import pandas as pd
 
-# 1. Load your data (must have 'spliced' and 'unspliced' layers)
+# 1. Load your data (must have spliced/unspliced or mature/nascent layers)
 adata = sc.read_h5ad("your_data.h5ad")
 
 # 2. (Recommended) Attach gene features for bias correction
-#    Uses the bundled mouse table if you don't provide one
-adata = scat.add_gene_features(
-    adata, 
-    gene_feature_file=None   # or path to your own parquet/CSV
-)
+adata = scat.add_gene_features(adata)   # uses bundled mouse table by default
 
 # 3. Run Active Transcription Analysis
 adata_res, sig_targets, all_results = scat.active_score(
@@ -77,81 +59,124 @@ adata_res, sig_targets, all_results = scat.active_score(
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    mode="heuristic",           # fast default; use "advanced" for noisy data
+    mode="heuristic",           # or "advanced" for noisy data
     use_permutation=True,
-    n_perm=200,                 # increase to 1000 for publication
-    n_jobs=-1,
-    show_plot=True              # shows nice diagnostic scatter
+    n_perm=200,
+    show_plot=True
 )
 
 print(f"Found {len(sig_targets)} significant active driver genes")
 print(sig_targets.head(10))
-
-# 4. Inspect everything that was recorded
-print(adata_res.uns["scatrans"].keys())
-
-# 5. Functional enrichment (thin wrapper — gseapy is powerful)
-my_active_genes = sig_targets.index.tolist()
-go_res = scat.run_enrichment(
-    gene_list=my_active_genes,
-    gene_sets="GO_Biological_Process_2023",
-    organism="mouse",
-    background=adata.var_names.tolist()   # highly recommended
-)
-print(go_res.res2d.head())   # or use gseapy's plotting functions directly
-
-# 6. Beautiful publication-ready visualizations (NEW in v0.7+)
-scat.pl.set_style()   # call once at the top of your script for consistent Nature/Cell style
-
-# Signature "Comet" plot (highly recommended)
-scat.pl.comet_plot(all_results, top_n=12, save_path="Comet_Plot.pdf")
-
-# 3D Volcano for impact
-scat.pl.volcano_3d(all_results, top_n=8, save_path="Active_Volcano_3D.pdf")
-
-# Unique bias correction diagnostic (show the value of Huber correction!)
-scat.pl.bias_diagnostic_plot(all_results, save_path="Bias_Diagnostic.pdf")
-
-# Enrichment dotplot / barplot
-scat.pl.enrich_dotplot(go_res.res2d if hasattr(go_res, 'res2d') else go_res, 
-                       top_n=15, title="GO Enrichment of Active Drivers", 
-                       save_path="GO_Dotplot.pdf")
 ```
 
 ---
 
-## Dual-Track Design (New in v0.7)
+## 🧬 CLI: Generate Gene Features (New!)
 
-| Mode          | Description                                      | Speed     | Robustness | When to use                     |
-|---------------|--------------------------------------------------|-----------|------------|---------------------------------|
-| `heuristic`   | Fast global group-wise U/S ratio + Huber       | ⚡ Very Fast | Good      | Exploration, large datasets    |
-| `advanced`    | scVelo `pp.moments()` neighborhood smoothing + same Huber | 🐢 Slower   | Higher    | Noisy data, final figures      |
+After installing with the `gene_features` extra, you get a convenient command-line tool:
 
-```python
-# Fast exploration
-res = scat.active_score(adata, mode="heuristic", show_plot=True)
+```bash
+# Basic usage
+generate-gene-features --gtf /path/to/genes.gtf \
+                       --output mouse_gene_features.parquet \
+                       --organism mouse
 
-# More robust (uses local neighborhood information)
-res = scat.active_score(adata, mode="advanced", advanced_fallback=True)
+# For human GENCODE
+generate-gene-features --gtf gencode.v49.primary_assembly.annotation.gtf \
+                       --output human_gencode_v49_gene_features.parquet \
+                       --organism human
 ```
 
-> **Note**: `mode="advanced"` is **experimental** but often more stable. It falls back automatically unless you set `advanced_fallback=False`.
+This generates the `gene_length` + `intron_number` table needed for Huber bias correction.
+
+You can then use it with:
+```python
+adata = scat.add_gene_features(adata, gene_features_path="mouse_gene_features.parquet")
+```
+
+---
+
+## 🔄 kb_python Compatibility (Important!)
+
+Many users generate velocity data with **kb_python** (kallisto | bustools). In these objects the layers are named:
+
+- `'mature'`   → spliced / mature mRNA
+- `'nascent'`  → unspliced / nascent pre-mRNA
+
+**scATrans now fully supports this automatically!**
+
+```python
+# Just load your kb_python output — no extra work needed
+adata = sc.read_h5ad("kb_python_velocity.h5ad")
+# adata.layers will contain: 'mature', 'nascent', ...
+
+adata_res, sig, all_res = scat.active_score(
+    adata_input=adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    # No need to specify anything — auto-detection happens
+    mode="heuristic",
+    show_plot=True
+)
+```
+
+### What happens internally:
+1. If `'spliced'` and `'unspliced'` are missing but `'mature'` + `'nascent'` exist → warning is shown and layers are automatically remapped.
+2. All analysis (DE, velocity delta, bias correction, permutation, plotting) proceeds normally.
+3. You can also manually control it:
+
+```python
+scat.active_score(
+    adata,
+    spliced_layer="mature",
+    unspliced_layer="nascent",
+    ...
+)
+```
+
+This makes scATrans work seamlessly with:
+- Standard velocyto / scVelo outputs
+- kb_python lamanno/velocity mode outputs
+- Any custom layer naming (just pass the parameter)
+
+---
+
+## 📊 Publication-Quality Plots
+
+```python
+import scatrans as scat
+scat.pl.set_style()   # Call once for Nature/Cell style
+
+# Recommended signature plot
+scat.pl.comet_plot(all_results, top_n=12, save_path="Comet_Plot.pdf")
+
+# 3D impact view
+scat.pl.volcano_3d(all_results, top_n=8, save_path="Active_Volcano_3D.pdf")
+
+# Bias correction diagnostic (unique to scATrans!)
+scat.pl.bias_diagnostic_plot(all_results, save_path="Bias_Diagnostic.pdf")
+
+# Enrichment
+go_res = scat.run_enrichment(my_active_genes, gene_sets="GO_Biological_Process_2023")
+scat.pl.enrich_dotplot(go_res, top_n=15, save_path="GO_Dotplot.pdf")
+```
 
 ---
 
 ## Three Usage Modes (Progressive Rigor)
 
-1. **Default / Exploration**
+1. **Exploration** (fast)
    ```python
-   adata_res, sig, all_res = scat.active_score(..., use_permutation=False)
+   ..., use_permutation=False
    ```
 
-2. **Fast Validation** (recommended starting point)
+2. **Recommended starting point**
    ```python
    ..., use_permutation=True, perm_de_backend="fast", n_perm=100
    ```
 
-3. **Strict Publication Mode**
+3. **Publication mode**
    ```python
    ..., use_permutation=True, perm_de_backend="same", n_perm=1000
    ```
@@ -162,74 +187,55 @@ res = scat.active_score(adata, mode="advanced", advanced_fallback=True)
 
 ```python
 adata_t = adata[adata.obs["cell_type"] == "T_cells"].copy()
-adata_res, sig, all_res = scat.active_score(
-    adata_input=adata_t,
-    groupby="condition",
-    target_group="Disease",
-    reference_group="Control",
-    mode="advanced"
-)
+adata_res, sig, all_res = scat.active_score(adata_t, groupby="condition", ...)
 ```
 
 ---
 
 ## Working with Results
 
-All key outputs are in `adata.var`:
+All important columns are added to `adata.var`:
+- `active_score`
+- `velocity_residual` (bias-corrected)
+- `logFC`, `p_adj`
+- `active_score_pval`, `active_score_fdr` (when permutation used)
 
-- `active_score` — main composite score (0-100)
-- `velocity_residual` — bias-corrected velocity signal
-- `logFC`, `p_adj` — from DE
-- `active_score_pval`, `active_score_fdr` — if permutation used
-
-Significant genes are also returned as a sorted DataFrame.
-
-You can create your own beautiful plots easily:
-
-```python
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-top = all_results.head(15)
-sns.scatterplot(data=top, x="logFC", y="velocity_residual", 
-                size="active_score", hue="active_score", palette="viridis")
-plt.title("Top Active Driver Genes")
-plt.show()
-```
+Significant genes are returned sorted by Active Score.
 
 ---
 
 ## Recommended Weight Settings
 
 ```python
-# Balanced (default)
-weight_fc=1.0, weight_unspliced=1.0, weight_pval=1.0
-
-# Early / bursty response (emphasize unspliced)
-weight_fc=0.5, weight_unspliced=2.0, weight_pval=1.0
+# Early/bursty response (emphasize unspliced signal)
+scat.active_score(..., weight_fc=0.5, weight_unspliced=2.0, weight_pval=1.0)
 
 # Steady-state / late response (emphasize fold change)
-weight_fc=2.0, weight_unspliced=0.5, weight_pval=1.0
+scat.active_score(..., weight_fc=2.0, weight_unspliced=0.5, weight_pval=1.0)
 ```
-
-Pass them directly to `active_score()`.
 
 ---
 
-## Current Limitations & Roadmap
+## Functional Enrichment
 
-- Plotting module (`pl.comet_plot`, `volcano_3d`, etc.) → coming in next minor release
-- Full `generate_gene_features_from_gtf()` → stub (use bundled mouse file or external tools)
-- QC warning for high global unspliced fraction → not yet wired (easy to add)
-- More tutorials and example notebooks → planned
+```python
+my_genes = sig_targets.index.tolist()
+go_res = scat.run_enrichment(
+    gene_list=my_genes,
+    gene_sets="GO_Biological_Process_2023",
+    organism="mouse",
+    background=adata.var_names.tolist()
+)
+scat.pl.enrich_dotplot(go_res)
+```
 
-We welcome contributions and feedback!
+Also available: `run_kegg()`, `simplify_enrichment()` (Jaccard redundancy reduction).
 
 ---
 
 ## Citation
 
-If you use scATrans in your research, please cite the original method paper / preprint (to be added) and this package.
+If you use scATrans in your research, please cite the original method paper (to be added) and this package.
 
 ---
 
