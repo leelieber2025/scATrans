@@ -924,7 +924,18 @@ def active_score(
         ),
         "use_permutation": use_permutation,
         "n_perm": int(n_perm) if use_permutation else 0,
-        # ... (保留原来其他字段)
+        "weight_fc": weight_fc,
+        "weight_unspliced": weight_unspliced,
+        "weight_pval": weight_pval,
+        "pval_cutoff": pval_cutoff,
+        "logfc_cutoff": logfc_cutoff,
+        "active_fdr_cutoff": active_fdr_cutoff,
+        "de_method": de_method,
+        "pseudobulk_de_backend": pseudobulk_de_backend,
+        "perm_de_backend": perm_de_backend if use_permutation else None,
+        "prior_weight": prior_weight,
+        "min_total_counts": min_total_counts,
+        "random_seed": random_seed,
     }
 
     # ==================== SIGNIFICANT GENES ====================

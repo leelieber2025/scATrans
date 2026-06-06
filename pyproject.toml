@@ -31,6 +31,8 @@ dependencies = [
     "joblib>=1.2",
     "statsmodels>=0.13",
     "matplotlib>=3.5",
+    "seaborn>=0.12",
+    "adjustText>=0.7",
 ]
 
 [project.optional-dependencies]

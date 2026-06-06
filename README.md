@@ -11,9 +11,7 @@ A lightweight, beginner-friendly Python package to **identify genes that are cur
 
 The result is a composite **Active Score** (0–100) that highlights "active driver" genes.
 
-> **Current Status (v0.7+)**: The core `active_score()` engine with **Dual-Track** (`heuristic` / `advanced`) is fully functional and well-tested.  
-> Full plotting submodule (`pl.comet_plot`, `volcano_3d`, etc.) and some advanced enrichment helpers are still under active development.  
-> The package gracefully informs you when a feature is not yet available.
+> **Current Status (v0.7+)**: Fully production-ready Dual-Track engine + complete publication-quality plotting (`pl.*`) and enrichment modules. All core features, bias correction, permutation testing, and visualizations are implemented and tested.
 
 Made with ❤️ by the scATrans team (original concept by [@leelieber2025](https://github.com/leelieber2025))
 
@@ -31,8 +29,8 @@ Made with ❤️ by the scATrans team (original concept by [@leelieber2025](http
 | **Built-in Diagnostic Plot**   | ✅ Full         | `active_score(..., show_plot=True)` shows logFC vs velocity residual scatter |
 | **Gene Feature Attachment**    | ✅ Full         | `add_gene_features()` (uses bundled mouse data or your own parquet/CSV) |
 | **Metadata Recording**         | ✅ Full         | Everything stored in `adata.uns["scatrans"]` for reproducibility |
-| **Functional Enrichment**      | 🟡 Partial      | `run_enrichment()` thin wrapper around `gseapy` (recommended to use gseapy directly for now) |
-| **Publication Plots** (Comet, 3D Volcano, etc.) | 🔴 Planned | Use the returned DataFrame + seaborn/matplotlib for now; full module coming soon |
+| **Functional Enrichment**      | ✅ Full         | `run_enrichment()` (hypergeometric ORA), `run_kegg()`, `simplify_enrichment()` (Jaccard redundancy reduction). Full gseapy power under the hood. |
+| **Publication Plots**          | ✅ Full         | `scat.pl.comet_plot()` (recommended signature), `volcano_plot()`, `volcano_3d()`, `bias_diagnostic_plot()` (unique!), `enrich_dotplot()`, `enrich_barplot()`, `active_score_rankplot()`, `active_genes_heatmap()`. All vector/PDF ready, adjustableText + seaborn powered. |
 
 ---
 
@@ -101,6 +99,23 @@ go_res = scat.run_enrichment(
     background=adata.var_names.tolist()   # highly recommended
 )
 print(go_res.res2d.head())   # or use gseapy's plotting functions directly
+
+# 6. Beautiful publication-ready visualizations (NEW in v0.7+)
+scat.pl.set_style()   # call once at the top of your script for consistent Nature/Cell style
+
+# Signature "Comet" plot (highly recommended)
+scat.pl.comet_plot(all_results, top_n=12, save_path="Comet_Plot.pdf")
+
+# 3D Volcano for impact
+scat.pl.volcano_3d(all_results, top_n=8, save_path="Active_Volcano_3D.pdf")
+
+# Unique bias correction diagnostic (show the value of Huber correction!)
+scat.pl.bias_diagnostic_plot(all_results, save_path="Bias_Diagnostic.pdf")
+
+# Enrichment dotplot / barplot
+scat.pl.enrich_dotplot(go_res.res2d if hasattr(go_res, 'res2d') else go_res, 
+                       top_n=15, title="GO Enrichment of Active Drivers", 
+                       save_path="GO_Dotplot.pdf")
 ```
 
 ---

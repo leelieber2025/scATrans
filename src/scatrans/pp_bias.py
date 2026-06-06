@@ -1,185 +1,167 @@
-"""Bias correction preprocessing for scATrans.
+"""
+scATrans — Preprocessing & bias correction module
 
-Includes functions to attach gene-level features (length, intron count)
-needed for Huber regression bias correction in active_score().
+Handles gene length / intron number features for splicing bias correction.
+Fully flexible: supports any number of gene feature versions (mouse, human, or future species)
+by selecting from the files present in the data/ directory.
 """
 
-from __future__ import annotations
 import pandas as pd
 import numpy as np
+import os
 from pathlib import Path
-from typing import Optional, Union
-import warnings
 import logging
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
-def add_gene_features(
-    adata,
-    gene_feature_file: Optional[Union[str, Path]] = None,
-    gene_length_col: str = "gene_length",
-    intron_number_col: str = "intron_number",
-    gene_id_col: str = None,
-    fillna: float = np.nan,
-    verbose: bool = True,
-) -> "anndata.AnnData":
+def list_available_gene_features():
     """
-    Attach precomputed gene features (length + intron number) to adata.var
-    for bias correction in `active_score()`.
-
-    The features are used by HuberRegressor to correct velocity residuals
-    for technical biases (longer genes / genes with more introns tend to
-    show different unspliced/spliced ratios).
-
-    Parameters
-    ----------
-    adata : AnnData
-        Annotated data matrix. Will be modified in-place (var columns added).
-    gene_feature_file : str or Path, optional
-        Path to parquet/CSV/TSV file with gene features.
-        Expected columns: at least 'gene_length' and 'intron_number'.
-        Index or a column should match adata.var_names (gene symbols or Ensembl IDs).
-        If None, the function looks for common locations relative to package
-        (data/mouse_2020A_gene_features.parquet) or does nothing.
-    gene_length_col : str
-        Column name for gene length in the feature file (default: "gene_length").
-    intron_number_col : str
-        Column name for intron count (default: "intron_number").
-    gene_id_col : str, optional
-        If features file uses a column for gene IDs instead of index, specify it here.
-    fillna : float
-        Value to fill missing genes (default NaN). Genes without features
-        will have NaN and be skipped in bias correction (valid_feat mask).
-    verbose : bool
-        Print matching stats.
-
+    List all available gene feature parquet files in the package data directory.
+    
     Returns
     -------
-    adata : AnnData
-        The same object with added columns in .var
+    list of str
+        Filenames of all .parquet files in src/scatrans/data/
     """
-    import anndata as ad  # local import to avoid hard dep at top
-
-    if gene_feature_file is None:
-        # Robust lookup that works for both `pip install -e .` and regular installs
-        # because data/ now lives inside src/scatrans/data/
-        here = Path(__file__).resolve().parent
-        candidate = here / "data" / "mouse_2020A_gene_features.parquet"
-        if candidate.exists():
-            gene_feature_file = candidate
-            if verbose:
-                logger.info(f"Using bundled gene features: {gene_feature_file}")
-        else:
-            warnings.warn(
-                "No gene_feature_file provided and bundled mouse_2020A_gene_features.parquet "
-                "was not found next to the package. "
-                "Bias correction will be skipped (gene_length/intron_number = NaN). "
-                "Reinstall the package or provide the file path explicitly.",
-                UserWarning
-            )
-            adata.var[gene_length_col] = fillna
-            adata.var[intron_number_col] = fillna
-            return adata
-
-    gene_feature_file = Path(gene_feature_file)
-    if not gene_feature_file.exists():
-        raise FileNotFoundError(f"gene_feature_file not found: {gene_feature_file}")
-
-    # Load features
-    if gene_feature_file.suffix == ".parquet":
-        try:
-            feat = pd.read_parquet(gene_feature_file)
-        except Exception as e:
-            raise ImportError(
-                "pyarrow or fastparquet is required to read .parquet files. "
-                "Install with: pip install pyarrow"
-            ) from e
-    elif gene_feature_file.suffix in {".csv", ".tsv", ".txt"}:
-        sep = "\t" if gene_feature_file.suffix in {".tsv", ".txt"} else ","
-        feat = pd.read_csv(gene_feature_file, sep=sep, index_col=0)
-    else:
-        feat = pd.read_csv(gene_feature_file, index_col=0)
-
-    if gene_id_col is not None and gene_id_col in feat.columns:
-        feat = feat.set_index(gene_id_col)
-
-    # Standardize
-    feat = feat.rename(columns={
-        gene_length_col: "gene_length",
-        intron_number_col: "intron_number"
-    })
-
-    if "gene_length" not in feat.columns or "intron_number" not in feat.columns:
-        raise ValueError(
-            f"Feature file must contain '{gene_length_col}' and '{intron_number_col}' "
-            f"(after optional rename). Found columns: {feat.columns.tolist()}"
-        )
-
-    # Match to adata.var_names
-    common_genes = adata.var_names.intersection(feat.index)
-    n_match = len(common_genes)
-    n_total = adata.n_vars
-
-    if verbose:
-        logger.info(
-            f"Gene feature matching: {n_match}/{n_total} genes "
-            f"({100*n_match/n_total:.1f}%) found in feature table."
-        )
-
-    if n_match == 0:
-        warnings.warn(
-            "No genes matched between adata.var_names and the feature file index. "
-            "Check that gene identifiers are consistent (symbol vs Ensembl ID). "
-            "Bias correction will use NaNs.",
-            UserWarning
-        )
-
-    # Assign
-    adata.var["gene_length"] = feat.reindex(adata.var_names)["gene_length"].fillna(fillna).values
-    adata.var["intron_number"] = feat.reindex(adata.var_names)["intron_number"].fillna(fillna).values
-
-    # Ensure numeric
-    adata.var["gene_length"] = pd.to_numeric(adata.var["gene_length"], errors="coerce")
-    adata.var["intron_number"] = pd.to_numeric(adata.var["intron_number"], errors="coerce")
-
-    return adata
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(current_dir, "data")
+    
+    if not os.path.exists(data_dir):
+        logger.warning("⚠️ Data directory not found.")
+        return []
+    
+    files = [f for f in os.listdir(data_dir) if f.endswith(".parquet")]
+    if not files:
+        logger.warning("⚠️ No gene feature files found in data/ directory.")
+        return []
+    
+    logger.info("📋 Available gene feature files:")
+    for f in sorted(files):
+        print(f"   • {f}")
+    return files
 
 
 def generate_gene_features_from_gtf(
-    gtf_path: Union[str, Path],
-    output_path: Optional[Union[str, Path]] = None,
-    feature_type: str = "gene",
-    attribute_gene_id: str = "gene_id",
-    attribute_gene_name: str = "gene_name",
-    attribute_gene_biotype: str = "gene_biotype",
-) -> pd.DataFrame:
+    gtf_path: str,
+    output_name: str = None,
+    organism: str = "mouse"
+):
     """
-    (Placeholder) Generate gene_length + intron_number table from a GTF file.
-
-    This is a stub. Full implementation requires a GTF parser
-    (e.g. gtfparse, pyranges, or pyensembl) and exon merging logic
-    to count introns per gene and compute genomic span as length.
-
-    For mouse, we recommend using the precomputed
-    `data/mouse_2020A_gene_features.parquet` that ships with scATrans.
+    Generate gene features parquet from a GTF file (for developers/maintainers).
 
     Parameters
     ----------
-    gtf_path : str or Path
-        Path to .gtf or .gtf.gz
-    output_path : str or Path, optional
-        If provided, save the resulting DataFrame as parquet.
-    ... other params ...
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame indexed by gene_name or gene_id with columns
-        ['gene_length', 'intron_number', ...]
+    gtf_path : str
+        Path to the 10X Genomics or GENCODE genes.gtf file.
+    output_name : str, optional
+        Output parquet filename. If None, auto-generated as {organism}_gene_features.parquet
+    organism : str, default "mouse"
+        Used only for default naming (you can use any name you want).
     """
-    raise NotImplementedError(
-        "generate_gene_features_from_gtf is not yet implemented in this release. "
-        "Please use the pre-bundled mouse_2020A_gene_features.parquet "
-        "or implement exon merging logic yourself (common in velocyto/ scVelo pipelines)."
-    )
+    try:
+        import gtfparse
+    except ImportError:
+        raise ImportError(
+            "gtfparse is required to generate gene features. "
+            "Install with: pip install 'scatrans[gene_features]'"
+        )
+
+    if output_name is None:
+        output_name = f"{organism}_gene_features.parquet"
+
+    print(f"🚀 Parsing GTF file (may take 30-60 seconds)... {gtf_path}")
+    df = gtfparse.read_gtf(gtf_path)
+
+    if hasattr(df, "to_pandas"):
+        df = df.to_pandas()
+        print("✅ Converted to Pandas DataFrame")
+
+    # 1. gene_length (sum of all exons)
+    exon = df[df['feature'] == 'exon'].copy()
+    exon['length'] = exon['end'] - exon['start'] + 1
+    gene_length = exon.groupby('gene_id')['length'].sum().rename('gene_length')
+
+    # 2. intron_number (max exons per transcript - 1)
+    transcript_exons = exon.groupby(['gene_id', 'transcript_id']).size().rename('exon_count')
+    intron_number = (transcript_exons.groupby('gene_id').max() - 1).clip(lower=0).rename('intron_number')
+
+    # 3. Gene info
+    gene_info = df[df['feature'] == 'gene'][['gene_id', 'gene_name', 'gene_type']].drop_duplicates('gene_id')
+
+    # 4. Merge
+    gene_df = gene_info.set_index('gene_id').join(gene_length).join(intron_number).reset_index()
+    gene_df = gene_df[['gene_id', 'gene_name', 'gene_length', 'intron_number', 'gene_type']]
+    gene_df = gene_df.dropna(subset=['gene_length'])
+
+    print(f"✅ Processing completed! {len(gene_df):,} genes processed")
+    print(gene_df.head())
+
+    gene_df.to_parquet(output_name, index=False, compression='zstd')
+    size_mb = Path(output_name).stat().st_size / (1024 * 1024)
+    print(f"🎉 Parquet generated → {output_name} ({size_mb:.1f} MB)")
+    return gene_df
+
+
+def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_features_path=None):
+    """
+    Add gene features (length, intron number) to adata.var for bias correction.
+
+    Flexible selection based on actual files in src/scatrans/data/
+
+    Parameters
+    ----------
+    adata : AnnData
+    organism : str, default "mouse"
+        Used only as fallback when gene_feature_file is not provided.
+    gene_feature_file : str, optional
+        Filename in the data/ directory (e.g. "mouse_2020A_gene_features.parquet"
+        or "human_gencode_v49.parquet"). Highest priority after full path.
+    gene_features_path : str, optional
+        Full custom path to a parquet file (highest priority).
+    """
+    print("🧬 Loading gene features for bias correction...")
+
+    # Priority 1: Full custom path
+    if gene_features_path is not None:
+        final_path = gene_features_path
+        print(f"   Using custom path: {final_path}")
+    
+    # Priority 2: Filename in package data/
+    elif gene_feature_file is not None:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        final_path = os.path.join(current_dir, "data", gene_feature_file)
+        print(f"   Using specified feature file: {gene_feature_file}")
+    
+    # Priority 3: Default based on organism (backward compatible)
+    else:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        default_filename = f"{organism}_gene_features.parquet" if organism == "human" else "mouse_2020A_gene_features.parquet"
+        final_path = os.path.join(current_dir, "data", default_filename)
+        print(f"   Using default for {organism}: {default_filename}")
+
+    # Check file exists
+    if not os.path.exists(final_path):
+        available = list_available_gene_features()
+        raise FileNotFoundError(
+            f"Gene features file not found: {final_path}\n"
+            f"Available files: {available}\n"
+            f"Please use gene_feature_file=... or provide gene_features_path."
+        )
+
+    try:
+        gf = pd.read_parquet(final_path).set_index("gene_name")
+        gf = gf[~gf.index.duplicated(keep="first")]
+
+        adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
+        adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
+
+        valid_count = adata.var["gene_length"].notna().sum()
+        print(f"✅ Successfully mapped features for {valid_count} out of {adata.n_vars} genes.")
+    except Exception as e:
+        print(f"⚠️ Failed to load gene features ({e}). Continuing with NaN values.")
+        adata.var["gene_length"] = np.nan
+        adata.var["intron_number"] = np.nan
+
+    return adata
