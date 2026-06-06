@@ -88,11 +88,32 @@ def generate_gene_features_from_gtf(
     transcript_exons = exon.groupby(['gene_id', 'transcript_id']).size().rename('exon_count')
     intron_number = (transcript_exons.groupby('gene_id').max() - 1).clip(lower=0).rename('intron_number')
 
-    # 3. Gene info
-    gene_info = df[df['feature'] == 'gene'][['gene_id', 'gene_name', 'gene_type']].drop_duplicates('gene_id')
+    # 3. Gene info - handle both GENCODE ('gene_type') and Ensembl ('gene_biotype')
+    gene_cols = ['gene_id', 'gene_name']
+    gene_type_col = None
+
+    if 'gene_type' in df.columns:
+        gene_type_col = 'gene_type'
+    elif 'gene_biotype' in df.columns:
+        gene_type_col = 'gene_biotype'
+        print("ℹ️  Using 'gene_biotype' column (Ensembl-style GTF) and renaming it to 'gene_type' for consistency.")
+
+    if gene_type_col:
+        gene_cols.append(gene_type_col)
+
+    gene_info = df[df['feature'] == 'gene'][gene_cols].drop_duplicates('gene_id')
+
+    # Rename gene_biotype → gene_type if needed (for downstream consistency)
+    if gene_type_col == 'gene_biotype':
+        gene_info = gene_info.rename(columns={'gene_biotype': 'gene_type'})
 
     # 4. Merge
     gene_df = gene_info.set_index('gene_id').join(gene_length).join(intron_number).reset_index()
+
+    # Ensure 'gene_type' column exists (even if empty)
+    if 'gene_type' not in gene_df.columns:
+        gene_df['gene_type'] = np.nan
+
     gene_df = gene_df[['gene_id', 'gene_name', 'gene_length', 'intron_number', 'gene_type']]
     gene_df = gene_df.dropna(subset=['gene_length'])
 
