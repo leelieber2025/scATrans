@@ -16,7 +16,9 @@ from contextlib import contextmanager
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
+from scipy import sparse
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -798,3 +800,95 @@ def active_genes_heatmap(adata, genes=None, groupby=None, save_path=None, **kwar
 def set_nature_style():
     """Legacy alias for set_style() kept for backward compatibility."""
     set_style()
+
+
+def velocity_phase_portraits(
+    adata,
+    genes,
+    groupby=None,
+    spliced_layer="spliced",
+    unspliced_layer="unspliced",
+    max_genes=6,
+    figsize_per_gene=(2.8, 2.4),
+    save_path=None,
+    **kwargs,
+):
+    """
+    Quick diagnostic grid of unspliced vs spliced (phase-portrait style) for selected genes.
+
+    Useful for visually inspecting whether top active genes show the expected excess
+    nascent RNA in the target group. Points are colored by the groupby column when provided.
+
+    This is intentionally lightweight — for full control users are encouraged to write
+    their own small U/S scatter functions.
+
+    Parameters
+    ----------
+    genes : list-like
+        Gene names (index of adata.var) to plot.
+    groupby : str, optional
+        obs column used for coloring (e.g. the same contrast column used in active_score).
+    max_genes : int
+        Maximum number of genes to plot (grid will be truncated).
+    """
+    import math
+
+    genes = list(genes)[:max_genes]
+    if not genes:
+        logger.warning("No genes provided for phase portraits.")
+        return None, None
+
+    set_style()
+
+    n = len(genes)
+    ncols = min(3, n)
+    nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
+        dpi=150,
+        squeeze=False,
+    )
+    axes = axes.flatten()
+
+    for i, g in enumerate(genes):
+        ax = axes[i]
+        if g not in adata.var_names:
+            ax.text(0.5, 0.5, f"{g}\n(not found)", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            continue
+
+        gidx = adata.var_names.get_loc(g)
+        u = adata.layers[unspliced_layer][:, gidx]
+        s = adata.layers[spliced_layer][:, gidx]
+        if sparse.issparse(u):
+            u = u.toarray().ravel()
+            s = s.toarray().ravel()
+
+        color = None
+        if groupby and groupby in adata.obs:
+            # Convert labels to numeric codes for scatter c= (avoids matplotlib error on string arrays)
+            try:
+                color = pd.Categorical(adata.obs[groupby]).codes
+            except Exception:
+                color = None
+
+        cval = color if (color is not None and np.asarray(color).size == len(s)) else "#2ca02c"
+        ax.scatter(s, u, c=cval, s=8, alpha=0.6, edgecolors="none")
+        ax.set_xlabel("Spliced", fontsize=9)
+        ax.set_ylabel("Unspliced", fontsize=9)
+        ax.set_title(str(g), fontsize=10, fontweight="bold")
+        sns.despine(ax=ax)
+
+    # Hide unused subplots
+    for j in range(i + 1, len(axes)):
+        axes[j].axis("off")
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        logger.info("Phase portraits saved to %s", save_path)
+
+    plt.show()
+    return fig, axes

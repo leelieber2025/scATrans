@@ -40,6 +40,15 @@ import logging
 logging.getLogger("scatrans").setLevel(logging.INFO)
 ```
 
+**Quick data quality check (strongly recommended).** Before (or during) analysis it is useful to inspect the global unspliced fraction:
+
+```python
+import scatrans as scat
+ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
+```
+
+`active_score` now automatically calls this and records the value in diagnostics (see the mode selection guide below for interpretation). A very high fraction can indicate technical problems with the velocity layers.
+
 ## Quick Start
 
 ```python
@@ -117,6 +126,36 @@ The main analysis function is `active_score`. It accepts a large number of param
 | `allow_advanced_pseudobulk`    | `False`     | Permit advanced mode on pseudobulk data (experimental). |
 | `advanced_recompute_neighbors` | `True`      | Force recomputation of the neighbor graph in advanced mode. |
 | `prior_weight`                 | `5.0`       | Strength of the prior used when computing the reference gamma (velocity delta). |
+
+### Choosing `mode`: heuristic vs advanced (and common pitfalls)
+
+**Recommendation (quick decision guide):**
+
+- Use the default `mode="heuristic"` for most analyses, especially:
+  - Small cell numbers (< ~50-100 total in the two groups being compared)
+  - When the reference group is small or has low unspliced counts
+  - When you want the most direct "target excess relative to reference baseline" interpretation
+  - For pseudobulk data (advanced is experimental and can over-smooth)
+
+- Try `mode="advanced"` (requires `pip install "scatrans[advanced]"`) when:
+  - You have a reasonable number of cells (ideally > 100-200 in the contrast)
+  - You want local neighborhood smoothing (via scVelo `pp.moments`) to reduce Poisson noise in U/S counts
+  - The data is not pseudobulk (or you explicitly set `allow_advanced_pseudobulk=True`)
+
+**Key conceptual difference**
+- Both modes ultimately compute a group-level "excess unspliced" delta using a reference-derived gamma.
+- `heuristic` uses raw (or size-factor normalized) counts + a simple reference-group gamma (with shrinkage prior).
+- `advanced` first computes locally-smoothed Mu/Ms moments, then applies the **same** reference-gamma delta formula on the smoothed values. The main practical benefit is noise reduction from moments, **not** a fundamentally different velocity model.
+
+**Common pitfalls & limitations**
+- Advanced can be unstable or slow with very few cells or when neighbor graph construction fails — it falls back gracefully when `advanced_fallback=True` (default).
+- The "velocity" here is **not** scVelo's full stochastic or dynamical model (we deliberately kept it simple and group-contrast focused). It is a lightweight proxy for differential active transcription.
+- Permutation testing (when enabled) fixes the velocity/Mu/Ms layers from the original labeling for speed; only the group labels are shuffled. This is documented in `adata.uns["scatrans"]["permutation_approximation_note"]`.
+- Global unspliced fraction > ~50% often indicates technical issues (nuclear enrichment, gDNA contamination). The package now automatically computes and logs this (see `qc.unspliced_global`).
+- Bias correction quality depends on having enough genes with reliable length/intron annotations. Check `uns["scatrans"]["diagnostics"]["bias_correction"]` after a run.
+- Results are most interpretable for **clear binary biological contrasts**. Mixed cell states within a "target" group can dilute the signal.
+
+A rich set of diagnostics (including the global unspliced fraction, bias regression coefficients, number of genes used for fitting, effective gamma per gene, etc.) is now stored in `adata.uns["scatrans"]["diagnostics"]` and a concise summary is printed to the log at the end of every `active_score` run. Always inspect these before interpreting significant genes.
 
 ### Layer Handling
 
@@ -220,7 +259,11 @@ fig.savefig("multi_panel.pdf", dpi=300, bbox_inches="tight")
 
 All functions write high-quality output when `save_path` is provided (300 dpi default, tight bbox, vector-friendly fonts via `set_style`).
 
-See the `examples/` directory (in particular `examples/synthetic_active_transcription.py`) for a complete runnable demonstration that generates synthetic data, runs the full workflow, and produces multi-panel figures using `ax=`.
+See the `examples/` directory:
+- `examples/synthetic_active_transcription.py` — fully runnable synthetic demo (good for quick testing of the API and plotting).
+- `examples/real_data_template.py` — heavily commented template showing the **recommended real-data workflow**, including pre-flight QC, diagnostics inspection, bias diagnostic plots, and enrichment. Copy and adapt it.
+
+All plotting functions support `ax=` / `axes=` for embedding in multi-panel publication figures.
 
 All plotting functions accept `save_path`. When supplied, the figure is saved at the requested DPI with `bbox_inches="tight"`.
 

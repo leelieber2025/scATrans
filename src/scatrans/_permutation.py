@@ -84,7 +84,7 @@ def _single_permutation_task(
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _ = _compute_velocity_delta(uns_layer, spl_layer, t_mask, r_mask, prior_weight)
+    delta_velocity, _, _gamma_ref = _compute_velocity_delta(uns_layer, spl_layer, t_mask, r_mask, prior_weight)
 
     total_us_for_filter = np.asarray(total_us_for_filter)
     valid_expr = total_us_for_filter >= min_total_counts
@@ -93,7 +93,7 @@ def _single_permutation_task(
     gene_length = adata_subset.var["gene_length"].values
     intron_number = adata_subset.var["intron_number"].values
 
-    residual = _fit_huber_bias_correction(
+    residual, _bias_info = _fit_huber_bias_correction(
         delta_velocity,
         gene_length,
         intron_number,

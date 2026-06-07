@@ -240,18 +240,35 @@ def _fit_huber_bias_correction(
     min_fit_obs: int = 30,
     huber_epsilon: float = 1.35,
     huber_max_iter: int = 500,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Shared Huber regression bias correction (or median fallback).
 
     Used by both the main analysis path and the permutation tasks so the
     correction logic stays in one place (DRY).
-    Returns the residual array (same length as delta_velocity).
+    Returns (residual, bias_info_dict) where bias_info contains:
+      - "bias_corrected": bool
+      - "n_genes_used_for_fit": int
+      - "fallback_to_median": bool
+      - "coef_gene_length", "coef_intron_number" (if regression succeeded)
+      - "intercept" (if available)
     """
     residual = np.zeros_like(delta_velocity, dtype=float)
+    bias_info: Dict[str, Any] = {
+        "bias_corrected": False,
+        "n_genes_used_for_fit": 0,
+        "fallback_to_median": False,
+        "coef_gene_length": np.nan,
+        "coef_intron_number": np.nan,
+        "intercept": np.nan,
+    }
 
     fit_mask = valid_feat & valid_expr
-    if X_features is not None and fit_mask.sum() >= min_fit_obs:
+    n_fit = int(fit_mask.sum())
+    bias_info["n_genes_used_for_fit"] = n_fit
+
+    regression_succeeded = False
+    if X_features is not None and n_fit >= min_fit_obs:
         try:
             X_fit = np.column_stack(
                 [
@@ -273,13 +290,23 @@ def _fit_huber_bias_correction(
                 )
             pred = model.predict(X_features)
             residual[valid_feat] = delta_velocity[valid_feat] - pred
+            regression_succeeded = True
+            bias_info["bias_corrected"] = True
+            if hasattr(model, "coef_") and len(model.coef_) >= 2:
+                bias_info["coef_gene_length"] = float(model.coef_[0])
+                bias_info["coef_intron_number"] = float(model.coef_[1])
+            if hasattr(model, "intercept_"):
+                bias_info["intercept"] = float(model.intercept_)
         except Exception as e:
             logger.warning("Bias correction failed. Falling back to median. Reason: %s", e)
 
-    if np.all(residual == 0) and valid_expr.sum() > 0:
+    if not regression_succeeded and valid_expr.sum() > 0:
         residual[valid_expr] = delta_velocity[valid_expr] - np.nanmedian(delta_velocity[valid_expr])
+        bias_info["fallback_to_median"] = True
+        bias_info["bias_corrected"] = True  # median correction still applied
+
     residual[~valid_expr] = 0.0
-    return residual
+    return residual, bias_info
 
 
 # warnings is used inside _fit_huber_bias_correction

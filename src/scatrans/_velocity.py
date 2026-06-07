@@ -41,7 +41,7 @@ def _compute_velocity_delta(
     total_uns = np.asarray(uns_layer.sum(axis=0)).ravel()
     total_spl = np.asarray(spl_layer.sum(axis=0)).ravel()
     total_us = total_uns + total_spl
-    return np.nan_to_num(delta_velocity), np.nan_to_num(total_us)
+    return np.nan_to_num(delta_velocity), np.nan_to_num(total_us), np.nan_to_num(gamma_ref)
 
 
 def _compute_moments_velocity_delta(
@@ -126,7 +126,7 @@ def _compute_moments_velocity_delta(
             }
         )
 
-    delta_velocity, total_us = _compute_velocity_delta(
+    delta_velocity, total_us, gamma_ref = _compute_velocity_delta(
         adata_comp.layers["Mu"],
         adata_comp.layers["Ms"],
         t_mask,
@@ -149,4 +149,4 @@ def _compute_moments_velocity_delta(
         }
     )
 
-    return delta_velocity, total_us, info
+    return delta_velocity, total_us, gamma_ref, info

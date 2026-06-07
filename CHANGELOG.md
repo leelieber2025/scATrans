@@ -8,11 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- New optional dependency group `[pseudobulk]` for PyDESeq2-based pseudobulk DE.
-- `list_available_gene_features()` is now exported at the top level (`scat.list_available_gene_features`).
-- Comprehensive parameter documentation in README (active_score, plotting functions, etc.).
-- CI workflow (`.github/workflows/ci.yml`) with matrix testing across Python versions and extras.
-- Internal module reorganization for better maintainability (see "Changed").
+- **Rich runtime diagnostics** (high priority improvement): `active_score` now automatically computes global unspliced fraction (via integrated `qc.unspliced_global`), captures detailed bias-correction fit results (coefficients, n_genes_used, fallback status), stores per-gene `effective_gamma`, and records everything under `adata.uns["scatrans"]["diagnostics"]`. A concise run summary is logged at completion.
+- New public helper `scat.pl.velocity_phase_portraits(adata, genes, groupby=...)` for quick visual inspection of U vs S relationships on top hits (lower-priority diagnostic aid).
+- `examples/real_data_template.py` — heavily commented, non-runnable but copy-adaptable template demonstrating the full recommended real-data workflow, QC, diagnostics inspection, and publication plotting.
+- Explicit documentation of the permutation approximation (velocity layers fixed from original data; only labels shuffled) in code metadata, logs, and the new "Choosing mode" section of the README.
+- `effective_gamma` column is now added to `adata.var` (and included in result tables when present) for transparency of the gamma used in the delta calculation.
+
+### Changed / Improved
+- Major usability & paper-readiness upgrade to diagnostics, metadata, and user guidance.
+- `qc.unspliced_global` is now called automatically inside `active_score` (result stored); the function remains directly usable as a pre-flight check (`scat.qc.unspliced_global(adata)`).
+- Added prominent "Choosing `mode`: heuristic vs advanced (and common pitfalls)" section + decision guide to README.
+- Enhanced `README.md` with real-data workflow pointers and stronger emphasis on inspecting diagnostics.
+- `scat.pl` now documents the new phase-portrait helper; all existing `ax=` support preserved.
+- Internal: `_fit_huber_bias_correction` and velocity helpers now return extra fit/quality information (used for the new diagnostics) while preserving full backward compatibility of public results.
 
 ### Changed
 - **Major internal refactor** (2025): Core logic in `tl.py` (`active_score`) was extracted into private supporting modules (`_utils.py`, `_de.py`, `_velocity.py`, `_bias.py`, `_permutation.py`). The public `active_score` function is now a thin, readable orchestrator while preserving 100% identical behavior, return values, and side effects on `adata`.

@@ -32,12 +32,15 @@ from ._utils import (
 )
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
 
+# qc is imported lazily inside active_score to keep startup light, but exposed at package level
+from . import qc as _qc  # for unspliced_global integration
+
 try:
     from . import _version
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.7.0-dev"
+    VERSION = "0.7.0.dev0"
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +96,17 @@ def active_score(
     - Differential expression (logFC and p-value) between target and reference groups.
     - Velocity signal approximated by the difference in unspliced abundance after
       a simple reference-based gamma correction (with optional scVelo moments smoothing
-      in "advanced" mode).
+      in "advanced" mode). The per-gene effective gamma is stored in .var["effective_gamma"]
+      for transparency.
     - Bias correction for gene length and intron number via Huber regression on the
-      velocity delta (or median fallback).
-    - Optional permutation testing for gene-level significance and FDR.
+      velocity delta (or median fallback). Detailed fit diagnostics (coefficients, n_genes_used,
+      fallback status) are recorded in adata.uns["scatrans"]["diagnostics"]["bias_correction"].
+    - Optional permutation testing for gene-level significance and FDR (note: for speed,
+      velocity layers/gammas are computed once on the original labeling and only group
+      assignments are permuted).
+    - Rich run-time diagnostics (global unspliced fraction, bias fit quality, etc.) are
+      always stored under adata.uns["scatrans"]["diagnostics"] and a concise summary is
+      logged at completion.
 
     A soft-scaled weighted combination of the three signals produces the final
     active score (0–100). Results (including the processed AnnData) are returned
@@ -297,6 +307,15 @@ def active_score(
     adata.var["p_val"] = de_df["p_val"]
     adata.var["p_adj"] = de_df["p_adj"]
 
+    # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
+    unspliced_fraction = np.nan
+    try:
+        unspliced_fraction = _qc.unspliced_global(
+            adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
+        )
+    except Exception as _e:
+        logger.debug("Could not compute global unspliced fraction: %s", _e)
+
     uns_layer_raw = adata.layers["unspliced"]
     spl_layer_raw = adata.layers["spliced"]
 
@@ -315,9 +334,10 @@ def active_score(
     moments_info: Dict[str, Any] = {}
     velocity_layer_for_perm_uns = uns_layer
     velocity_layer_for_perm_spl = spl_layer
+    gamma_ref = np.full(adata.n_vars, np.nan)  # will be overwritten in all branches
 
     if mode == "heuristic":
-        delta_velocity, total_us_velocity = _compute_velocity_delta(
+        delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
             uns_layer, spl_layer, t_mask, r_mask, prior_weight
         )
         velocity_source = "heuristic_global_ratio"
@@ -329,7 +349,7 @@ def active_score(
             adata_comp.layers["spliced"] = spl_layer.copy()
 
         try:
-            delta_velocity, total_us_velocity, moments_info = _compute_moments_velocity_delta(
+            delta_velocity, total_us_velocity, gamma_ref, moments_info = _compute_moments_velocity_delta(
                 adata_comp,
                 t_mask,
                 r_mask,
@@ -347,7 +367,7 @@ def active_score(
         except Exception as e:
             if advanced_fallback:
                 logger.warning("Advanced mode failed: %s. Falling back to heuristic.", e)
-                delta_velocity, total_us_velocity = _compute_velocity_delta(
+                delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
                     uns_layer, spl_layer, t_mask, r_mask, prior_weight
                 )
                 velocity_source = "heuristic_fallback_from_advanced"
@@ -364,7 +384,7 @@ def active_score(
 
     valid_expr = total_us_raw >= min_total_counts
 
-    residual = fit_huber_bias_correction(
+    residual, bias_info = fit_huber_bias_correction(
         delta_velocity,
         gene_length,
         intron_number,
@@ -381,6 +401,27 @@ def active_score(
     adata.var["total_us_counts_velocity_layer"] = total_us_velocity
     adata.var["valid_expr"] = valid_expr
     adata.var["velocity_source"] = velocity_source
+    adata.var["effective_gamma"] = gamma_ref  # per-gene reference gamma used for delta (transparency)
+
+    # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
+    n_valid_bias = int(bias_info.get("n_genes_used_for_fit", 0))
+    diagnostics: Dict[str, Any] = {
+        "n_cells": int(adata.n_obs),
+        "n_genes_input": int(adata.n_vars),
+        "n_genes_with_valid_features": int(valid_feat.sum()),
+        "unspliced_global_fraction": float(unspliced_fraction) if unspliced_fraction is not None else np.nan,
+        "bias_correction": bias_info,
+        "velocity": {
+            "source": velocity_source,
+            "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
+        },
+    }
+    if mode == "advanced" and moments_info:
+        diagnostics["velocity"]["moments"] = {
+            k: moments_info.get(k)
+            for k in ("n_neighbors_effective", "n_pcs_effective", "used_precomputed_moments", "neighbors_source")
+            if k in moments_info
+        }
 
     # ==================== SCORING ====================
     lambda_fc = max(_get_exponential_scale_lambda(adata.var["logFC"].values), 0.25)
@@ -518,6 +559,14 @@ def active_score(
         "prior_weight": prior_weight,
         "min_total_counts": min_total_counts,
         "random_seed": random_seed,
+        # New rich diagnostics for usability and reproducibility (high priority)
+        "diagnostics": diagnostics,
+        # Explicit note on permutation approximation (important for paper & trust)
+        "permutation_approximation_note": (
+            "For efficiency, velocity layers (raw or Mu/Ms) and effective_gamma are fixed from the original (non-permuted) data. "
+            "Only group labels are shuffled when recomputing delta and the composite active_score inside permutations."
+        ) if use_permutation else None,
+        "unspliced_global_fraction": float(unspliced_fraction) if unspliced_fraction is not None else np.nan,
     }
 
     # ==================== SIGNIFICANT GENES + RETURN ====================
@@ -534,6 +583,7 @@ def active_score(
         "valid_expr",
         "gene_length",
         "intron_number",
+        "effective_gamma",  # new transparency column (may be all-same in heuristic)
     ]
     if use_permutation:
         cols.extend(["active_score_pval", "active_score_fdr"])
@@ -556,6 +606,27 @@ def active_score(
     logger.info(
         "Analysis completed in %s mode! Significant active genes: %d", mode, len(significant)
     )
+
+    # ==================== USER-FACING RUN SUMMARY (diagnostics for convenience) ====================
+    try:
+        ufrac = diagnostics.get("unspliced_global_fraction", np.nan)
+        bias = diagnostics.get("bias_correction", {})
+        n_fit = bias.get("n_genes_used_for_fit", 0)
+        fb = " (median fallback)" if bias.get("fallback_to_median") else ""
+        disp = locals().get("display_mode", mode)
+        logger.info(
+            "Run summary — cells: %d | unspliced frac: %.1f%% | bias fit genes: %d%s | mode: %s | sig: %d",
+            diagnostics.get("n_cells", 0),
+            (ufrac * 100.0) if np.isfinite(ufrac) else float("nan"),
+            n_fit,
+            fb,
+            disp,
+            len(significant),
+        )
+        if use_permutation:
+            logger.info("Permutation used %d iterations (velocity layers fixed from original labeling).", n_perm)
+    except Exception:
+        pass  # never break user run on summary logging
 
     # ==================== PLOTTING (now delegates to pl – no more inline duplication) ====================
     if show_plot:

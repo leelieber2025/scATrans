@@ -20,6 +20,9 @@ import scatrans as scat
 scat.pl.set_style()
 
 print("Generating synthetic AnnData with spliced/unspliced layers...")
+print("NOTE: In real data you would typically load a .h5ad from velocyto, kb_python --lamanno/velocity,")
+print("      or a pre-processed object that already contains 'spliced'/'unspliced' (or 'mature'/'nascent') layers.")
+print("      Always start by checking data quality with scat.qc.unspliced_global(adata).")
 
 np.random.seed(42)
 n_cells = 120
@@ -40,6 +43,8 @@ adata.var["gene_length"] = np.random.randint(700, 5000, n_genes)
 adata.var["intron_number"] = np.random.randint(0, 12, n_genes)
 
 print("Running active_score (heuristic + small permutation for demo)...")
+print("In real analyses we strongly recommend also inspecting the returned adata.uns['scatrans']['diagnostics']")
+print("and calling the bias_diagnostic_plot + comet_plot for publication figures. See real_data_template.py for a full recommended workflow.")
 
 adata_res, sig, all_results = scat.active_score(
     adata_input=adata,
@@ -56,6 +61,7 @@ adata_res, sig, all_results = scat.active_score(
 print(f"Found {len(sig)} significant genes (demo data).")
 print("Top genes by active score:")
 print(sig.head(5))
+print("New transparency: adata.var now contains 'effective_gamma'; full QC+fit details live in .uns['scatrans']['diagnostics']")
 
 # ------------------------------------------------------------------
 # Custom multi-panel figure demonstrating ax= support
