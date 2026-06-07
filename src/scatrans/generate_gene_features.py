@@ -13,15 +13,23 @@ Or from source:
 
 This script is also available as a console entry point after installation.
 """
+
 import argparse
-from pathlib import Path
+import logging
 import sys
+from pathlib import Path
 
 try:
     from .pp_bias import generate_gene_features_from_gtf
 except ImportError:
     # Fallback for direct script execution before installation
     from pp_bias import generate_gene_features_from_gtf
+
+
+# Configure logging so that logger calls inside generate_gene_features_from_gtf
+# (and future library code) produce clean output when the tool is run from CLI.
+# We use a simple format so progress messages look almost identical to the old prints.
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def main():
@@ -36,19 +44,22 @@ Examples:
 After generation:
   1. (Optional) Copy the .parquet to src/scatrans/data/ to bundle it with the package
   2. Re-install the package in editable mode: pip install -e ".[gene_features]"
-        """
+        """,
     )
     parser.add_argument(
-        "--gtf", required=True,
-        help="Path to 10X Genomics or GENCODE genes.gtf file (must contain exon and gene features)"
+        "--gtf",
+        required=True,
+        help="Path to 10X Genomics or GENCODE genes.gtf file (must contain exon and gene features)",
     )
     parser.add_argument(
-        "--output", default="gene_features.parquet",
-        help="Output parquet filename (default: gene_features.parquet)"
+        "--output",
+        default="gene_features.parquet",
+        help="Output parquet filename (default: gene_features.parquet)",
     )
     parser.add_argument(
-        "--organism", default="mouse",
-        help="Organism name used only for default naming / metadata (default: mouse)"
+        "--organism",
+        default="mouse",
+        help="Organism name used only for default naming / metadata (default: mouse)",
     )
 
     args = parser.parse_args()
@@ -58,25 +69,28 @@ After generation:
         print(f"ERROR: GTF file not found: {gtf_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 Starting gene features generation from: {gtf_path}")
-    print(f"   Output will be written to: {args.output}")
-    print(f"   Organism label: {args.organism}")
+    logging.info("Starting gene features generation from: %s", gtf_path)
+    logging.info("   Output will be written to: %s", args.output)
+    logging.info("   Organism label: %s", args.organism)
 
     try:
         df = generate_gene_features_from_gtf(
-            gtf_path=str(gtf_path),
-            output_name=args.output,
-            organism=args.organism
+            gtf_path=str(gtf_path), output_name=args.output, organism=args.organism
         )
-        print("\n✅ Gene features successfully generated!")
-        print(f"   File: {args.output}")
-        print(f"   Genes processed: {len(df):,}")
-        print("\n💡 Next steps:")
-        print("   • Use with: adata = scat.add_gene_features(adata, gene_features_path='your_file.parquet')")
-        print("   • Or bundle it by copying to src/scatrans/data/ and rebuilding the package")
+        logging.info("\nGene features successfully generated!")
+        logging.info("   File: %s", args.output)
+        logging.info("   Genes processed: %s", f"{len(df):,}")
+        logging.info("\nNext steps:")
+        logging.info(
+            "   • Use with: adata = scat.add_gene_features(adata, gene_features_path='your_file.parquet')"
+        )
+        logging.info(
+            "   • Or bundle it by copying to src/scatrans/data/ and rebuilding the package"
+        )
     except Exception as e:
-        print(f"❌ Generation failed: {e}", file=sys.stderr)
+        print(f"Generation failed: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

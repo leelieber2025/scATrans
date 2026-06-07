@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # Core + each optional extra (some may be heavy / have native deps)
+        install-extra:
+          - ""
+          - "advanced"
+          - "pseudobulk"
+          - "gene_features"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install package with extras
+        run: |
+          pip install --upgrade pip
+          EXTRA="${{ matrix.install-extra }}"
+          if [ -n "$EXTRA" ]; then
+            pip install -e ".[dev,$EXTRA]"
+          else
+            pip install -e ".[dev]"
+          fi
+
+      - name: Ruff lint
+        run: |
+          ruff check src/scatrans tests
+          ruff format --check src/scatrans tests
+
+      - name: Run tests (with coverage when possible)
+        run: |
+          pytest --cov=src/scatrans --cov-report=xml -q || pytest -q
+
+      - name: Upload coverage (optional)
+        if: matrix.python-version == '3.11' && matrix.install-extra == ''
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false

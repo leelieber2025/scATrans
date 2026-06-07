@@ -1,19 +1,31 @@
-import pandas as pd
-import numpy as np
-import warnings
-import re
-import os
 import logging
-from scipy.stats import hypergeom
+import os
+import re
+import warnings
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from scipy.stats import hypergeom
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 ORA_COLUMNS = [
-    "Term", "Description", "Count", "GeneRatio", "GeneRatio_str",
-    "BgRatio", "BgRatio_str", "FoldEnrichment", "RichFactor",
-    "Overlap", "pvalue", "p.adjust", "Genes", "TermSize"
+    "Term",
+    "Description",
+    "Count",
+    "GeneRatio",
+    "GeneRatio_str",
+    "BgRatio",
+    "BgRatio_str",
+    "FoldEnrichment",
+    "RichFactor",
+    "Overlap",
+    "pvalue",
+    "p.adjust",
+    "Genes",
+    "TermSize",
 ]
 
 
@@ -39,7 +51,9 @@ def _apply_gene_case(genes: Iterable[Any], gene_case: Optional[str]) -> List[str
     raise ValueError("gene_case must be None, 'upper', or 'lower'")
 
 
-def _clean_gene_list(gene_list: Optional[Iterable[Any]], gene_case: Optional[str] = None) -> List[str]:
+def _clean_gene_list(
+    gene_list: Optional[Iterable[Any]], gene_case: Optional[str] = None
+) -> List[str]:
     if gene_list is None:
         return []
     cleaned = _apply_gene_case(gene_list, gene_case)
@@ -53,7 +67,7 @@ def _load_gene_sets(
     gene_sets_input: Union[Mapping[str, Iterable[Any]], str, None],
     organism: str = "mouse",
     verbose: bool = True,
-    gene_case: Optional[str] = None
+    gene_case: Optional[str] = None,
 ) -> Tuple[Dict[str, set], Dict[str, str]]:
     if gene_sets_input is None:
         raise ValueError("gene_sets cannot be None")
@@ -71,14 +85,18 @@ def _load_gene_sets(
                     term_to_desc[term] = ""
         return term_to_genes, term_to_desc
     if isinstance(gene_sets_input, str):
-        looks_like_path = (os.path.exists(gene_sets_input) or os.path.isabs(gene_sets_input) or
-                           "/" in gene_sets_input or "\\" in gene_sets_input)
+        looks_like_path = (
+            os.path.exists(gene_sets_input)
+            or os.path.isabs(gene_sets_input)
+            or "/" in gene_sets_input
+            or "\\" in gene_sets_input
+        )
         if looks_like_path:
             if not os.path.exists(gene_sets_input):
                 raise FileNotFoundError(f"GMT file not found: {gene_sets_input}")
             term_to_genes: Dict[str, set] = {}
             term_to_desc: Dict[str, str] = {}
-            with open(gene_sets_input, "r", encoding="utf-8") as f:
+            with open(gene_sets_input, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"):
@@ -103,6 +121,7 @@ def _load_gene_sets(
             return term_to_genes, term_to_desc
         try:
             import gseapy as gp
+
             try:
                 gene_dict = gp.get_library(name=gene_sets_input, organism=organism)
             except Exception:
@@ -152,7 +171,7 @@ def run_enrichment(
     verbose: bool = True,
     organism: str = "mouse",
     gene_case: Optional[str] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """
     Hypergeometric over-representation analysis.
@@ -164,7 +183,9 @@ def run_enrichment(
         return pd.DataFrame(columns=ORA_COLUMNS)
     if min_size < 1 or max_size < min_size or not (0 <= pval_cutoff <= 1):
         raise ValueError("Invalid min_size, max_size or pval_cutoff")
-    term_to_genes, term_to_desc = _load_gene_sets(gene_sets, organism=organism, verbose=verbose, gene_case=gene_case)
+    term_to_genes, term_to_desc = _load_gene_sets(
+        gene_sets, organism=organism, verbose=verbose, gene_case=gene_case
+    )
     all_gs_genes = set().union(*term_to_genes.values()) if term_to_genes else set()
     if background is not None:
         if isinstance(background, str) and background.lower() == "all":
@@ -185,14 +206,16 @@ def run_enrichment(
         _log_info(f"Input genes: {len(genes)}, mapped: {n}, universe: {N}")
     mapping_rate = n / max(len(genes), 1)
     if mapping_rate < 0.2:
-        _warn_user(f"Low mapping rate ({mapping_rate:.1%}). Check gene ID type, organism and gene_case.")
+        _warn_user(
+            f"Low mapping rate ({mapping_rate:.1%}). Check gene ID type, organism and gene_case."
+        )
     if n == 0:
         return pd.DataFrame(columns=ORA_COLUMNS)
     results = []
     for term, term_genes in term_to_genes.items():
         term_genes_in_universe = term_genes & universe
         K = len(term_genes_in_universe)
-        if K < min_size or K > max_size:
+        if min_size > K or max_size < K:
             continue
         overlap = set(genes_in_universe) & term_genes_in_universe
         k = len(overlap)
@@ -201,21 +224,23 @@ def run_enrichment(
         pval = hypergeom.sf(k - 1, N, K, n)
         GeneRatio = k / n
         BgRatio = K / N
-        results.append({
-            "Term": term,
-            "Description": term_to_desc.get(term, ""),
-            "Count": k,
-            "GeneRatio": GeneRatio,
-            "GeneRatio_str": f"{k}/{n}",
-            "BgRatio": BgRatio,
-            "BgRatio_str": f"{K}/{N}",
-            "FoldEnrichment": GeneRatio / BgRatio if BgRatio > 0 else 0,
-            "RichFactor": k / K if K > 0 else 0,
-            "Overlap": f"{k}/{K}",
-            "pvalue": pval,
-            "Genes": ";".join(sorted(overlap)),
-            "TermSize": K
-        })
+        results.append(
+            {
+                "Term": term,
+                "Description": term_to_desc.get(term, ""),
+                "Count": k,
+                "GeneRatio": GeneRatio,
+                "GeneRatio_str": f"{k}/{n}",
+                "BgRatio": BgRatio,
+                "BgRatio_str": f"{K}/{N}",
+                "FoldEnrichment": GeneRatio / BgRatio if BgRatio > 0 else 0,
+                "RichFactor": k / K if K > 0 else 0,
+                "Overlap": f"{k}/{K}",
+                "pvalue": pval,
+                "Genes": ";".join(sorted(overlap)),
+                "TermSize": K,
+            }
+        )
     if not results:
         return pd.DataFrame(columns=ORA_COLUMNS)
     res_df = pd.DataFrame(results)
@@ -242,7 +267,7 @@ def run_kegg(
     verbose: bool = True,
     gene_case: Optional[str] = None,
     kegg_library: Optional[str] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """
     KEGG pathway enrichment (wrapper around run_enrichment).
@@ -255,9 +280,17 @@ def run_kegg(
     if kegg_library is None:
         kegg_library = kegg_lib_map[gseapy_org]
     return run_enrichment(
-        gene_list=gene_list, gene_sets=kegg_library, background=background,
-        pval_cutoff=pval_cutoff, min_size=min_size, max_size=max_size,
-        return_all=return_all, verbose=verbose, organism=gseapy_org, gene_case=gene_case, **kwargs
+        gene_list=gene_list,
+        gene_sets=kegg_library,
+        background=background,
+        pval_cutoff=pval_cutoff,
+        min_size=min_size,
+        max_size=max_size,
+        return_all=return_all,
+        verbose=verbose,
+        organism=gseapy_org,
+        gene_case=gene_case,
+        **kwargs,
     )
 
 
@@ -270,7 +303,7 @@ def simplify_enrichment(
     gene_col: Optional[str] = None,
     method: str = "jaccard",
     obo_file: Optional[str] = None,
-    verbose: bool = True
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Greedy redundancy reduction using Jaccard gene overlap.
@@ -312,16 +345,21 @@ def simplify_enrichment(
             if not current:
                 continue
             redundant = any(
-                (len(current & s) / len(current | s) if len(current | s) > 0 else 0) >= similarity_cutoff
+                (len(current & s) / len(current | s) if len(current | s) > 0 else 0)
+                >= similarity_cutoff
                 for s in kept_sets
             )
             if not redundant:
                 kept.append(idx)
                 kept_sets.append(current)
         if verbose:
-            _log_info(f"Simplified from {len(df)} to {len(kept)} terms (Jaccard >= {similarity_cutoff})")
+            _log_info(
+                f"Simplified from {len(df)} to {len(kept)} terms (Jaccard >= {similarity_cutoff})"
+            )
         return df.loc[kept].reset_index(drop=True)
     elif method == "goatools":
-        raise NotImplementedError("goatools semantic simplification is not implemented in this version.")
+        raise NotImplementedError(
+            "goatools semantic simplification is not implemented in this version."
+        )
     else:
         raise ValueError("method must be 'jaccard' or 'goatools'")

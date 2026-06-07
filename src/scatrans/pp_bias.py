@@ -1,56 +1,94 @@
 """
-scATrans pp_bias.py
+Gene feature handling and bias correction utilities.
 
-Gene feature handling and bias correction utilities:
-- generate_gene_features_from_gtf() : build gene_length + intron_number table from GTF
-- add_gene_features() : attach features to AnnData.var for use in active_score()
-- list_available_gene_features() : helper to discover bundled parquet files
+This module provides functions to attach per-gene length and intron number
+information (used for bias correction) and to generate such tables from GTF
+annotation files. Package data access uses importlib.resources for robustness
+across installation methods.
 """
 
-import os
 import logging
+import sys
+from contextlib import contextmanager
 from pathlib import Path
-import pandas as pd
+from typing import Iterator, List, Optional
+
 import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+# --- importlib.resources compatibility (py>=3.9 stdlib, else backport) ---
+if sys.version_info >= (3, 9):
+    from importlib.resources import as_file, files
+else:
+    from importlib_resources import as_file, files
 
-def list_available_gene_features():
+
+@contextmanager
+def _open_package_data(filename: str) -> Iterator[Path]:
+    """Yield a real filesystem Path for a read-only file inside scatrans/data/.
+
+    This is the recommended way to access package data resources and is
+    safe for installed packages (wheel/sdist) and editable installs.
     """
-    List all available gene feature parquet files in the package data directory.
+    ref = files("scatrans.data") / filename
+    with as_file(ref) as concrete:
+        yield Path(concrete)
+
+
+def list_available_gene_features(verbose: bool = False) -> List[str]:
+    """
+    List all available gene feature parquet files shipped with the package.
+
+    Parameters
+    ----------
+    verbose : bool, default False
+        If True, also log the list at INFO level.
 
     Returns
     -------
     list of str
-        Filenames of all .parquet files in src/scatrans/data/
+        Filenames of .parquet files available via the package data.
     """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data")
+    # Known files (used as fallback)
+    known = [
+        "mouse_2020A_gene_features.parquet",
+        "Mus_musculus.GRCm39.115_gene_features.parquet",
+    ]
 
-    if not os.path.exists(data_dir):
-        logger.warning("⚠️ Data directory not found.")
-        return []
+    discovered: List[str] = []
+    try:
+        data_traversable = files("scatrans.data")
+        # iterdir works on Traversable (importlib.resources)
+        for item in data_traversable.iterdir():
+            name = getattr(item, "name", str(item))
+            if name.endswith(".parquet"):
+                discovered.append(name)
+    except Exception:
+        # Best-effort fallback for unusual environments
+        discovered = []
 
-    files = [f for f in os.listdir(data_dir) if f.endswith(".parquet")]
-    if not files:
-        logger.warning("⚠️ No gene feature files found in data/ directory.")
-        return []
+    files_list = sorted(set(discovered)) if discovered else known
 
-    logger.info("📋 Available gene feature files:")
-    for f in sorted(files):
-        print(f"   • {f}")
-    return files
+    if verbose:
+        logger.info("Available gene feature files in package data:")
+        for f in files_list:
+            logger.info(f"   • {f}")
+    return files_list
 
 
 def generate_gene_features_from_gtf(
     gtf_path: str,
-    output_name: str = None,
-    organism: str = "mouse"
+    output_name: Optional[str] = None,
+    organism: str = "mouse",
 ):
     """
     Generate gene features parquet from a GTF file (for developers/maintainers and CLI).
+
+    Long-running step (GTF parsing). Progress is emitted via the 'scatrans' logger.
+    When used from the CLI entrypoint, the CLI configures logging so messages appear.
 
     Parameters
     ----------
@@ -67,70 +105,85 @@ def generate_gene_features_from_gtf(
         raise ImportError(
             "gtfparse is required to generate gene features. "
             "Install with: pip install 'scatrans[gene_features]' or pip install gtfparse"
-        )
+        ) from None
 
     if output_name is None:
         output_name = f"{organism}_gene_features.parquet"
 
-    print(f"🚀 Parsing GTF file (may take 30-60 seconds)... {gtf_path}")
+    logger.info("Parsing GTF file (may take 30-60 seconds)... %s", gtf_path)
     df = gtfparse.read_gtf(gtf_path)
 
     if hasattr(df, "to_pandas"):
         df = df.to_pandas()
-        print("✅ Converted to Pandas DataFrame")
+        logger.info("Converted to Pandas DataFrame")
 
     # 1. gene_length (sum of all exons)
-    exon = df[df['feature'] == 'exon'].copy()
-    exon['length'] = exon['end'] - exon['start'] + 1
-    gene_length = exon.groupby('gene_id')['length'].sum().rename('gene_length')
+    exon = df[df["feature"] == "exon"].copy()
+    exon["length"] = exon["end"] - exon["start"] + 1
+    gene_length = exon.groupby("gene_id")["length"].sum().rename("gene_length")
 
     # 2. intron_number (max exons per transcript - 1)
-    transcript_exons = exon.groupby(['gene_id', 'transcript_id']).size().rename('exon_count')
-    intron_number = (transcript_exons.groupby('gene_id').max() - 1).clip(lower=0).rename('intron_number')
+    transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
+    intron_number = (
+        (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
+    )
 
     # 3. Gene info - handle both GENCODE ('gene_type') and Ensembl ('gene_biotype')
-    gene_cols = ['gene_id', 'gene_name']
+    gene_cols = ["gene_id", "gene_name"]
     gene_type_col = None
 
-    if 'gene_type' in df.columns:
-        gene_type_col = 'gene_type'
-    elif 'gene_biotype' in df.columns:
-        gene_type_col = 'gene_biotype'
-        print("ℹ️  Using 'gene_biotype' column (Ensembl-style GTF) and renaming it to 'gene_type' for consistency.")
+    if "gene_type" in df.columns:
+        gene_type_col = "gene_type"
+    elif "gene_biotype" in df.columns:
+        gene_type_col = "gene_biotype"
+        logger.info(
+            "Using 'gene_biotype' column (Ensembl-style GTF) and renaming it to 'gene_type' for consistency."
+        )
 
     if gene_type_col:
         gene_cols.append(gene_type_col)
 
-    gene_info = df[df['feature'] == 'gene'][gene_cols].drop_duplicates('gene_id')
+    gene_info = df[df["feature"] == "gene"][gene_cols].drop_duplicates("gene_id")
 
     # Rename gene_biotype → gene_type if needed (for downstream consistency)
-    if gene_type_col == 'gene_biotype':
-        gene_info = gene_info.rename(columns={'gene_biotype': 'gene_type'})
+    if gene_type_col == "gene_biotype":
+        gene_info = gene_info.rename(columns={"gene_biotype": "gene_type"})
 
     # 4. Merge
-    gene_df = gene_info.set_index('gene_id').join(gene_length).join(intron_number).reset_index()
+    gene_df = gene_info.set_index("gene_id").join(gene_length).join(intron_number).reset_index()
 
     # Ensure 'gene_type' column exists (even if empty)
-    if 'gene_type' not in gene_df.columns:
-        gene_df['gene_type'] = np.nan
+    if "gene_type" not in gene_df.columns:
+        gene_df["gene_type"] = np.nan
 
-    gene_df = gene_df[['gene_id', 'gene_name', 'gene_length', 'intron_number', 'gene_type']]
-    gene_df = gene_df.dropna(subset=['gene_length'])
+    gene_df = gene_df[["gene_id", "gene_name", "gene_length", "intron_number", "gene_type"]]
+    gene_df = gene_df.dropna(subset=["gene_length"])
 
-    print(f"✅ Processing completed! {len(gene_df):,} genes processed")
-    print(gene_df.head())
+    logger.info("Processing completed! %d genes processed", len(gene_df))
+    logger.debug("%s", gene_df.head())
 
-    gene_df.to_parquet(output_name, index=False, compression='zstd')
+    gene_df.to_parquet(output_name, index=False, compression="zstd")
     size_mb = Path(output_name).stat().st_size / (1024 * 1024)
-    print(f"🎉 Parquet generated → {output_name} ({size_mb:.1f} MB)")
+    logger.info("Parquet generated → %s (%.1f MB)", output_name, size_mb)
     return gene_df
 
 
-def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_features_path=None):
+def add_gene_features(
+    adata,
+    organism: str = "mouse",
+    gene_feature_file: Optional[str] = None,
+    gene_features_path: Optional[str] = None,
+):
     """
     Add gene features (length, intron number) to adata.var for bias correction.
 
-    Flexible selection based on actual files in src/scatrans/data/
+    The function looks for files in three ways (priority order):
+    1. gene_features_path (full user-provided path)
+    2. gene_feature_file (filename that must exist inside the package data/)
+    3. Default filename chosen from `organism`
+
+    Uses robust importlib.resources access so it works whether the package
+    is installed from wheel, sdist, or in editable mode.
 
     Parameters
     ----------
@@ -138,43 +191,55 @@ def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_feat
     organism : str, default "mouse"
         Used only as fallback when gene_feature_file is not provided.
     gene_feature_file : str, optional
-        Filename in the data/ directory (e.g. "mouse_2020A_gene_features.parquet"
-        or "human_gencode_v49.parquet"). Highest priority after full path.
+        Filename in the package data/ directory.
     gene_features_path : str, optional
         Full custom path to a parquet file (highest priority).
     """
-    print("🧬 Loading gene features for bias correction...")
+    logger.info("Loading gene features for bias correction...")
 
-    # Priority 1: Full custom path
+    final_path: Optional[Path] = None
+    using_package_data = False
+
+    # Priority 1: Full custom path (user file, do not touch package resources)
     if gene_features_path is not None:
-        final_path = gene_features_path
-        print(f"   Using custom path: {final_path}")
+        final_path = Path(gene_features_path)
+        logger.info("Using custom path: %s", final_path)
 
-    # Priority 2: Filename in package data/
+    # Priority 2: explicit filename inside package data/
     elif gene_feature_file is not None:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        final_path = os.path.join(current_dir, "data", gene_feature_file)
-        print(f"   Using specified feature file: {gene_feature_file}")
+        using_package_data = True
+        pkg_filename = gene_feature_file
 
     # Priority 3: Default based on organism (backward compatible)
     else:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        default_filename = f"{organism}_gene_features.parquet" if organism == "human" else "mouse_2020A_gene_features.parquet"
-        final_path = os.path.join(current_dir, "data", default_filename)
-        print(f"   Using default for {organism}: {default_filename}")
-
-    # Check file exists
-    if not os.path.exists(final_path):
-        available = list_available_gene_features()
-        raise FileNotFoundError(
-            f"Gene features file not found: {final_path}\n"
-            f"Available files in package data/: {available}\n\n"
-            f"💡 Solutions:\n"
-            f"  1. Use the CLI to generate it:\n"
-            f"     generate-gene-features --gtf /path/to/genes.gtf --output {os.path.basename(final_path)}\n"
-            f"  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
-            f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='mouse_2020A_gene_features.parquet')"
+        using_package_data = True
+        pkg_filename = (
+            f"{organism}_gene_features.parquet"
+            if organism == "human"
+            else "mouse_2020A_gene_features.parquet"
         )
+        logger.info("Using default for %s: %s", organism, pkg_filename)
+
+    # For package data we resolve via resources (context ensures the file is available)
+    if using_package_data:
+        try:
+            with _open_package_data(pkg_filename) as resolved:
+                final_path = resolved
+                logger.info("Resolved package data file: %s", pkg_filename)
+        except Exception as exc:
+            available = list_available_gene_features(verbose=False)
+            raise FileNotFoundError(
+                f"Gene features file not found inside package data: {pkg_filename}\n"
+                f"Available files: {available}\n\n"
+                "Solutions:\n"
+                "  1. Use the CLI to generate it:\n"
+                f"     generate-gene-features --gtf /path/to/genes.gtf --output {pkg_filename}\n"
+                "  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
+                f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
+            ) from exc
+
+    # At this point final_path is always a real Path we can read
+    assert final_path is not None
 
     try:
         gf = pd.read_parquet(final_path).set_index("gene_name")
@@ -183,10 +248,12 @@ def add_gene_features(adata, organism="mouse", gene_feature_file=None, gene_feat
         adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
         adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
 
-        valid_count = adata.var["gene_length"].notna().sum()
-        print(f"✅ Successfully mapped features for {valid_count} out of {adata.n_vars} genes.")
+        valid_count = int(adata.var["gene_length"].notna().sum())
+        logger.info(
+            "Successfully mapped features for %d out of %d genes.", valid_count, adata.n_vars
+        )
     except Exception as e:
-        print(f"⚠️ Failed to load gene features ({e}). Continuing with NaN values.")
+        logger.warning("Failed to load gene features (%s). Continuing with NaN values.", e)
         adata.var["gene_length"] = np.nan
         adata.var["intron_number"] = np.nan
 

@@ -1,8 +1,10 @@
-from scipy import sparse
 import logging
+
+from scipy import sparse
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
 
 def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5):
     """
@@ -18,18 +20,22 @@ def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", wa
 
     sum_s = S.sum() if not sparse.issparse(S) else S.sum()
     sum_u = U.sum() if not sparse.issparse(U) else U.sum()
-    
+
     total = sum_s + sum_u
     if total == 0:
         logger.warning("⚠️ Total counts in spliced and unspliced layers are zero.")
         return 0.0
-        
+
     unspliced_ratio = sum_u / total
-    
+
     logger.info(f"📊 Global Unspliced Fraction: {unspliced_ratio:.2%}")
-    
+
     if unspliced_ratio > warn_threshold:
-        logger.warning(f"⚠️ WARNING: The overall unspliced fraction ({unspliced_ratio:.2%}) is very high (> {warn_threshold:.0%}).")
-        logger.warning("   This may indicate technical issues such as nuclear RNA enrichment or genomic DNA contamination.")
-        
+        logger.warning(
+            f"⚠️ WARNING: The overall unspliced fraction ({unspliced_ratio:.2%}) is very high (> {warn_threshold:.0%})."
+        )
+        logger.warning(
+            "   This may indicate technical issues such as nuclear RNA enrichment or genomic DNA contamination."
+        )
+
     return float(unspliced_ratio)
