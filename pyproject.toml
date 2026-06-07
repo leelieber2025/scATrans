@@ -56,10 +56,8 @@ scatrans = ["data/*.parquet", "data/*.md"]
 
 [tool.setuptools_scm]
 write_to = "src/scatrans/_version.py"
-fallback_version = "0.7.0-dev"  # Allows editable installs and builds outside of a git checkout
-
-# Recommended for clean versions in releases
-version_scheme = "post-release"
+fallback_version = "0.7.0.dev0"
+version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
 # Ruff: fast Python linter + formatter (replaces many tools)
