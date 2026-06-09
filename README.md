@@ -83,6 +83,8 @@ print(all_results.head())
 
 **Key point:** With default parameters you do **not** need to think about `bias_correction`, `effective_gamma`, `use_mixed_model`, or `use_permutation`. The basic pipeline is designed to "just work" and produce clean, easy-to-understand results.
 
+Pseudobulk analysis and choice of differential expression test (e.g. Wilcoxon) **are** basic configuration options — you can freely switch them on when your experimental design calls for it (see below).
+
 `significant` (the second return value) is intentionally conservative and frequently contains 0 or very few genes. This is normal. Use `all_results` for downstream filtering.
 
 ---
@@ -107,6 +109,47 @@ This performs:
 - Light Huber bias correction on gene length + intron number (default)
 - Composite active_score (0–100)
 - Rich diagnostics written to `adata_res.uns["scatrans"]["diagnostics"]`
+
+### 3.1.1 Common basic switches: pseudobulk and DE test method
+
+These two are **standard basic options**, not advanced exploration features. You can turn them on freely depending on your data and analysis preferences:
+
+**Pseudobulk mode** (recommended when you have multiple biological replicates per condition):
+
+```python
+adata_res, significant, all_results = scat.active_score(
+    adata_input=adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    use_pseudobulk=True,
+    sample_col="sample",                    # column identifying biological samples/individuals
+    pseudobulk_de_backend="pydeseq2",       # or "scanpy"
+    min_cells=5,
+    min_counts=100,
+    show_plot=True,
+)
+```
+
+- Requires `sample_col`.
+- `pseudobulk_de_backend="pydeseq2"` uses the count-based DESeq2 model (install with `pip install "scatrans[pseudobulk]"`).
+- `pseudobulk_de_backend="scanpy"` + `de_method="wilcoxon"` (or `"t-test_overestim_var"`) uses scanpy's rank_genes_groups on the aggregated data.
+
+**Switching the DE statistical test** (works for both single-cell and pseudobulk):
+
+```python
+# Use Wilcoxon rank-sum test instead of the default t-test
+adata_res, significant, all_results = scat.active_score(
+    ...,
+    de_method="wilcoxon",                 # any method supported by scanpy.tl.rank_genes_groups
+)
+```
+
+When using `use_pseudobulk=True` + `pseudobulk_de_backend="scanpy"`, the `de_method` you choose (including `"wilcoxon"`) will be used for the pseudobulk DE step.
+
+These choices are recorded in `adata_res.uns["scatrans"]` (`de_method`, `pseudobulk_de_backend`, `use_pseudobulk`).
+
+The `filter_active_genes` helper has a `preset="pseudobulk"` that applies more lenient default thresholds suitable after aggregation.
 
 ### 3.2 Gene filtering with filter_active_genes (core output tool)
 
@@ -273,21 +316,26 @@ Always look at the diagnostics, the actual distributions in `all_results`, and (
 
 ### Basic parameters (most users only need these)
 
-| Parameter          | Default     | Notes |
-|--------------------|-------------|-------|
-| `adata_input`      | (required)  | AnnData with spliced/unspliced (or mature/nascent) layers |
-| `groupby`          | `"condition"` | obs column defining the groups |
-| `target_group`     | `"GA"`      | Group of interest |
-| `reference_group`  | `"Ctrl"`    | Reference group |
-| `show_plot`        | `True`      | Show a comet plot at the end |
-| `min_total_counts` | `50`        | Minimum total (S+U) counts to consider a gene expressed |
+These are the common "free switches" for the basic pipeline (including pseudobulk and DE method choice):
 
-### Opt-in advanced parameters (see "Optional Advanced Features")
+| Parameter                  | Default                  | Notes |
+|----------------------------|--------------------------|-------|
+| `adata_input`              | (required)               | AnnData with spliced/unspliced (or mature/nascent) layers |
+| `groupby`                  | `"condition"`            | obs column defining the groups |
+| `target_group` / `reference_group` | `"GA"` / `"Ctrl"` | The two conditions to compare |
+| `use_pseudobulk`           | `False`                  | Set to `True` + provide `sample_col` for pseudobulk analysis |
+| `sample_col`               | `None`                   | Required when `use_pseudobulk=True` (biological replicate identifier) |
+| `pseudobulk_de_backend`    | `"pydeseq2"`             | `"pydeseq2"` or `"scanpy"` (when `use_pseudobulk=True`) |
+| `de_method`                | `"t-test_overestim_var"` | DE method for scanpy path (e.g. `"wilcoxon"`, `"t-test"`, ...) |
+| `show_plot`                | `True`                   | Show a comet plot at the end |
+| `min_total_counts`         | `50`                     | Minimum total (S+U) counts to consider a gene expressed |
+
+### Opt-in advanced / exploration parameters (see "Optional Advanced Features")
 
 - `use_permutation`, `n_perm`, `active_fdr_cutoff`
 - `bias_correction` ("huber_length_intron" or "none")
 - `show_effective_gamma`
-- `use_mixed_model`, `sample_col`, `use_delta_variance_pval`, `mixed_model_pval`
+- `use_mixed_model`, `use_delta_variance_pval`, `mixed_model_pval`
 - `mode` ("heuristic" or "advanced")
 
 Full signatures and all parameters are documented in the function docstrings and the source.

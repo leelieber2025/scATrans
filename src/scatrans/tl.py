@@ -58,8 +58,8 @@ def active_score(
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
     active_fdr_cutoff: float = 0.05,
-    de_method: str = "t-test_overestim_var",
-    pseudobulk_de_backend: str = "pydeseq2",
+    de_method: str = "t-test_overestim_var",          # freely switchable basic option, e.g. "wilcoxon"
+    pseudobulk_de_backend: str = "pydeseq2",          # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
     perm_de_backend: str = "fast",
     n_perm: int = 100,
