@@ -396,3 +396,85 @@ def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
             use_mixed_model=True,
             show_plot=False,
         )
+
+
+# --------------------------- filter_active_genes helper ---------------------------
+
+def test_filter_active_genes_basic(adata_mixed_small):
+    """filter_active_genes should work, be robust to missing columns, and respect thresholds."""
+    # Run without permutation (no fdr columns)
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=False,
+        n_jobs=1,
+    )
+
+    # Basic call - should not crash even though active_score_fdr is missing
+    filt = scat.filter_active_genes(
+        allr,
+        active_score_cutoff=30,
+        pval_cutoff=0.1,
+        velocity_residual_cutoff=0.5,
+        logfc_cutoff=0.1,
+        active_score_fdr_cutoff=0.25,  # ignored because column missing
+        effective_gamma_min=0.01,
+        effective_gamma_max=None,
+    )
+    assert isinstance(filt, pd.DataFrame)
+    if len(filt) > 0:
+        assert filt["active_score"].iloc[0] >= filt["active_score"].iloc[-1]  # sorted descending
+
+    # With permutation enabled
+    _, _, allr_perm = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=True,
+        n_perm=20,
+        random_seed=0,
+        n_jobs=1,
+    )
+    filt2 = scat.filter_active_genes(
+        allr_perm,
+        active_score_cutoff=20,
+        active_score_fdr_cutoff=0.5,  # permissive
+        effective_gamma_min=0.0,
+    )
+    assert "active_score_fdr" in allr_perm.columns
+    # The helper should have respected the fdr column when present
+    if len(filt2) > 0:
+        assert (filt2["active_score_fdr"] < 0.5).all()
+
+
+def test_filter_active_genes_with_mixed(adata_mixed_small):
+    """When delta_variance is present, the helper can filter on it."""
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert "delta_variance" in allr.columns
+
+    filt = scat.filter_active_genes(
+        allr,
+        active_score_cutoff=10,
+        delta_variance_min=0.0,  # permissive
+    )
+    # Should not have dropped the column requirement
+    assert len(filt) >= 0

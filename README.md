@@ -280,37 +280,113 @@ adata_res, sig_targets, all_results = scat.active_score(
 
 print(f"Number of genes in the default sig_targets: {len(sig_targets)}")   # often 0
 
-# 2. Manually (or semi-automatically) derive the final gene list from all_results
-#    using experiment-specific thresholds
-final_significant = all_results[
-    (all_results['active_score'] >= 55) & 
-    (all_results['p_val'] < 0.05) & 
-    (all_results['velocity_residual'] > 1.0) & 
-    (all_results['logFC'] > 0.35)
-].sort_values('active_score', ascending=False)
+# 2. Use the built-in helper (recommended) or your own logic on all_results
+#    to obtain a final, biologically meaningful gene list.
+#    The helper only applies filters for columns that are actually present.
+
+final_significant = scat.filter_active_genes(
+    all_results,
+    active_score_cutoff=55,
+    pval_cutoff=0.05,
+    velocity_residual_cutoff=1.0,
+    logfc_cutoff=0.35,
+    active_score_fdr_cutoff=0.25,      # only used if use_permutation=True
+    effective_gamma_min=0.05,          # recommended default (see effective_gamma section)
+    effective_gamma_max=1.0,           # optional upper bound
+    # delta_variance_min=0.05,         # uncomment if you used use_mixed_model=True
+)
 
 print(f"Number of genes after custom filtering: {len(final_significant)}")
-print(final_significant.head(12)[['active_score', 'logFC', 'p_val', 'velocity_residual']])
 
-# Optional: when use_mixed_model=True, you can also incorporate delta_variance
-# final_significant = all_results[
-#     (all_results['active_score'] >= 55) &
-#     (all_results['delta_variance'] > 0.08) &   # condition explains substantial variance
-#     (all_results['logFC'] > 0.35)
-# ].sort_values('active_score', ascending=False)
+# Inspect the most relevant columns
+display_cols = [
+    "active_score", "logFC", "p_val", "p_adj",
+    "active_score_pval", "active_score_fdr",
+    "velocity_residual", "effective_gamma"
+]
+display_cols = [c for c in display_cols if c in final_significant.columns]
+print(final_significant.head(15)[display_cols])
 
 # Save for downstream analysis (enrichment, plotting, validation, etc.)
 final_significant.to_csv("final_significant_genes_SCI.csv")
 ```
 
 **Tips for choosing custom thresholds**
-- Start by looking at the distribution of `active_score`, `velocity_residual`, and `logFC` in `all_results.head(50)`.
-- `velocity_residual > 0` is already enforced internally for the default list; raising it (e.g. > 0.5 or > 1.0) is a common way to focus on genes with clearer nascent RNA excess.
-- When you enabled `use_mixed_model=True`, also consider `delta_variance > X` (higher = condition explains more of the gene's variance after accounting for sample random effect) and/or `delta_var_pval < 0.05`.
-- You can combine any columns present in `all_results` (including `active_score_pval`, `active_score_fdr`, `p_adj`, etc.).
-- After obtaining `final_significant`, you can feed its index into `scat.run_enrichment(...)` or plotting functions.
+- Start by inspecting the distributions in `all_results.head(50)` or `all_results.describe()` for `active_score`, `velocity_residual`, `logFC`, and (if available) `active_score_fdr`.
+- `velocity_residual > 0` is already required by the default significance mask. Raising the threshold (e.g. > 0.5 or > 1.0) is an effective way to retain only genes with a clear excess of nascent RNA.
+- When `use_permutation=True`, `active_score_fdr` is usually the most relevant statistical filter for the final composite score. A cutoff in the 0.2–0.3 range is common for exploratory analyses (stricter than the default 0.05 used internally for `significant`).
+- The condition on `effective_gamma > 0` (and not NaN) is a light guard against genes where the velocity reference gamma was unreliable (very low counts in the reference group). In most cases the existing `valid_expr` column already handles the worst offenders.
+- When `use_mixed_model=True`, consider also requiring `delta_variance > X` (higher values mean the experimental condition explains a larger fraction of the gene's variance after modeling sample-level random effects).
+- You can combine any columns available in `all_results`. Always guard for column existence in your script if you sometimes run with/without `use_permutation` or `use_mixed_model`.
+- After obtaining `final_significant`, pass its index (or `.index.tolist()`) to `scat.run_enrichment(...)` or the plotting functions.
 
 This two-step approach (trust the software for computation + rich ranking, apply domain knowledge for final selection) is the most common and productive way to use scATrans on real single-cell velocity datasets.
+
+### The `filter_active_genes` helper function
+
+Because the default `significant` list returned by `active_score` is intentionally conservative and frequently empty, most users derive their final gene list from `all_results`.
+
+`scat.filter_active_genes` provides a convenient, documented way to do this:
+
+```python
+import scatrans as scat
+
+adata_res, sig_targets, all_results = scat.active_score(...)
+
+final_significant = scat.filter_active_genes(
+    all_results,
+    active_score_cutoff=55,
+    pval_cutoff=0.05,
+    velocity_residual_cutoff=1.0,
+    logfc_cutoff=0.35,
+    active_score_fdr_cutoff=0.25,   # only applied if use_permutation=True
+    effective_gamma_min=0.05,
+    effective_gamma_max=1.0,
+    # delta_variance_min=0.05,     # only applied if use_mixed_model=True
+)
+```
+
+See the function docstring for the full list of parameters and their meaning. The helper is deliberately permissive with optional columns so that the same call works across different analysis settings.
+
+### Understanding and filtering on `effective_gamma`
+
+`effective_gamma` is the per-gene **reference-group unspliced-to-spliced ratio** (U/S) computed with a small shrinkage prior (`prior_weight=5` by default). It is used internally to calculate the velocity delta:
+
+```
+delta = U_target - (effective_gamma × S_target)
+```
+
+It therefore reflects the transcriptional “baseline” in the reference (control) group.
+
+**Typical range (heuristic mode, realistic data):**
+- 5th percentile: ~0.07
+- Median: ~0.40–0.45
+- 95th percentile: ~0.74
+- Overall observed range in well-powered data: roughly 0.02 – 0.85
+
+In pure heuristic mode the values for many genes can be quite similar (close to the global reference gamma). In advanced mode (scVelo moments) they show more per-gene variation.
+
+**Recommended filtering practice**
+
+- **Lower bound (most important):** `effective_gamma > 0.05` (default in `filter_active_genes`).
+  - Removes genes whose gamma estimate in the reference group is dominated by the prior because unspliced counts were extremely low. These produce noisy or unreliable velocity deltas.
+  - On many datasets this keeps ~90–95% of genes while discarding the noisiest tail.
+  - If you have very deep data you may safely use `0.03` or even `0.02`. If your reference group is small or low-quality, consider `0.08`.
+
+- **Upper bound (optional):** `effective_gamma < 1.0` (or 0.8–0.9).
+  - Genes with very high effective_gamma were already producing a lot of nascent RNA relative to mature RNA in the reference group.
+  - Use this if you want to focus on genes that were relatively “quiet” in the control and became active in the target condition.
+
+- **Best practice:** Always inspect the actual distribution in your data:
+
+  ```python
+  print(all_results["effective_gamma"].describe())
+  print(all_results["effective_gamma"].quantile([0.05, 0.10, 0.90, 0.95]))
+  ```
+
+  Then choose thresholds that make sense for your biological question rather than using universal magic numbers.
+
+The `filter_active_genes` helper exposes `effective_gamma_min` and `effective_gamma_max` with the defaults above so that the most common safe choice is easy to apply while still allowing full customization.
 
 ## Gene Feature Attachment
 

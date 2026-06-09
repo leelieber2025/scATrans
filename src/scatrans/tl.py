@@ -703,3 +703,98 @@ def active_score(
             logger.debug("show_plot=True but plotting failed (missing optional deps or display).")
 
     return adata, significant, all_results
+
+
+def filter_active_genes(
+    results: pd.DataFrame,
+    *,
+    active_score_cutoff: float = 55.0,
+    pval_cutoff: float = 0.05,
+    velocity_residual_cutoff: float = 1.0,
+    logfc_cutoff: float = 0.35,
+    active_score_fdr_cutoff: Optional[float] = 0.25,
+    effective_gamma_min: float = 0.05,
+    effective_gamma_max: Optional[float] = None,
+    delta_variance_min: Optional[float] = None,
+) -> pd.DataFrame:
+    """Apply custom post-filtering to the `all_results` DataFrame returned by `active_score`.
+
+    This helper standardizes the common two-step workflow:
+    1. Run `active_score(...)` (the default `significant` list is often empty or very small).
+    2. Use this function (or your own logic) on `all_results` to derive a final biological gene list.
+
+    Only filters that correspond to columns present in the DataFrame are applied.
+    This makes the function safe whether or not `use_permutation=True` or
+    `use_mixed_model=True` was used.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        The `all_results` table returned as the third element of `active_score`.
+    active_score_cutoff : float
+        Minimum composite active transcription score (0-100).
+    pval_cutoff : float
+        Maximum nominal p-value from the differential expression test.
+    velocity_residual_cutoff : float
+        Minimum bias-corrected velocity residual (stronger nascent RNA excess signal).
+    logfc_cutoff : float
+        Minimum log fold change.
+    active_score_fdr_cutoff : float or None
+        If the column exists (i.e. `use_permutation=True`), maximum permutation-based
+        FDR on the composite active_score. A value in 0.2-0.3 is often useful for
+        exploratory work. Set to None to disable.
+    effective_gamma_min : float
+        Minimum reference-group effective gamma (U/S ratio with shrinkage).
+        The default 0.05 removes genes where the gamma estimate in the reference
+        group is dominated by the prior (very low unspliced counts → unreliable delta).
+        See the README section "Understanding and filtering on effective_gamma"
+        for guidance on choosing this value.
+    effective_gamma_max : float or None
+        Optional upper bound. Genes with very high effective_gamma in the reference
+        group were already quite transcriptionally active in the control/reference
+        condition. Setting e.g. 1.0 can exclude them if you want stricter "specifically
+        activated in the target" genes. Set to None for no upper bound.
+    delta_variance_min : float or None
+        If the column exists (`use_mixed_model=True`), minimum fraction of variance
+        explained by the condition (after modeling sample random effects). Higher
+        values indicate the experimental condition drives more of the observed
+        expression variation.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subset of the input, sorted by active_score descending.
+    """
+    if not isinstance(results, pd.DataFrame):
+        raise ValueError("results must be the all_results DataFrame returned by active_score")
+
+    df = results.copy()
+    mask = pd.Series(True, index=df.index)
+
+    # Core filters (columns are almost always present)
+    if "active_score" in df.columns:
+        mask &= df["active_score"] >= active_score_cutoff
+    if "p_val" in df.columns:
+        mask &= df["p_val"] < pval_cutoff
+    if "velocity_residual" in df.columns:
+        mask &= df["velocity_residual"] > velocity_residual_cutoff
+    if "logFC" in df.columns:
+        mask &= df["logFC"] > logfc_cutoff
+
+    # Permutation FDR on composite score (only if column exists)
+    if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
+        mask &= df["active_score_fdr"] < active_score_fdr_cutoff
+
+    # effective_gamma: avoid unreliable low-count estimates in the reference group
+    if "effective_gamma" in df.columns:
+        gamma = df["effective_gamma"]
+        mask &= gamma.notna() & (gamma > effective_gamma_min)
+        if effective_gamma_max is not None:
+            mask &= gamma < effective_gamma_max
+
+    # Delta variance from mixed model (optional)
+    if delta_variance_min is not None and "delta_variance" in df.columns:
+        mask &= df["delta_variance"] >= delta_variance_min
+
+    filtered = df[mask].sort_values("active_score", ascending=False)
+    return filtered
