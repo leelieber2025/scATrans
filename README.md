@@ -174,6 +174,8 @@ The helper safely ignores filters for columns that do not exist (e.g. `active_sc
 
 ### 3.3 Functional enrichment
 
+Over-representation analysis is available via `run_enrichment`:
+
 ```python
 enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
@@ -181,10 +183,34 @@ enrich_res = scat.run_enrichment(
     organism="mouse",
     background=adata.var_names.tolist(),
     pval_cutoff=0.05,
+    min_size=5,
+    max_size=500,
 )
 ```
 
-Convenience wrappers `run_kegg` and `simplify_enrichment` are also available.
+**run_kegg** (convenience wrapper for KEGG pathways):
+
+```python
+kegg_res = scat.run_kegg(
+    gene_list=candidates.index.tolist(),
+    organism="mouse",           # or "human"
+    background=adata.var_names.tolist(),
+    pval_cutoff=0.05,
+)
+```
+
+**simplify_enrichment** (reduce redundant terms using Jaccard similarity):
+
+```python
+simplified = scat.simplify_enrichment(
+    enrich_res,
+    similarity_cutoff=0.5,
+    min_count=3,
+    method="jaccard",           # currently the only supported method
+)
+```
+
+`run_kegg` and `simplify_enrichment` are convenience wrappers around the core `run_enrichment` function.
 
 ### 3.4 Visualization
 
@@ -197,6 +223,97 @@ scat.pl.bias_diagnostic_plot(all_results)   # before/after bias correction view
 ```
 
 All plotting functions support `ax=` / `axes=` for embedding in multi-panel publication figures and `save_path=` for high-quality output (300 dpi, tight bbox, vector-friendly fonts).
+
+---
+
+## Helper Functions
+
+### diagnose_design
+
+`diagnose_design` is a utility to analyze your experimental design (cell counts, number of biological replicates, global unspliced fraction, etc.) and give practical recommendations and warnings. It is especially useful when you have a small number of samples or are deciding whether to use pseudobulk or mixed-model analysis.
+
+**Basic usage:**
+
+```python
+import scanpy as sc
+import scatrans as scat
+
+adata = sc.read_h5ad("your_velocity_data.h5ad")
+
+diag = scat.diagnose_design(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    sample_col="sample"          # highly recommended if you have biological replicates
+)
+
+# Inspect the results
+print("Warnings:")
+for w in diag["warnings"]:
+    print("  -", w)
+
+print("\nRecommendations:")
+for r in diag["recommendations"]:
+    print("  -", r)
+
+print("\nSuggested preset for filter_active_genes:", diag.get("suggested_preset"))
+```
+
+**What it returns:**
+
+A dictionary containing:
+- `n_cells_target`, `n_cells_reference`
+- `n_samples_target`, `n_samples_reference` (when `sample_col` is provided)
+- `unspliced_global_fraction`
+- `warnings`: list of strings (e.g. low power warnings)
+- `recommendations`: list of strings
+- `suggested_preset`: "heuristic", "pseudobulk", or None
+
+**Automatic usage:**
+
+`diagnose_design` is automatically called inside `active_score(...)` whenever you pass `sample_col` or set `use_pseudobulk=True`. You will see its output in the log.
+
+### run_kegg and simplify_enrichment
+
+These are convenience functions built on top of `run_enrichment`.
+
+**run_kegg** – Run KEGG pathway enrichment directly:
+
+```python
+kegg_res = scat.run_kegg(
+    gene_list=significant.index.tolist(),   # or from all_results
+    organism="mouse",                       # "mouse" or "human"
+    background=adata.var_names.tolist(),    # recommended
+    pval_cutoff=0.05,
+    min_size=5,
+    max_size=500,
+    return_all=False,                       # False = only significant terms
+)
+
+print(kegg_res[["Term", "p.adjust", "Count"]].head())
+```
+
+Internally it chooses the correct KEGG library (`KEGG_2026`) based on organism.
+
+**simplify_enrichment** – Remove redundant terms from enrichment results (Jaccard-based):
+
+```python
+# After obtaining an enrichment result
+simplified = scat.simplify_enrichment(
+    kegg_res,                    # or enrich_res from run_enrichment
+    similarity_cutoff=0.5,       # Jaccard similarity threshold
+    min_count=3,                 # minimum number of genes in a term
+    by="p.adjust",               # column to sort by
+    ascending=True,
+    method="jaccard",            # currently only "jaccard" is supported
+)
+
+print(f"Reduced from {len(kegg_res)} to {len(simplified)} terms")
+print(simplified[["Term", "p.adjust", "Count"]].head())
+```
+
+This function looks for common gene list columns (`Genes`, `Lead_genes`, etc.) automatically.
 
 ---
 
@@ -350,7 +467,7 @@ Full signatures and all parameters are documented in the function docstrings and
 
 - `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
 - `list_available_gene_features()`
-- `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — pre- or post-analysis design summary with warnings and suggestions (especially useful for small-sample or complex replicate structures)
+- `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — analyzes cell/sample counts and global unspliced fraction; returns warnings, recommendations, and a suggested `filter_active_genes` preset. Automatically called internally when `sample_col` or `use_pseudobulk=True` is used.
 - `run_enrichment(...)`, `run_kegg(...)`, `simplify_enrichment(...)`
 - `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
 - `scat.qc.unspliced_global(adata)`
@@ -383,7 +500,38 @@ with scat.pl.style_context(linewidth=0.8):
     scat.pl.comet_plot(...)
 ```
 
-All functions support `ax=`/`axes=` and `save_path=`.
+All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel figures) and `save_path=` (high-quality 300 dpi output).
+
+### Main Plotting Functions
+
+- `scat.pl.comet_plot(results_df, top_n=12, ...)`  
+  Recommended: log fold change vs. bias-corrected unspliced residual (velocity_residual), sized and colored by active_score.
+
+- `scat.pl.volcano_plot(results_df, top_n=10, ...)`  
+  Standard 2D volcano (logFC vs. -log10(p_adj)), optionally colored by active_score.
+
+- `scat.pl.bias_diagnostic_plot(results_df, ...)`  
+  Before/after view of the effect of length+intron bias correction on the velocity delta.
+
+- `scat.pl.enrich_dotplot(enrich_df, top_n=15, ...)`  
+  Enrichment dot plot (clusterProfiler style). Also available as `enrich_barplot`.
+
+- `scat.pl.volcano_3d(results_df, ...)`  
+  3D volcano (logFC × -log10(p) × velocity_residual).
+
+- `scat.pl.active_score_rankplot(results_df, top_n=20, ...)`  
+  Simple horizontal barplot of top active scores.
+
+- `scat.pl.active_genes_heatmap(adata, genes, groupby=..., ...)`  
+  Convenience wrapper around `scanpy.pl.heatmap` for selected genes.
+
+- `scat.pl.velocity_phase_portraits(adata, genes, groupby=..., ...)`  
+  Quick unspliced vs. spliced phase portraits for selected genes (useful for inspecting nascent excess).
+
+- `scat.pl.set_style()` and `scat.pl.style_context()`  
+  Control global publication-style settings (vector fonts, minimal ink, etc.).
+
+- `scat.pl.set_nature_style()` (legacy alias for `set_style`).
 
 ---
 
