@@ -97,38 +97,40 @@ def active_score(
     bias_correction: str = "huber_length_intron",
     # Opt-in transparency for per-gene reference gamma (keeps default output clean)
     show_effective_gamma: bool = False,
+    # Advanced convenience for users primarily interested in nascent RNA excess
+    prioritize_velocity: bool = False,
 ) -> Tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Identify genes with condition-wise nascent RNA relative excess (active transcription signal)
-    using a composite "active score".
+    Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
+    relative to a reference group, using a composite score that also incorporates
+    differential expression statistics.
 
-    scATrans provides a concise, transparent basic pipeline:
-    differential expression + velocity-layer (spliced/unspliced or mature/nascent) signal
-    integration + gene filtering + enrichment + visualization.
+    The function computes:
+    - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
+    - A velocity delta = U_target − (gamma_ref × S_target), where gamma_ref is a
+      shrunk U/S ratio estimated in the reference group.
+    - (by default) A Huber regression correction of the delta on log(gene length) and
+      log(intron number); the residuals become velocity_residual.
+    - A soft-scaled, weighted combination of the three signals, scaled to 0–100.
 
-    Core idea (heuristic by default):
-    - Compute logFC / p_adj from target vs reference (scanpy or PyDESeq2).
-    - Compute a velocity delta = U_target - (gamma_ref * S_target), where gamma_ref is a
-      shrunk reference-group U/S ratio.
-    - (Default) Apply light Huber bias correction for gene length + intron number on the delta.
-    - Combine the signals into a 0-100 active_score.
+    Several extensions are available as explicit options (see the README section
+    "Optional advanced features"):
+    - show_effective_gamma
+    - bias_correction="none"
+    - use_mixed_model
+    - use_permutation
+    - prioritize_velocity (convenience for analyses focused on the unspliced excess term)
 
-    The default run is intentionally simple and clean. Advanced options are opt-in:
-    - show_effective_gamma=True  -> expose per-gene reference gamma in .var / all_results
-    - bias_correction="none"     -> disable length/intron correction
-    - use_mixed_model=True       -> LMM DE + delta_variance (replicate-aware)
-    - use_permutation=True       -> permutation FDR (note on approximation is recorded)
+    Diagnostics (including global unspliced fraction and bias fit details) are stored
+    under adata.uns["scatrans"]["diagnostics"]. The full ranked table (all_results)
+    is the main output; the built-in significant list is produced by a strict
+    conjunction of thresholds and is often small or empty.
 
-    We explicitly acknowledge method limitations (see README "Limitations & Honest Interpretation").
-    The package does not claim to be a gold standard; it offers one interpretable, comparable
-    analysis view focused on nascent RNA excess.
+    A separate function diagnose_design is available to summarize the experimental
+    design and surface relevant warnings before analysis.
 
-    Rich diagnostics are always written to adata.uns["scatrans"]["diagnostics"].
-    The most important user-facing output is the full ranked table (all_results); the
-    built-in "significant" list is deliberately strict and often small/empty on real data.
-
-    Full usage, recommended workflow, result interpretation, and opt-in advanced options
-    are documented in the package README.
+    Full usage, recommended workflow, and result interpretation are documented in
+    the package README.
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
@@ -161,6 +163,20 @@ def active_score(
         pass
     if not isinstance(show_effective_gamma, bool):
         raise ValueError("show_effective_gamma must be boolean.")
+    if not isinstance(prioritize_velocity, bool):
+        raise ValueError("prioritize_velocity must be boolean.")
+
+    # Apply prioritize_velocity convenience (only if user left the default equal weights)
+    if prioritize_velocity and weight_fc == 1.0 and weight_unspliced == 1.0 and weight_pval == 1.0:
+        weight_unspliced = 3.0
+        weight_fc = 0.5
+        weight_pval = 0.5
+        logger.info(
+            "prioritize_velocity=True (advanced option): emphasizing the nascent RNA excess / "
+            "velocity_residual component in the active_score. "
+            "This is intended for users whose primary interest is condition-wise differences "
+            "in unspliced abundance after reference correction."
+        )
 
     if mode == "advanced" and use_pseudobulk and not allow_advanced_pseudobulk:
         raise ValueError(
@@ -216,6 +232,19 @@ def active_score(
         raise ValueError(f"target_group '{target_group}' not found.")
     if reference_group not in adata_input.obs[groupby].astype(str).unique():
         raise ValueError(f"reference_group '{reference_group}' not found.")
+
+    # Automatic design guidance for small-sample or replicate-structured data
+    if sample_col or use_pseudobulk:
+        try:
+            _ = diagnose_design(
+                adata_input,
+                groupby=groupby,
+                target_group=target_group,
+                reference_group=reference_group,
+                sample_col=sample_col,
+            )
+        except Exception:
+            pass  # never let diagnosis break the main analysis
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
     available_layers = list(adata_input.layers.keys())
@@ -645,6 +674,7 @@ def active_score(
         "delta_var_pval_cutoff": float(delta_var_pval_cutoff),
         "bias_correction": bias_correction,
         "show_effective_gamma": bool(show_effective_gamma),
+        "prioritize_velocity": bool(prioritize_velocity),
         # New rich diagnostics for usability and reproducibility (high priority)
         "diagnostics": diagnostics,
         # Explicit note on permutation approximation (important for honesty & trust).
@@ -914,3 +944,137 @@ def filter_active_genes(
 
     filtered = df[mask].sort_values("active_score", ascending=False)
     return filtered
+
+
+def diagnose_design(
+    adata_input: Any,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+    sample_col: Optional[str] = None,
+    min_cells_per_sample: int = 10,
+) -> Dict[str, Any]:
+    """
+    Analyze the experimental design and provide guidance on suitable analysis choices
+    and expected power/limitations.
+
+    This is intended as a pre-flight or post-subset diagnostic to help users
+    interpret warnings and choose between single-cell, pseudobulk, or mixed-model paths.
+
+    Returns a dictionary with keys:
+      - n_cells_target, n_cells_reference
+      - n_samples_target, n_samples_reference (if sample_col provided)
+      - unspliced_global_fraction
+      - recommendations: list of human-readable strings
+      - warnings: list of human-readable strings
+      - suggested_preset: "heuristic", "pseudobulk", or None
+    """
+    adata = adata_input.copy()
+
+    if groupby not in adata.obs.columns:
+        raise ValueError(f"groupby '{groupby}' not found in adata.obs")
+
+    target_mask = adata.obs[groupby].astype(str) == str(target_group)
+    ref_mask = adata.obs[groupby].astype(str) == str(reference_group)
+
+    n_t = int(target_mask.sum())
+    n_r = int(ref_mask.sum())
+
+    result: Dict[str, Any] = {
+        "n_cells_target": n_t,
+        "n_cells_reference": n_r,
+        "n_samples_target": None,
+        "n_samples_reference": None,
+        "unspliced_global_fraction": None,
+        "recommendations": [],
+        "warnings": [],
+        "suggested_preset": None,
+    }
+
+    # Global unspliced fraction (important technical QC)
+    try:
+        ufrac = _qc.unspliced_global(
+            adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
+        )
+        result["unspliced_global_fraction"] = float(ufrac)
+        if ufrac > 0.5:
+            result["warnings"].append(
+                f"Global unspliced fraction is high ({ufrac:.1%}). "
+                "This often indicates nuclear enrichment or gDNA contamination and can "
+                "reduce the reliability of velocity-based signals."
+            )
+    except Exception:
+        pass
+
+    # Sample structure
+    if sample_col and sample_col in adata.obs.columns:
+        n_s_t = adata.obs.loc[target_mask, sample_col].nunique()
+        n_s_r = adata.obs.loc[ref_mask, sample_col].nunique()
+        result["n_samples_target"] = int(n_s_t)
+        result["n_samples_reference"] = int(n_s_r)
+
+        if min(n_s_t, n_s_r) < 3:
+            result["warnings"].append(
+                f"Very few biological samples per group (target={n_s_t}, reference={n_s_r}). "
+                "Pseudobulk aggregation will have extremely low power for velocity delta. "
+                "Consider using the cell-level mixed-model path (use_mixed_model=True) "
+                "instead of use_pseudobulk=True, or interpret results with extreme caution."
+            )
+        elif min(n_s_t, n_s_r) < 5:
+            result["warnings"].append(
+                f"Small number of biological samples per group (target={n_s_t}, reference={n_s_r}). "
+                "Power for detecting differential nascent RNA excess will be limited. "
+                "Permutation-based FDR (if used) will also have reduced reliability."
+            )
+            result["suggested_preset"] = "pseudobulk"
+
+        result["recommendations"].append(
+            "With multiple samples per group, both pseudobulk (with PyDESeq2 or scanpy) "
+            "and cell-level mixed model (use_mixed_model=True) are viable. "
+            "See the small-sample guidance in the documentation."
+        )
+    else:
+        result["recommendations"].append(
+            "No sample_col provided. The analysis will treat cells as independent. "
+            "If cells come from multiple biological replicates, consider providing sample_col "
+            "and using either use_pseudobulk=True or use_mixed_model=True to avoid "
+            "pseudoreplication."
+        )
+
+    # Very small total cell numbers
+    if min(n_t, n_r) < 50:
+        result["warnings"].append(
+            f"Very small number of cells in at least one group (target={n_t}, reference={n_r}). "
+            "Velocity delta estimation and any downstream permutation testing will have low power."
+        )
+
+    # Suggest preset
+    if result["suggested_preset"] is None:
+        if sample_col and result.get("n_samples_target", 0) >= 5:
+            result["suggested_preset"] = "pseudobulk"
+        else:
+            result["suggested_preset"] = "heuristic"
+
+    # General advice
+    result["recommendations"].append(
+        "After running active_score, always inspect adata.uns['scatrans']['diagnostics'] "
+        "and the distributions in the returned all_results DataFrame before applying cutoffs."
+    )
+
+    # Print a concise user-facing summary
+    logger.info("Design diagnosis:")
+    logger.info("  Cells — target: %d | reference: %d", n_t, n_r)
+    if result["n_samples_target"] is not None:
+        logger.info(
+            "  Samples — target: %d | reference: %d",
+            result["n_samples_target"], result["n_samples_reference"]
+        )
+    if result["unspliced_global_fraction"] is not None:
+        logger.info("  Global unspliced fraction: %.1f%%", result["unspliced_global_fraction"] * 100)
+
+    for w in result["warnings"]:
+        logger.warning("  [WARNING] %s", w)
+    for r in result["recommendations"]:
+        logger.info("  [RECOMMENDATION] %s", r)
+
+    return result

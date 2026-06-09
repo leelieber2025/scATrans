@@ -1,8 +1,8 @@
 # scATrans
 
-scATrans is a tool that helps users mine condition-wise nascent RNA relative excess signals from single-cell spliced/unspliced (or mature/nascent) data. It provides basic analysis pipelines (differential expression + velocity-layer signal integration + gene filtering + enrichment + visualization) in a concise, transparent way, and treats advanced features such as `effective_gamma`, mixed models, and `delta_variance` as opt-in exploration options for users who need them.
+scATrans computes a composite score that integrates differential expression with a simple reference-based measure of excess unspliced (nascent) RNA between two groups. It is designed for users working with single-cell spliced/unspliced or mature/nascent data who want to rank genes according to this combined signal.
 
-We explicitly acknowledge the method's limitations. We do not claim to be a gold standard. We offer one interpretable, comparable analysis perspective.
+The package supplies a basic analysis path together with several optional extensions. All methods have limitations; results should be interpreted in light of the diagnostics and the experimental design. The tool does not claim to be a gold standard or to recover "truly active" genes in an absolute sense.
 
 ## Installation
 
@@ -81,11 +81,11 @@ adata_res, significant, all_results = scat.active_score(
 print(all_results.head())
 ```
 
-**Key point:** With default parameters you do **not** need to think about `bias_correction`, `effective_gamma`, `use_mixed_model`, or `use_permutation`. The basic pipeline is designed to "just work" and produce clean, easy-to-understand results.
+**Key point:** The default settings run a basic analysis without requiring decisions about `bias_correction`, `effective_gamma`, `use_mixed_model`, or `use_permutation`.
 
-Pseudobulk analysis and choice of differential expression test (e.g. Wilcoxon) **are** basic configuration options — you can freely switch them on when your experimental design calls for it (see below).
+Pseudobulk analysis (`use_pseudobulk`) and choice of differential expression test (`de_method`, e.g. "wilcoxon") are standard configuration options that can be selected according to the experimental design (see the section on common basic switches).
 
-`significant` (the second return value) is intentionally conservative and frequently contains 0 or very few genes. This is normal. Use `all_results` for downstream filtering.
+The built-in `significant` list uses a strict conjunction of thresholds and is frequently small or empty. This behavior is expected. The primary output for most users is the full ranked table returned as `all_results`.
 
 ---
 
@@ -238,22 +238,27 @@ print(meta.get("permutation_approximation_note"))
 
 ## Optional Advanced Features (Opt-in)
 
-If you are interested in the following, you can turn them on manually:
+The following options can be enabled when relevant to the analysis goals:
 
-- `use_permutation=True`: obtain permutation-based FDR for the composite `active_score` (the `permutation_approximation_note` will be recorded for honesty).
-- `bias_correction="huber_length_intron"`: (default) explore the influence of gene length and intron number on `velocity_residual`. You can turn it off with `bias_correction="none"`.
-- `show_effective_gamma=True`: expose the per-gene reference-group gamma (the U/S ratio used to compute the velocity delta). Useful when you want to filter or interpret the baseline transcription level in the reference group.
-- `use_mixed_model=True`: use a mixed linear model (LMM) for replicate-aware differential expression and obtain `delta_variance` (fraction of modeled variance attributable to the condition of interest, variancePartition-style) together with a likelihood-ratio `delta_var_pval`.
+- `use_permutation=True`: compute a permutation-based FDR for the composite score. When enabled, a note describing the approximation (velocity layers and reference gamma are fixed from the original labeling) is stored in the results.
+- `bias_correction="none"`: disable the length/intron correction on the velocity delta. The raw delta is then used directly as `velocity_residual`.
+- `show_effective_gamma=True`: include the per-gene reference-group U/S ratio (used internally for the delta calculation) in the output tables.
+- `use_mixed_model=True`: fit a mixed linear model with sample as random intercept and obtain `delta_variance` (fraction of modeled variance attributed to condition) along with a likelihood-ratio p-value.
+- `prioritize_velocity=True`: convenience flag that increases the relative weight given to the velocity_residual (nascent excess) term while decreasing the weights on the differential expression terms. This option is provided for analyses whose primary goal is to highlight differences in unspliced abundance after reference correction. It is documented under advanced features because it changes the balance of the composite score.
 
-These features are off by default so that the basic analysis stays simple and clear. When you enable them, please read the diagnostics and the relevant sections below carefully.
+A helper function `diagnose_design` is available to summarize cell and sample counts, global unspliced fraction, and to surface warnings and suggestions before or between runs of `active_score`.
+
+These options are not enabled by default. When used, the corresponding diagnostics should be examined.
 
 ### use_permutation=True
 
 Adds `active_score_pval` and `active_score_fdr` columns. The permutation shuffles only group labels; velocity layers and the reference gamma are computed once on the original data for speed. This approximation is documented in `permutation_approximation_note`.
 
-### bias_correction="none"
+### bias_correction
 
-Disables the Huber regression (and the median fallback). `velocity_residual` will equal the raw velocity delta. Useful for exploration or when you believe length/intron effects are not relevant or are already handled by your upstream processing. The `bias_diagnostic_plot` will still work and will show that before and after are essentially identical.
+By default the package applies a Huber regression of the raw velocity delta on log(gene length) and log(intron number) and uses the residuals as `velocity_residual`. This step can be disabled by setting `bias_correction="none"`, in which case the raw (reference-gamma corrected) delta is used directly.
+
+The correction is intended to reduce technical contributions from gene length and intron number to the unspliced excess term. Whether length or intron number carry biological signal of interest in a given dataset is a scientific judgment that the user must make; the correction is therefore optional. The `bias_diagnostic_plot` function can be used to inspect the relationship before and after correction.
 
 ### show_effective_gamma=True
 
@@ -292,18 +297,19 @@ Uses scVelo moments for local smoothing before computing the group-wise gamma de
 
 ---
 
-## Limitations & Honest Interpretation
+## Limitations
 
-- The "velocity" signal here is a lightweight, group-contrast-focused proxy (U_target – gamma_ref × S_target). It is **not** scVelo's full dynamical model.
-- Results are most interpretable for clear binary biological contrasts. Mixed cell states inside the target group dilute the signal.
-- Permutation testing (when enabled) fixes the velocity layers/gamma from the original labeling. Only group labels are permuted. This is documented so you can judge its effect on FDR calibration.
-- A very high global unspliced fraction (> ~50%) often indicates technical issues with the velocity layers. The package logs a warning and records the value.
-- Bias correction quality depends on having enough genes with reliable length/intron annotations. Check the bias diagnostics.
-- With very small numbers of biological replicates, statistical power (especially for velocity delta and permutation FDR) is limited. Inspect the distributions in `all_results` rather than trusting default cutoffs.
-- `delta_variance` and mixed-model p-values can be very conservative when there is substantial sample-to-sample variation. They are tools for validity, not automatic power boosters.
-- We do not claim that genes called by scATrans are "truly actively transcribed" in an absolute sense. We provide one transparent, comparable view centered on nascent RNA excess relative to a reference baseline.
+The method implements a composite score based on a simplified, reference-group gamma excess calculation for the unspliced layer together with standard differential expression statistics.
 
-Always look at the diagnostics, the actual distributions in `all_results`, and (ideally) the raw U/S counts or phase portraits for your top candidates before drawing biological conclusions.
+- The unspliced excess term is a group-contrast proxy and is not equivalent to scVelo's full stochastic or dynamical models.
+- The approach is most straightforward to interpret for clear binary group contrasts. Heterogeneity within the target group can reduce the observed signal.
+- When `use_permutation=True`, only the group labels are permuted; the velocity layers and reference gamma are computed once on the original data for computational efficiency. This approximation is recorded in the results metadata.
+- Global unspliced fractions above ~50% are flagged by the package, as they may indicate technical issues affecting the velocity layers.
+- Bias correction performance depends on the number and quality of genes with length and intron annotations.
+- With small numbers of biological replicates, power for the velocity component and for permutation-based FDR is limited. Users should examine the full distributions in `all_results`.
+- `delta_variance` and the associated mixed-model p-values tend to be conservative in the presence of substantial between-sample variation.
+
+Users should examine the diagnostics stored under `adata.uns["scatrans"]["diagnostics"]`, the distributions of scores in the returned tables, and (where possible) the raw spliced/unspliced counts for candidate genes before biological interpretation.
 
 ---
 
@@ -344,6 +350,7 @@ Full signatures and all parameters are documented in the function docstrings and
 
 - `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
 - `list_available_gene_features()`
+- `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — pre- or post-analysis design summary with warnings and suggestions (especially useful for small-sample or complex replicate structures)
 - `run_enrichment(...)`, `run_kegg(...)`, `simplify_enrichment(...)`
 - `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
 - `scat.qc.unspliced_global(adata)`
