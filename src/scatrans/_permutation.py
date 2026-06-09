@@ -20,6 +20,9 @@ from ._de import _run_de_wrapper
 from ._utils import _fit_huber_bias_correction, _soft_scale
 from ._velocity import _compute_velocity_delta
 
+# local import to avoid circulars at module load
+from ._utils import _is_bias_correction_enabled  # for documentation only; actual decision is inside the fit function
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,8 +50,14 @@ def _single_permutation_task(
     prior_weight: float,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
+    bias_correction: str = "huber_length_intron",
 ) -> np.ndarray:
-    """One permutation replicate. Returns the active score vector for that shuffle."""
+    """One permutation replicate. Returns the active score vector for that shuffle.
+
+    bias_correction is forwarded to the shared bias correction routine so that
+    permutation scores are computed under the same correction setting the user chose
+    for the real data (default = on).
+    """
     rng = np.random.default_rng(seed)
     for _ in range(50):
         shuffled_labels = rng.permutation(original_labels)
@@ -89,7 +98,8 @@ def _single_permutation_task(
     total_us_for_filter = np.asarray(total_us_for_filter)
     valid_expr = total_us_for_filter >= min_total_counts
 
-    # Use the shared bias correction (DRY)
+    # Use the shared bias correction (DRY). bias_correction setting is respected
+    # so that permuted scores are comparable to the real run.
     gene_length = adata_subset.var["gene_length"].values
     intron_number = adata_subset.var["intron_number"].values
 
@@ -101,6 +111,7 @@ def _single_permutation_task(
         valid_feat,
         valid_expr,
         X_features,
+        bias_correction=bias_correction,
     )
 
     s1 = _soft_scale(perm_de_df["logFC"].values, lambda_fc)
@@ -139,8 +150,12 @@ def run_permutation_test(
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
     real_score: np.ndarray,
+    bias_correction: str = "huber_length_intron",
 ) -> tuple:
-    """Run the full parallel permutation and return (pvals, fdr, use_fdr_for_significance, reason_if_disabled)."""
+    """Run the full parallel permutation and return (pvals, fdr, use_fdr_for_significance, reason_if_disabled).
+
+    bias_correction is passed through so permutations match the user's chosen setting.
+    """
     logger.info("Running parallel permutation testing (%d iterations)...", n_perm)
 
     with warnings.catch_warnings():
@@ -170,6 +185,7 @@ def run_permutation_test(
                 prior_weight,
                 de_preprocess,
                 strict_pydeseq2_counts,
+                bias_correction=bias_correction,
             )
             for i in range(n_perm)
         )

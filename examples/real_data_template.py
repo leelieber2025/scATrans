@@ -92,10 +92,13 @@ print("Unspiced global fraction :", meta.get("unspliced_global_fraction"))
 print("Bias correction info     :", meta["diagnostics"]["bias_correction"])
 print("Permutation approximation:", meta.get("permutation_approximation_note"))
 print("Full diagnostics dict is at adata_res.uns['scatrans']['diagnostics']")
+print("Note: by default effective_gamma and delta_variance are not added to .var (opt-in via flags).")
 
-# Effective gamma per gene (transparency)
+# Effective gamma per gene (transparency) — only present if show_effective_gamma=True was used
 if "effective_gamma" in adata_res.var.columns:
     print("effective_gamma (first 5):", adata_res.var["effective_gamma"].head().tolist())
+else:
+    print("effective_gamma not exposed (default). Pass show_effective_gamma=True to active_score to include it.")
 
 # ------------------------------------------------------------------
 # 6. Publication-quality figures (ax= support for multi-panel)

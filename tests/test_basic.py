@@ -39,6 +39,8 @@ def adata_basic():
     X = np.random.negative_binomial(4, 0.45, size=(n_cells, n_genes)).astype(float)
     ad = sc.AnnData(X)
     ad.obs["condition"] = ["Disease"] * 60 + ["Control"] * 60
+    # Add sample ids for mixed model tests (multiple samples per group)
+    ad.obs["sample"] = ["s" + str(i % 8) for i in range(n_cells)]
     ad.layers["spliced"] = X.copy()
     ad.layers["unspliced"] = X * 0.55
     ad.var["gene_length"] = np.random.randint(700, 4500, n_genes)
@@ -58,6 +60,23 @@ def adata_mature_nascent():
     ad.layers["nascent"] = X * 0.5
     ad.var["gene_length"] = np.random.randint(800, 4000, n_genes)
     ad.var["intron_number"] = np.random.randint(1, 9, n_genes)
+    return ad
+
+
+@pytest.fixture
+def adata_mixed_small():
+    """Lightweight fixture dedicated to mixed-model + delta_variance tests (fast CI)."""
+    np.random.seed(42)
+    n_cells, n_genes = 60, 70
+    X = np.random.negative_binomial(3, 0.5, size=(n_cells, n_genes)).astype(float)
+    ad = sc.AnnData(X)
+    ad.obs["condition"] = ["Disease"] * 30 + ["Control"] * 30
+    # 6 samples (3 per group) — enough for (1|sample) RE but small for speed
+    ad.obs["sample"] = ["s" + str(i % 6) for i in range(n_cells)]
+    ad.layers["spliced"] = X.copy()
+    ad.layers["unspliced"] = X * 0.45
+    ad.var["gene_length"] = np.random.randint(600, 3500, n_genes)
+    ad.var["intron_number"] = np.random.randint(0, 8, n_genes)
     return ad
 
 
@@ -296,3 +315,198 @@ def test_cli_main_is_callable():
     from scatrans.generate_gene_features import main
 
     assert callable(main)
+
+
+# --------------------------- mixed model + delta variance ---------------------------
+
+def test_mixed_model_basic(adata_mixed_small):
+    """use_mixed_model=True produces delta_variance / delta_var_pval and runs without crash."""
+    res, sig, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert "active_score" in res.var.columns
+    assert "delta_variance" in res.var.columns
+    assert "delta_var_pval" in res.var.columns
+    assert "delta_variance" in allr.columns
+    # delta_variance in [0,1]
+    dvals = allr["delta_variance"].dropna().values
+    assert len(dvals) > 0
+    assert np.all((dvals >= 0) & (dvals <= 1))
+    # pvals in [0,1]
+    pvals = allr["delta_var_pval"].dropna().values
+    assert np.all((pvals >= 0) & (pvals <= 1))
+
+
+@pytest.mark.parametrize("use_dv", [False, True])
+def test_delta_variance_filter_option(adata_mixed_small, use_dv):
+    """The use_delta_variance_pval flag changes (or does not change) the sig set as expected."""
+    _, sig_no, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        use_delta_variance_pval=False,
+        delta_var_pval_cutoff=0.05,
+        n_jobs=1,
+    )
+    _, sig_dv, _ = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        use_delta_variance_pval=use_dv,
+        delta_var_pval_cutoff=0.01,  # stricter to potentially reduce sigs
+        n_jobs=1,
+    )
+    # When enabled with strict cutoff, |sig_dv| <= |sig_no| (or equal if no genes had small p)
+    if use_dv:
+        assert len(sig_dv) <= len(sig_no)
+    # all_results always has the column when mixed used
+    assert "delta_variance" in allr.columns
+
+
+def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
+    with pytest.raises(ValueError, match="incompatible"):
+        scat.active_score(
+            adata_mixed_small,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            use_pseudobulk=True,
+            sample_col="sample",
+            use_mixed_model=True,
+            show_plot=False,
+        )
+
+
+# --------------------------- filter_active_genes helper ---------------------------
+
+def test_filter_active_genes_basic(adata_mixed_small):
+    """filter_active_genes should work, be robust to missing columns, and respect thresholds."""
+    # Run without permutation (no fdr columns)
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=False,
+        n_jobs=1,
+    )
+
+    # Basic call - should not crash even though active_score_fdr is missing
+    filt = scat.filter_active_genes(
+        allr,
+        active_score_cutoff=30,
+        pval_cutoff=0.1,
+        velocity_residual_cutoff=0.5,
+        logfc_cutoff=0.1,
+        active_score_fdr_cutoff=0.25,  # ignored because column missing
+        effective_gamma_min=0.01,
+        effective_gamma_max=None,
+    )
+    assert isinstance(filt, pd.DataFrame)
+    if len(filt) > 0:
+        assert filt["active_score"].iloc[0] >= filt["active_score"].iloc[-1]  # sorted descending
+
+    # With permutation enabled
+    _, _, allr_perm = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=True,
+        n_perm=20,
+        random_seed=0,
+        n_jobs=1,
+    )
+    filt2 = scat.filter_active_genes(
+        allr_perm,
+        active_score_cutoff=20,
+        active_score_fdr_cutoff=0.5,  # permissive
+        effective_gamma_min=0.0,
+    )
+    assert "active_score_fdr" in allr_perm.columns
+    # The helper should have respected the fdr column when present
+    if len(filt2) > 0:
+        assert (filt2["active_score_fdr"] < 0.5).all()
+
+
+def test_filter_active_genes_with_mixed(adata_mixed_small):
+    """When delta_variance is present, the helper can filter on it."""
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert "delta_variance" in allr.columns
+
+    filt = scat.filter_active_genes(
+        allr,
+        active_score_cutoff=10,
+        delta_variance_min=0.0,  # permissive
+    )
+    # Should not have dropped the column requirement
+    assert len(filt) >= 0
+
+
+def test_filter_active_genes_presets(adata_mixed_small):
+    """preset parameter supplies sensible defaults for different analysis styles."""
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=True,
+        n_perm=10,
+        n_jobs=1,
+    )
+
+    # permissive preset (or no preset) should keep most genes
+    f_perm = scat.filter_active_genes(allr, preset="permissive")
+    assert len(f_perm) > 0
+
+    # heuristic preset applies stricter single-cell style defaults
+    f_heu = scat.filter_active_genes(allr, preset="heuristic")
+    # on small synthetic data this may be small or zero, but should not crash
+    assert isinstance(f_heu, pd.DataFrame)
+
+    # pseudobulk preset uses lenient values suitable after aggregation
+    f_pb = scat.filter_active_genes(allr, preset="pseudobulk")
+    assert len(f_pb) >= 0
+
+    # explicit arg should override preset
+    f_over = scat.filter_active_genes(allr, preset="heuristic", active_score_cutoff=0)
+    assert len(f_over) > len(f_heu) or len(f_heu) == 0

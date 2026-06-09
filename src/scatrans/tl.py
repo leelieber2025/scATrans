@@ -88,31 +88,46 @@ def active_score(
     advanced_recompute_neighbors: bool = True,
     spliced_layer: str = "spliced",
     unspliced_layer: str = "unspliced",
+    # Mixed model (dreamlet/variancePartition-style LMM + delta variance via statsmodels)
+    use_mixed_model: bool = False,
+    use_delta_variance_pval: bool = False,
+    delta_var_pval_cutoff: float = 0.05,
+    mixed_model_pval: str = "wald",  # "wald" or "lrt" - which p-value to use for the DE part of active_score when use_mixed_model=True
+    # Bias correction control (default on for basic pipeline cleanliness; opt-out for exploration)
+    bias_correction: str = "huber_length_intron",
+    # Opt-in transparency for per-gene reference gamma (keeps default output clean)
+    show_effective_gamma: bool = False,
 ) -> Tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Identify genes that are actively transcribed using a composite "active score".
+    Identify genes with condition-wise nascent RNA relative excess (active transcription signal)
+    using a composite "active score".
 
-    The method integrates:
-    - Differential expression (logFC and p-value) between target and reference groups.
-    - Velocity signal approximated by the difference in unspliced abundance after
-      a simple reference-based gamma correction (with optional scVelo moments smoothing
-      in "advanced" mode). The per-gene effective gamma is stored in .var["effective_gamma"]
-      for transparency.
-    - Bias correction for gene length and intron number via Huber regression on the
-      velocity delta (or median fallback). Detailed fit diagnostics (coefficients, n_genes_used,
-      fallback status) are recorded in adata.uns["scatrans"]["diagnostics"]["bias_correction"].
-    - Optional permutation testing for gene-level significance and FDR (note: for speed,
-      velocity layers/gammas are computed once on the original labeling and only group
-      assignments are permuted).
-    - Rich run-time diagnostics (global unspliced fraction, bias fit quality, etc.) are
-      always stored under adata.uns["scatrans"]["diagnostics"] and a concise summary is
-      logged at completion.
+    scATrans provides a concise, transparent basic pipeline:
+    differential expression + velocity-layer (spliced/unspliced or mature/nascent) signal
+    integration + gene filtering + enrichment + visualization.
 
-    A soft-scaled weighted combination of the three signals produces the final
-    active score (0–100). Results (including the processed AnnData) are returned
-    together with tables of significant and all genes.
+    Core idea (heuristic by default):
+    - Compute logFC / p_adj from target vs reference (scanpy or PyDESeq2).
+    - Compute a velocity delta = U_target - (gamma_ref * S_target), where gamma_ref is a
+      shrunk reference-group U/S ratio.
+    - (Default) Apply light Huber bias correction for gene length + intron number on the delta.
+    - Combine the signals into a 0-100 active_score.
 
-    Full parameter reference, plotting functions, enrichment, and usage examples
+    The default run is intentionally simple and clean. Advanced options are opt-in:
+    - show_effective_gamma=True  -> expose per-gene reference gamma in .var / all_results
+    - bias_correction="none"     -> disable length/intron correction
+    - use_mixed_model=True       -> LMM DE + delta_variance (replicate-aware)
+    - use_permutation=True       -> permutation FDR (note on approximation is recorded)
+
+    We explicitly acknowledge method limitations (see README "Limitations & Honest Interpretation").
+    The package does not claim to be a gold standard; it offers one interpretable, comparable
+    analysis view focused on nascent RNA excess.
+
+    Rich diagnostics are always written to adata.uns["scatrans"]["diagnostics"].
+    The most important user-facing output is the full ranked table (all_results); the
+    built-in "significant" list is deliberately strict and often small/empty on real data.
+
+    Full usage, recommended workflow, result interpretation, and opt-in advanced options
     are documented in the package README.
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
@@ -131,6 +146,21 @@ def active_score(
         raise ValueError("allow_advanced_pseudobulk must be boolean.")
     if not isinstance(advanced_recompute_neighbors, bool):
         raise ValueError("advanced_recompute_neighbors must be boolean.")
+
+    if not isinstance(use_mixed_model, bool):
+        raise ValueError("use_mixed_model must be boolean.")
+    if not isinstance(use_delta_variance_pval, bool):
+        raise ValueError("use_delta_variance_pval must be boolean.")
+    if not (0 < delta_var_pval_cutoff < 1):
+        raise ValueError("delta_var_pval_cutoff must be in (0, 1).")
+    if mixed_model_pval not in ("wald", "lrt"):
+        raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
+
+    if not isinstance(bias_correction, (str, type(None), bool)):
+        # allow bool for convenience (True/False)
+        pass
+    if not isinstance(show_effective_gamma, bool):
+        raise ValueError("show_effective_gamma must be boolean.")
 
     if mode == "advanced" and use_pseudobulk and not allow_advanced_pseudobulk:
         raise ValueError(
@@ -232,6 +262,18 @@ def active_score(
     if adata.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
 
+    # Mixed model requirements (cell-level RE; pseudobulk + count DE is separate path)
+    if use_mixed_model:
+        if sample_col is None:
+            raise ValueError("sample_col must be provided when use_mixed_model=True (for the random effect grouping).")
+        if use_pseudobulk:
+            raise ValueError(
+                "use_mixed_model=True and use_pseudobulk=True are incompatible. "
+                "use_mixed_model (LMM with (1|sample)) is for cell-level data to account for sample correlation. "
+                "For pseudobulk, keep use_pseudobulk=True (with pydeseq2 or scanpy) which already aggregates to the sample level. "
+                "See README for guidance and dreampy/NEBULA references."
+            )
+
     if "gene_length" not in adata.var.columns:
         adata.var["gene_length"] = np.nan
     if "intron_number" not in adata.var.columns:
@@ -270,6 +312,22 @@ def active_score(
             adata.obs[groupby].astype(str), categories=[reference_group, target_group]
         )
 
+        n_pb = adata.n_obs
+        if n_pb < 5:
+            logger.warning(
+                "Only %d pseudobulk samples remain after filtering. "
+                "Velocity delta estimation and permutation testing will have very low statistical power. "
+                "Results (especially active_score and FDR) should be interpreted with extreme caution. "
+                "Consider providing more biological replicates or falling back to single-cell mode if appropriate.",
+                n_pb,
+            )
+        elif n_pb < 8:
+            logger.info(
+                "Only %d pseudobulk samples. Power for detecting differential velocity is limited; "
+                "expect many genes to have near-zero velocity_residual and active_score.",
+                n_pb,
+            )
+
     # DE preprocess
     if de_preprocess == "normalize_log1p":
         sc.pp.normalize_total(adata, target_sum=1e4)
@@ -301,11 +359,18 @@ def active_score(
         pb_backend=pseudobulk_de_backend,
         n_jobs=effective_n_jobs,
         strict_pydeseq2_counts=strict_pydeseq2_counts,
+        use_mixed_model=use_mixed_model,
+        sample_col=sample_col if use_mixed_model else None,
+        mixed_model_pval=mixed_model_pval,
     )
 
     adata.var["logFC"] = de_df["logFC"]
     adata.var["p_val"] = de_df["p_val"]
     adata.var["p_adj"] = de_df["p_adj"]
+    if "delta_variance" in de_df.columns:
+        adata.var["delta_variance"] = de_df["delta_variance"]
+    if "delta_var_pval" in de_df.columns:
+        adata.var["delta_var_pval"] = de_df["delta_var_pval"]
 
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
     unspliced_fraction = np.nan
@@ -392,6 +457,7 @@ def active_score(
         valid_feat,
         valid_expr,
         X_features,
+        bias_correction=bias_correction,
     )
 
     adata.var["velocity_delta_raw"] = delta_velocity
@@ -401,7 +467,12 @@ def active_score(
     adata.var["total_us_counts_velocity_layer"] = total_us_velocity
     adata.var["valid_expr"] = valid_expr
     adata.var["velocity_source"] = velocity_source
-    adata.var["effective_gamma"] = gamma_ref  # per-gene reference gamma used for delta (transparency)
+
+    # effective_gamma is the per-gene reference-group gamma used internally for the delta.
+    # It is only exposed to the user when explicitly requested (keeps default output clean
+    # and avoids information overload for the basic pipeline).
+    if show_effective_gamma:
+        adata.var["effective_gamma"] = gamma_ref
 
     # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
     n_valid_bias = int(bias_info.get("n_genes_used_for_fit", 0))
@@ -414,6 +485,14 @@ def active_score(
         "velocity": {
             "source": velocity_source,
             "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
+            "effective_gamma_exposed": bool(show_effective_gamma),
+        },
+        "mixed_model": {
+            "used": bool(use_mixed_model),
+            "sample_col": sample_col if use_mixed_model else None,
+            "n_samples": int(adata.obs[sample_col].nunique()) if (use_mixed_model and sample_col and sample_col in adata.obs.columns) else None,
+            "delta_variance_available": "delta_variance" in adata.var.columns,
+            "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"])) if "delta_variance" in adata.var.columns else np.nan,
         },
     }
     if mode == "advanced" and moments_info:
@@ -494,6 +573,7 @@ def active_score(
                     prior_weight,
                     de_preprocess,
                     strict_pydeseq2_counts,
+                    bias_correction=bias_correction,
                 )
                 for i in range(n_perm)
             )
@@ -559,9 +639,16 @@ def active_score(
         "prior_weight": prior_weight,
         "min_total_counts": min_total_counts,
         "random_seed": random_seed,
+        "use_mixed_model": bool(use_mixed_model),
+        "sample_col": sample_col if use_mixed_model else None,
+        "use_delta_variance_pval": bool(use_delta_variance_pval),
+        "delta_var_pval_cutoff": float(delta_var_pval_cutoff),
+        "bias_correction": bias_correction,
+        "show_effective_gamma": bool(show_effective_gamma),
         # New rich diagnostics for usability and reproducibility (high priority)
         "diagnostics": diagnostics,
-        # Explicit note on permutation approximation (important for paper & trust)
+        # Explicit note on permutation approximation (important for honesty & trust).
+        # Only present when use_permutation=True.
         "permutation_approximation_note": (
             "For efficiency, velocity layers (raw or Mu/Ms) and effective_gamma are fixed from the original (non-permuted) data. "
             "Only group labels are shuffled when recomputing delta and the composite active_score inside permutations."
@@ -570,6 +657,9 @@ def active_score(
     }
 
     # ==================== SIGNIFICANT GENES + RETURN ====================
+    # Build result columns. By default we keep the output focused on the basic pipeline.
+    # effective_gamma and delta_* columns are only present when their corresponding
+    # opt-in flags were used.
     cols = [
         "active_score",
         "velocity_delta_raw",
@@ -583,10 +673,15 @@ def active_score(
         "valid_expr",
         "gene_length",
         "intron_number",
-        "effective_gamma",  # new transparency column (may be all-same in heuristic)
     ]
+    if show_effective_gamma and "effective_gamma" in adata.var.columns:
+        cols.append("effective_gamma")
     if use_permutation:
         cols.extend(["active_score_pval", "active_score_fdr"])
+    if "delta_variance" in adata.var.columns:
+        cols.append("delta_variance")
+    if "delta_var_pval" in adata.var.columns:
+        cols.append("delta_var_pval")
     cols = [c for c in cols if c in adata.var.columns]
 
     mask = (
@@ -599,6 +694,10 @@ def active_score(
 
     if use_permutation and use_fdr_for_significance:
         mask = mask & (adata.var["active_score_fdr"] < active_fdr_cutoff)
+
+    # Delta Variance pval as optional supplementary filter (user-controlled)
+    if use_delta_variance_pval and "delta_var_pval" in adata.var.columns:
+        mask = mask & (adata.var["delta_var_pval"] < delta_var_pval_cutoff)
 
     significant = adata.var[mask][cols].copy().sort_values("active_score", ascending=False)
     all_results = adata.var[cols].copy().sort_values("active_score", ascending=False)
@@ -649,3 +748,169 @@ def active_score(
             logger.debug("show_plot=True but plotting failed (missing optional deps or display).")
 
     return adata, significant, all_results
+
+
+_NOT_PROVIDED = object()
+
+
+def filter_active_genes(
+    results: pd.DataFrame,
+    *,
+    preset: Optional[str] = None,
+    active_score_cutoff: Any = _NOT_PROVIDED,
+    pval_cutoff: Any = _NOT_PROVIDED,
+    velocity_residual_cutoff: Any = _NOT_PROVIDED,
+    logfc_cutoff: Any = _NOT_PROVIDED,
+    active_score_fdr_cutoff: Any = _NOT_PROVIDED,
+    effective_gamma_min: Any = _NOT_PROVIDED,
+    effective_gamma_max: Any = _NOT_PROVIDED,
+    delta_variance_min: Any = _NOT_PROVIDED,
+) -> pd.DataFrame:
+    """Apply custom post-filtering to the `all_results` DataFrame returned by `active_score`.
+
+    This helper standardizes the common two-step workflow:
+    1. Run `active_score(...)` (the default `significant` list is often empty or very small).
+    2. Use this function (or your own logic) on `all_results` to derive a final biological gene list.
+
+    The function supports `preset` to automatically select reasonable default thresholds
+    for different analysis modes:
+
+    - preset="heuristic" (or None, for backward-friendly single-cell heuristic): stricter
+      defaults suitable for typical single-cell data with default weights
+      (active_score >= 55, velocity_residual > 1.0, etc.).
+    - preset="pseudobulk": more lenient defaults that account for the much smaller
+      magnitude of velocity_residual and active_score after sample-level aggregation
+      (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
+    - preset="permissive" or "none": no filtering at all (returns the full sorted table).
+
+    If you explicitly pass any cutoff parameter, it takes precedence over the preset.
+
+    Calling with no arguments (or only the DataFrame) and no preset returns the full
+    `all_results` (fully permissive).
+
+    Only filters corresponding to columns present in the DataFrame are applied.
+    This is safe whether or not `use_permutation=True` or `use_mixed_model=True` was used.
+
+    Parameters
+    ----------
+    results : pd.DataFrame
+        The `all_results` table returned as the third element of `active_score`.
+    preset : str or None
+        One of "heuristic", "pseudobulk", "permissive", "none".
+        When provided, supplies recommended cutoff values for that analysis style
+        for any parameters you did not explicitly pass.
+    active_score_cutoff : float
+        Minimum composite active transcription score (0-100).
+    pval_cutoff : float
+        Maximum nominal p-value from the differential expression test.
+    velocity_residual_cutoff : float
+        Minimum bias-corrected velocity residual.
+    logfc_cutoff : float
+        Minimum log fold change.
+    active_score_fdr_cutoff : float or None
+        If the column exists (use_permutation=True), max permutation FDR on active_score.
+    effective_gamma_min : float
+        Minimum reference-group effective gamma. See README section on effective_gamma.
+    effective_gamma_max : float or None
+        Optional upper bound on effective_gamma.
+    delta_variance_min : float or None
+        If the column exists (use_mixed_model=True), minimum variance fraction
+        explained by condition.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subset of the input, sorted by active_score descending.
+    """
+    if not isinstance(results, pd.DataFrame):
+        raise ValueError("results must be the all_results DataFrame returned by active_score")
+
+    # Resolve values from preset + explicit overrides
+    if preset is not None:
+        p = preset.lower()
+        if p in ("heuristic", "single_cell", "default"):
+            preset_vals = {
+                "active_score_cutoff": 55.0,
+                "pval_cutoff": 0.05,
+                "velocity_residual_cutoff": 1.0,
+                "logfc_cutoff": 0.35,
+                "active_score_fdr_cutoff": 0.25,
+                "effective_gamma_min": 0.05,
+                "effective_gamma_max": 1.0,
+                "delta_variance_min": None,
+            }
+        elif p in ("pseudobulk", "bulk"):
+            preset_vals = {
+                "active_score_cutoff": 5.0,
+                "pval_cutoff": 0.05,
+                "velocity_residual_cutoff": 0.05,
+                "logfc_cutoff": 0.2,
+                "active_score_fdr_cutoff": 0.25,
+                "effective_gamma_min": 0.05,
+                "effective_gamma_max": 1.0,
+                "delta_variance_min": None,
+            }
+        elif p in ("permissive", "none", "all", "no_filter"):
+            preset_vals = {
+                "active_score_cutoff": 0.0,
+                "pval_cutoff": 1.0,
+                "velocity_residual_cutoff": float("-inf"),
+                "logfc_cutoff": float("-inf"),
+                "active_score_fdr_cutoff": 1.0,
+                "effective_gamma_min": float("-inf"),
+                "effective_gamma_max": None,
+                "delta_variance_min": None,
+            }
+        else:
+            raise ValueError(
+                f"Unknown preset '{preset}'. "
+                "Valid presets: 'heuristic', 'pseudobulk', 'permissive'."
+            )
+    else:
+        preset_vals = {}
+
+    # Apply preset only where user did not explicitly provide a value
+    def _resolve(name: str, current: Any, default: Any) -> Any:
+        if current is not _NOT_PROVIDED:
+            return current
+        return preset_vals.get(name, default)
+
+    active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
+    pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
+    velocity_residual_cutoff = _resolve("velocity_residual_cutoff", velocity_residual_cutoff, float("-inf"))
+    logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
+    active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
+    effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
+    effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
+    delta_variance_min = _resolve("delta_variance_min", delta_variance_min, None)
+
+    df = results.copy()
+    mask = pd.Series(True, index=df.index)
+
+    # Core filters
+    if "active_score" in df.columns:
+        mask &= df["active_score"] >= active_score_cutoff
+    if "p_val" in df.columns:
+        mask &= df["p_val"] < pval_cutoff
+    if "velocity_residual" in df.columns:
+        mask &= df["velocity_residual"] > velocity_residual_cutoff
+    if "logFC" in df.columns:
+        mask &= df["logFC"] > logfc_cutoff
+
+    # Permutation FDR
+    if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
+        mask &= df["active_score_fdr"] < active_score_fdr_cutoff
+
+    # effective_gamma
+    if "effective_gamma" in df.columns:
+        gamma = df["effective_gamma"]
+        mask &= gamma.notna() & (gamma > effective_gamma_min)
+        if effective_gamma_max is not None:
+            mask &= gamma < effective_gamma_max
+
+    # Delta variance
+    if delta_variance_min is not None and "delta_variance" in df.columns:
+        mask &= df["delta_variance"] >= delta_variance_min
+
+    filtered = df[mask].sort_values("active_score", ascending=False)
+    return filtered

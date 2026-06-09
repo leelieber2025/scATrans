@@ -56,12 +56,15 @@ adata_res, sig, all_results = scat.active_score(
     n_perm=20,           # small for speed in example
     show_plot=False,     # we will create custom figure below
     min_total_counts=30,
+    show_effective_gamma=True,   # demo transparency; not required for basic use
 )
 
 print(f"Found {len(sig)} significant genes (demo data).")
 print("Top genes by active score:")
 print(sig.head(5))
-print("New transparency: adata.var now contains 'effective_gamma'; full QC+fit details live in .uns['scatrans']['diagnostics']")
+print("Note: show_effective_gamma=True was used for this demo so 'effective_gamma' appears in .var.")
+print("In normal basic usage the column is hidden by default (use show_effective_gamma=True to expose it).")
+print("Full QC + bias fit details always live in .uns['scatrans']['diagnostics']")
 
 # ------------------------------------------------------------------
 # Custom multi-panel figure demonstrating ax= support
