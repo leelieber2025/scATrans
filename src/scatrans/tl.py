@@ -299,6 +299,22 @@ def active_score(
             adata.obs[groupby].astype(str), categories=[reference_group, target_group]
         )
 
+        n_pb = adata.n_obs
+        if n_pb < 5:
+            logger.warning(
+                "Only %d pseudobulk samples remain after filtering. "
+                "Velocity delta estimation and permutation testing will have very low statistical power. "
+                "Results (especially active_score and FDR) should be interpreted with extreme caution. "
+                "Consider providing more biological replicates or falling back to single-cell mode if appropriate.",
+                n_pb,
+            )
+        elif n_pb < 8:
+            logger.info(
+                "Only %d pseudobulk samples. Power for detecting differential velocity is limited; "
+                "expect many genes to have near-zero velocity_residual and active_score.",
+                n_pb,
+            )
+
     # DE preprocess
     if de_preprocess == "normalize_log1p":
         sc.pp.normalize_total(adata, target_sum=1e4)
@@ -705,17 +721,21 @@ def active_score(
     return adata, significant, all_results
 
 
+_NOT_PROVIDED = object()
+
+
 def filter_active_genes(
     results: pd.DataFrame,
     *,
-    active_score_cutoff: float = 55.0,
-    pval_cutoff: float = 0.05,
-    velocity_residual_cutoff: float = 1.0,
-    logfc_cutoff: float = 0.35,
-    active_score_fdr_cutoff: Optional[float] = 0.25,
-    effective_gamma_min: float = 0.05,
-    effective_gamma_max: Optional[float] = None,
-    delta_variance_min: Optional[float] = None,
+    preset: Optional[str] = None,
+    active_score_cutoff: Any = _NOT_PROVIDED,
+    pval_cutoff: Any = _NOT_PROVIDED,
+    velocity_residual_cutoff: Any = _NOT_PROVIDED,
+    logfc_cutoff: Any = _NOT_PROVIDED,
+    active_score_fdr_cutoff: Any = _NOT_PROVIDED,
+    effective_gamma_min: Any = _NOT_PROVIDED,
+    effective_gamma_max: Any = _NOT_PROVIDED,
+    delta_variance_min: Any = _NOT_PROVIDED,
 ) -> pd.DataFrame:
     """Apply custom post-filtering to the `all_results` DataFrame returned by `active_score`.
 
@@ -723,42 +743,50 @@ def filter_active_genes(
     1. Run `active_score(...)` (the default `significant` list is often empty or very small).
     2. Use this function (or your own logic) on `all_results` to derive a final biological gene list.
 
-    Only filters that correspond to columns present in the DataFrame are applied.
-    This makes the function safe whether or not `use_permutation=True` or
-    `use_mixed_model=True` was used.
+    The function supports `preset` to automatically select reasonable default thresholds
+    for different analysis modes:
+
+    - preset="heuristic" (or None, for backward-friendly single-cell heuristic): stricter
+      defaults suitable for typical single-cell data with default weights
+      (active_score >= 55, velocity_residual > 1.0, etc.).
+    - preset="pseudobulk": more lenient defaults that account for the much smaller
+      magnitude of velocity_residual and active_score after sample-level aggregation
+      (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
+    - preset="permissive" or "none": no filtering at all (returns the full sorted table).
+
+    If you explicitly pass any cutoff parameter, it takes precedence over the preset.
+
+    Calling with no arguments (or only the DataFrame) and no preset returns the full
+    `all_results` (fully permissive).
+
+    Only filters corresponding to columns present in the DataFrame are applied.
+    This is safe whether or not `use_permutation=True` or `use_mixed_model=True` was used.
 
     Parameters
     ----------
     results : pd.DataFrame
         The `all_results` table returned as the third element of `active_score`.
+    preset : str or None
+        One of "heuristic", "pseudobulk", "permissive", "none".
+        When provided, supplies recommended cutoff values for that analysis style
+        for any parameters you did not explicitly pass.
     active_score_cutoff : float
         Minimum composite active transcription score (0-100).
     pval_cutoff : float
         Maximum nominal p-value from the differential expression test.
     velocity_residual_cutoff : float
-        Minimum bias-corrected velocity residual (stronger nascent RNA excess signal).
+        Minimum bias-corrected velocity residual.
     logfc_cutoff : float
         Minimum log fold change.
     active_score_fdr_cutoff : float or None
-        If the column exists (i.e. `use_permutation=True`), maximum permutation-based
-        FDR on the composite active_score. A value in 0.2-0.3 is often useful for
-        exploratory work. Set to None to disable.
+        If the column exists (use_permutation=True), max permutation FDR on active_score.
     effective_gamma_min : float
-        Minimum reference-group effective gamma (U/S ratio with shrinkage).
-        The default 0.05 removes genes where the gamma estimate in the reference
-        group is dominated by the prior (very low unspliced counts → unreliable delta).
-        See the README section "Understanding and filtering on effective_gamma"
-        for guidance on choosing this value.
+        Minimum reference-group effective gamma. See README section on effective_gamma.
     effective_gamma_max : float or None
-        Optional upper bound. Genes with very high effective_gamma in the reference
-        group were already quite transcriptionally active in the control/reference
-        condition. Setting e.g. 1.0 can exclude them if you want stricter "specifically
-        activated in the target" genes. Set to None for no upper bound.
+        Optional upper bound on effective_gamma.
     delta_variance_min : float or None
-        If the column exists (`use_mixed_model=True`), minimum fraction of variance
-        explained by the condition (after modeling sample random effects). Higher
-        values indicate the experimental condition drives more of the observed
-        expression variation.
+        If the column exists (use_mixed_model=True), minimum variance fraction
+        explained by condition.
 
     Returns
     -------
@@ -768,10 +796,69 @@ def filter_active_genes(
     if not isinstance(results, pd.DataFrame):
         raise ValueError("results must be the all_results DataFrame returned by active_score")
 
+    # Resolve values from preset + explicit overrides
+    if preset is not None:
+        p = preset.lower()
+        if p in ("heuristic", "single_cell", "default"):
+            preset_vals = {
+                "active_score_cutoff": 55.0,
+                "pval_cutoff": 0.05,
+                "velocity_residual_cutoff": 1.0,
+                "logfc_cutoff": 0.35,
+                "active_score_fdr_cutoff": 0.25,
+                "effective_gamma_min": 0.05,
+                "effective_gamma_max": 1.0,
+                "delta_variance_min": None,
+            }
+        elif p in ("pseudobulk", "bulk"):
+            preset_vals = {
+                "active_score_cutoff": 5.0,
+                "pval_cutoff": 0.05,
+                "velocity_residual_cutoff": 0.05,
+                "logfc_cutoff": 0.2,
+                "active_score_fdr_cutoff": 0.25,
+                "effective_gamma_min": 0.05,
+                "effective_gamma_max": 1.0,
+                "delta_variance_min": None,
+            }
+        elif p in ("permissive", "none", "all", "no_filter"):
+            preset_vals = {
+                "active_score_cutoff": 0.0,
+                "pval_cutoff": 1.0,
+                "velocity_residual_cutoff": float("-inf"),
+                "logfc_cutoff": float("-inf"),
+                "active_score_fdr_cutoff": 1.0,
+                "effective_gamma_min": float("-inf"),
+                "effective_gamma_max": None,
+                "delta_variance_min": None,
+            }
+        else:
+            raise ValueError(
+                f"Unknown preset '{preset}'. "
+                "Valid presets: 'heuristic', 'pseudobulk', 'permissive'."
+            )
+    else:
+        preset_vals = {}
+
+    # Apply preset only where user did not explicitly provide a value
+    def _resolve(name: str, current: Any, default: Any) -> Any:
+        if current is not _NOT_PROVIDED:
+            return current
+        return preset_vals.get(name, default)
+
+    active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
+    pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
+    velocity_residual_cutoff = _resolve("velocity_residual_cutoff", velocity_residual_cutoff, float("-inf"))
+    logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
+    active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
+    effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
+    effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
+    delta_variance_min = _resolve("delta_variance_min", delta_variance_min, None)
+
     df = results.copy()
     mask = pd.Series(True, index=df.index)
 
-    # Core filters (columns are almost always present)
+    # Core filters
     if "active_score" in df.columns:
         mask &= df["active_score"] >= active_score_cutoff
     if "p_val" in df.columns:
@@ -781,18 +868,18 @@ def filter_active_genes(
     if "logFC" in df.columns:
         mask &= df["logFC"] > logfc_cutoff
 
-    # Permutation FDR on composite score (only if column exists)
+    # Permutation FDR
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
         mask &= df["active_score_fdr"] < active_score_fdr_cutoff
 
-    # effective_gamma: avoid unreliable low-count estimates in the reference group
+    # effective_gamma
     if "effective_gamma" in df.columns:
         gamma = df["effective_gamma"]
         mask &= gamma.notna() & (gamma > effective_gamma_min)
         if effective_gamma_max is not None:
             mask &= gamma < effective_gamma_max
 
-    # Delta variance from mixed model (optional)
+    # Delta variance
     if delta_variance_min is not None and "delta_variance" in df.columns:
         mask &= df["delta_variance"] >= delta_variance_min
 

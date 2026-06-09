@@ -478,3 +478,35 @@ def test_filter_active_genes_with_mixed(adata_mixed_small):
     )
     # Should not have dropped the column requirement
     assert len(filt) >= 0
+
+
+def test_filter_active_genes_presets(adata_mixed_small):
+    """preset parameter supplies sensible defaults for different analysis styles."""
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=True,
+        n_perm=10,
+        n_jobs=1,
+    )
+
+    # permissive preset (or no preset) should keep most genes
+    f_perm = scat.filter_active_genes(allr, preset="permissive")
+    assert len(f_perm) > 0
+
+    # heuristic preset applies stricter single-cell style defaults
+    f_heu = scat.filter_active_genes(allr, preset="heuristic")
+    # on small synthetic data this may be small or zero, but should not crash
+    assert isinstance(f_heu, pd.DataFrame)
+
+    # pseudobulk preset uses lenient values suitable after aggregation
+    f_pb = scat.filter_active_genes(allr, preset="pseudobulk")
+    assert len(f_pb) >= 0
+
+    # explicit arg should override preset
+    f_over = scat.filter_active_genes(allr, preset="heuristic", active_score_cutoff=0)
+    assert len(f_over) > len(f_heu) or len(f_heu) == 0

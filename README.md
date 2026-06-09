@@ -123,7 +123,15 @@ scATrans supports an optional mixed linear model (LMM) path for the differential
   - Follows the spirit of **dreamlet / variancePartition** (pseudobulk LMM + explicit variance fractions) and its 2026 Python port **dreampy** — we use a native statsmodels LMM + explicit delta variance computation without requiring heavy limma/voom reimplementation.
   - **Libra** (R) provides a menu of mixed models (LMM, NB-GLMM etc.); we expose the fast Gaussian LMM path.
   - For true count-based **negative binomial mixed models** optimized for scRNA, **NEBULA** (R primary, with Python interest) is excellent but heavier; our LMM is a practical, fast, widely-validated approximation on the log scale. For production count NBMM you can run NEBULA/dreampy separately on pseudobulks and combine results.
-- Recommendation: Use `use_pseudobulk=True + pydeseq2` (or scanpy) for count-driven pseudobulk DE. Use `use_mixed_model=True` when you specifically want cell-level modeling + sample random effect for the active transcription score.
+- Recommendation: Use `use_pseudobulk=True + pydeseq2` (or scanpy) for count-driven pseudobulk DE when you have a reasonable number of samples per group (ideally ≥5–6 after filtering). Use `use_mixed_model=True` (cell-level with sample random effect) when you want to retain single-cell resolution for the velocity signal while still properly accounting for sample structure (avoids pseudoreplication).
+
+**Important practical guidance for small numbers of samples** (e.g. only 3 biological samples, as seen in some real datasets like the EC.h5ad example):
+
+- With `use_pseudobulk=True` on very few samples, aggregation often causes `velocity_residual` to collapse to near-zero for the large majority of genes (most signal is averaged away). Combined with any non-trivial weight on the unspliced term, the composite `active_score` becomes very low for most genes. Permutation power is also extremely limited.
+- In such low-n regimes, running with `use_pseudobulk=False` + `use_mixed_model=True` (sample as random intercept) frequently yields more informative results: the velocity excess signal remains visible at cell level for genes that truly differ, while the LMM still respects sample correlation and `delta_variance` provides an additional robust filter.
+- Always inspect the actual distributions in `all_results` (`active_score`, `velocity_residual`, `active_score_fdr`, etc.) before choosing cutoffs. The `filter_active_genes(..., preset="pseudobulk")` or `preset="heuristic"` helpers can help pick starting thresholds appropriate to your run mode.
+
+In short: pseudobulk is powerful and statistically cleaner **when you have enough samples**. With very few samples it can make the velocity component of the active score almost disappear. The mixed-model path at cell level is often the better compromise.
 
 | Parameter                    | Default | Description |
 |------------------------------|---------|-------------|
@@ -284,6 +292,8 @@ print(f"Number of genes in the default sig_targets: {len(sig_targets)}")   # oft
 #    to obtain a final, biologically meaningful gene list.
 #    The helper only applies filters for columns that are actually present.
 
+# Calling with no arguments returns everything (sorted). To apply
+# the commonly useful "recommended" filters, pass explicit values:
 final_significant = scat.filter_active_genes(
     all_results,
     active_score_cutoff=55,
@@ -326,7 +336,19 @@ This two-step approach (trust the software for computation + rich ranking, apply
 
 Because the default `significant` list returned by `active_score` is intentionally conservative and frequently empty, most users derive their final gene list from `all_results`.
 
-`scat.filter_active_genes` provides a convenient, documented way to do this:
+`scat.filter_active_genes` provides a convenient, documented way to do this.
+
+Calling it with only the DataFrame (no extra keyword arguments) and no `preset` returns the **full** `all_results` table sorted by active_score descending (fully permissive, no filtering applied).
+
+The function now supports a `preset` argument that automatically chooses sensible default thresholds for different analysis styles:
+
+- `preset="heuristic"` (or `"single_cell"`): stricter defaults suitable for typical single-cell heuristic runs with default weights (active_score >= 55, velocity_residual > 1.0, logFC > 0.35, etc.).
+- `preset="pseudobulk"`: more lenient defaults that account for the much smaller scale of `active_score` and `velocity_residual` after sample-level aggregation (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
+- `preset="permissive"` (or `"none"`): no filtering.
+
+Explicitly passed cutoff arguments always override the preset.
+
+Example using a preset for a pseudobulk analysis:
 
 ```python
 import scatrans as scat
@@ -335,18 +357,22 @@ adata_res, sig_targets, all_results = scat.active_score(...)
 
 final_significant = scat.filter_active_genes(
     all_results,
-    active_score_cutoff=55,
-    pval_cutoff=0.05,
-    velocity_residual_cutoff=1.0,
-    logfc_cutoff=0.35,
-    active_score_fdr_cutoff=0.25,   # only applied if use_permutation=True
-    effective_gamma_min=0.05,
-    effective_gamma_max=1.0,
-    # delta_variance_min=0.05,     # only applied if use_mixed_model=True
+    preset="pseudobulk",                 # chooses appropriate lenient defaults
+    # You can still override individual values:
+    # active_score_cutoff=8,
+    # active_score_fdr_cutoff=0.25,
 )
 ```
 
-See the function docstring for the full list of parameters and their meaning. The helper is deliberately permissive with optional columns so that the same call works across different analysis settings.
+See the function docstring for complete details. The helper safely ignores columns that do not exist (e.g. `active_score_fdr` when `use_permutation=False`).
+
+**Important note on scale differences**: With `use_pseudobulk=True` (or heavy re-weighting such as `weight_unspliced=2.0`), the composite `active_score` values are often much lower and `velocity_residual` values are typically near zero. The "single-cell heuristic" numbers will frequently return almost nothing in these cases. Always inspect the actual distributions in your `all_results` first:
+
+```python
+print(all_results[["active_score", "velocity_residual", "logFC", "active_score_fdr"]].describe())
+```
+
+Then choose (or let the preset choose) cutoffs appropriate for your run.
 
 ### Understanding and filtering on `effective_gamma`
 
