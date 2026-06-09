@@ -119,6 +119,12 @@ scATrans supports an optional mixed linear model (LMM) path for the differential
   - `delta_var_pval`: likelihood-ratio test (LRT) p-value comparing the full model vs. a reduced model without the condition term.
 - `delta_variance` is **always** added to `all_results` (and `adata.var`) when `use_mixed_model=True`. You can use it post-hoc to filter (e.g. `all_results[all_results["delta_variance"] > 0.05]` for genes where condition explains a non-trivial fraction of variance).
 - Use `use_delta_variance_pval=True` (and `delta_var_pval_cutoff=0.05`) to make the LRT p-value part of the **significant gene mask** (supplementary filter alongside p_adj, logFC, velocity residual, etc.).
+
+**Power considerations**: Enabling `use_mixed_model=True` replaces the simple DE p-values/logFC with more statistically rigorous LMM-based estimates. This is generally **more conservative** (larger p-values for the same raw difference when there is substantial sample-to-sample variation), which reduces the risk of inflated discoveries due to pseudoreplication. The velocity_residual component of the active_score is completely unaffected. 
+
+If you are primarily driven by a strong velocity signal, you can increase `weight_unspliced` (and/or decrease `weight_pval`) to let the nascent RNA excess term dominate the composite score even if the LMM p-value is more conservative. The new `mixed_model_pval="lrt"` option lets you use the likelihood-ratio p-value (directly tied to the delta_variance concept) instead of the Wald coefficient test for the DE part of the score. Delta variance itself is an *additive* piece of information/filter — it does not automatically make the core active_score stricter unless you explicitly enable `use_delta_variance_pval`.
+
+In short, the additions give you better control and validity without forcing a power loss on the unique velocity-driven part of the method. The original simple DE path remains the default for maximum sensitivity when sample structure is not a concern.
 - Relation to referenced packages (implementation choice):
   - Follows the spirit of **dreamlet / variancePartition** (pseudobulk LMM + explicit variance fractions) and its 2026 Python port **dreampy** — we use a native statsmodels LMM + explicit delta variance computation without requiring heavy limma/voom reimplementation.
   - **Libra** (R) provides a menu of mixed models (LMM, NB-GLMM etc.); we expose the fast Gaussian LMM path.
@@ -133,12 +139,18 @@ scATrans supports an optional mixed linear model (LMM) path for the differential
 
 In short: pseudobulk is powerful and statistically cleaner **when you have enough samples**. With very few samples it can make the velocity component of the active score almost disappear. The mixed-model path at cell level is often the better compromise.
 
+**Real-data example from GA_test.h5ad** (6 individuals, ~18k cells, groupby="sample" (GA vs Ctrl), sample_col="individual", same weights as many users):
+- Without mixed_model: median active_score ~19.4, >10k genes with velocity_residual >0, thousands pass reasonable active_score thresholds.
+- With use_mixed_model=True: on gene subsets, median delta_variance drops to ~0.0002 (only ~1/300 genes >0.05). Using `filter_active_genes(..., preset="pseudobulk")` or heuristic + delta filter becomes extremely strict (often <10 genes).
+- Lesson: the added mixed + delta_variance features are powerful for validity but can dramatically reduce the number of genes you would call "interesting" when individual variation is large. Use `preset` + inspect distributions + tune `weight_unspliced` / `mixed_model_pval="lrt"` to balance sensitivity. For pure discovery power on velocity-driven signal, the default (no mixed) path often surfaces more candidates that you can then validate with mixed/delta post-hoc.
+
 | Parameter                    | Default | Description |
 |------------------------------|---------|-------------|
 | `use_mixed_model`            | `False` | Enable LMM DE + delta variance computation (requires `sample_col`). |
 | `use_delta_variance_pval`    | `False` | If True, `delta_var_pval < delta_var_pval_cutoff` is added to the significant gene criteria. |
 | `delta_var_pval_cutoff`      | `0.05`  | Threshold for the optional delta variance LRT p-value filter. |
 | `sample_col`                 | `None`  | Also used as the grouping factor for `(1 \| sample)` random intercept. |
+| `mixed_model_pval`           | `"wald"` | When `use_mixed_model=True`: which p-value to feed into the active_score composite and default filters ("wald" for the coefficient test, or "lrt" for the model-comparison test that aligns with delta_variance). |
 
 Example:
 
@@ -373,6 +385,99 @@ print(all_results[["active_score", "velocity_residual", "logFC", "active_score_f
 ```
 
 Then choose (or let the preset choose) cutoffs appropriate for your run.
+
+### Recommended Practical Pipeline (Balancing Power and Validity)
+
+When your data has clear sample/individual structure (e.g., multiple cells per `individual` or `sample`), the new mixed-model and delta-variance features give you powerful tools for statistical validity, but they can also make results more conservative. The following two-stage pipeline is recommended for most real-world analyses. It maximizes discovery power for the velocity-driven signal while using mixed models + delta variance for rigorous validation and final filtering.
+
+**Stage 1 – Discovery (higher sensitivity, velocity-focused)**
+- Run `active_score` with `use_mixed_model=False` (or `True` but ignore delta for now).
+- Use a relatively high `weight_unspliced` (e.g. 2.0) so the nascent-RNA excess signal dominates the composite score.
+- Obtain `all_results`.
+- Use `filter_active_genes` with an appropriate `preset` (or explicit lenient cutoffs) that emphasizes `active_score` and `velocity_residual`. Inspect distributions first:
+
+```python
+import scatrans as scat
+import pandas as pd
+
+# Stage 1 – discovery run (example parameters similar to GA_test.h5ad)
+adata_res, sig_targets, all_results = scat.active_score(
+    adata_input=adata,
+    groupby="sample",
+    target_group="GA",
+    reference_group="Ctrl",
+    sample_col="individual",
+    use_mixed_model=False,          # discovery phase – keep sensitivity
+    use_permutation=True,
+    n_perm=300,
+    active_fdr_cutoff=0.1,
+    show_plot=True,
+    weight_fc=0.5,
+    weight_unspliced=2.0,
+    weight_pval=1.0,
+    pval_cutoff=0.05,
+    logfc_cutoff=0.25,
+)
+
+print(all_results[["active_score", "velocity_residual", "logFC"]].describe())
+
+# Candidate list focused on velocity + composite score
+candidates = scat.filter_active_genes(
+    all_results,
+    preset="pseudobulk",            # or "heuristic" – choose based on your run
+    # You can also pass explicit values after inspecting quantiles
+)
+print(f"Candidates from Stage 1: {len(candidates)}")
+```
+
+**Stage 2 – Validation & High-Confidence Filtering (use mixed model + delta_variance)**
+- Re-run (or use the same `all_results` if you already computed mixed-model statistics) with `use_mixed_model=True`.
+- Look at `delta_variance` on your Stage-1 candidates.
+- Apply a final filter that also requires a meaningful `delta_variance` (condition explains variance beyond the random effect of individuals).
+
+```python
+# Stage 2 – run with mixed model (or re-use previous results if you stored them)
+adata_res, sig_targets, all_results_mixed = scat.active_score(
+    adata_input=adata,
+    groupby="sample",
+    target_group="GA",
+    reference_group="Ctrl",
+    sample_col="individual",
+    use_mixed_model=True,
+    mixed_model_pval="lrt",         # often slightly more powerful for overall effect
+    use_permutation=True,
+    n_perm=300,
+    active_fdr_cutoff=0.1,
+    show_plot=True,
+    weight_fc=0.5,
+    weight_unspliced=2.0,
+    weight_pval=1.0,
+    pval_cutoff=0.05,
+    logfc_cutoff=0.25,
+)
+
+# Final high-confidence list: velocity signal + composite score + robust delta_variance
+final_significant = scat.filter_active_genes(
+    all_results_mixed,
+    preset="pseudobulk",
+    delta_variance_min=0.05,        # require condition to explain ≥5% variance after individual RE
+)
+
+print(f"Final high-confidence genes: {len(final_significant)}")
+print(final_significant.head(15)[
+    ["active_score", "velocity_residual", "delta_variance", "active_score_fdr"]
+])
+
+final_significant.to_csv("final_significant_genes_GA.csv")
+```
+
+**Why this pipeline?**
+- Stage 1 preserves power for the unique velocity (nascent RNA excess) signal that is the core of scATrans.
+- Stage 2 uses the statistically more rigorous mixed-model p-values and `delta_variance` only for final selection, avoiding the power loss that occurs when you apply conservative LMM statistics to the entire genome at the discovery stage.
+- You remain fully in control via weights, presets, and explicit cutoffs.
+- On real data with individual structure (e.g. GA_test.h5ad with 6 individuals or EC.h5ad with 3 samples), this approach typically yields a manageable candidate list in Stage 1 and a high-confidence final list in Stage 2 that is far more likely to replicate.
+
+You can of course collapse the two stages into a single run if you prefer, but the staged approach has proven practical for balancing sensitivity and validity.
 
 ### Understanding and filtering on `effective_gamma`
 

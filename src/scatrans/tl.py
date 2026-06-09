@@ -92,6 +92,7 @@ def active_score(
     use_mixed_model: bool = False,
     use_delta_variance_pval: bool = False,
     delta_var_pval_cutoff: float = 0.05,
+    mixed_model_pval: str = "wald",  # "wald" or "lrt" - which p-value to use for the DE part of active_score when use_mixed_model=True
 ) -> Tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Identify genes that are actively transcribed using a composite "active score".
@@ -148,6 +149,8 @@ def active_score(
         raise ValueError("use_delta_variance_pval must be boolean.")
     if not (0 < delta_var_pval_cutoff < 1):
         raise ValueError("delta_var_pval_cutoff must be in (0, 1).")
+    if mixed_model_pval not in ("wald", "lrt"):
+        raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
 
     if mode == "advanced" and use_pseudobulk and not allow_advanced_pseudobulk:
         raise ValueError(
@@ -348,6 +351,7 @@ def active_score(
         strict_pydeseq2_counts=strict_pydeseq2_counts,
         use_mixed_model=use_mixed_model,
         sample_col=sample_col if use_mixed_model else None,
+        mixed_model_pval=mixed_model_pval,
     )
 
     adata.var["logFC"] = de_df["logFC"]

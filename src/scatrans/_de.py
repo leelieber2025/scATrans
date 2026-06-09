@@ -41,6 +41,7 @@ def _run_de_wrapper(
     strict_pydeseq2_counts: bool = True,
     use_mixed_model: bool = False,
     sample_col: Optional[str] = None,
+    mixed_model_pval: str = "wald",
 ) -> pd.DataFrame:
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed)."""
     if use_mixed_model:
@@ -54,6 +55,7 @@ def _run_de_wrapper(
             sample_col=sample_col,
             n_jobs=n_jobs,
             labels=labels,
+            mixed_model_pval=mixed_model_pval,
         )
 
     ad_temp = adata.copy() if labels is not None else adata
@@ -197,6 +199,7 @@ def _run_mixedlm_de(
     sample_col: str,
     n_jobs: int = 1,
     labels: Optional[Any] = None,
+    mixed_model_pval: str = "wald",
 ) -> pd.DataFrame:
     """
     Mixed linear model (LMM) DE + Delta Variance using statsmodels mixedlm.
@@ -330,14 +333,23 @@ def _run_mixedlm_de(
     p_lrts = np.array([r[3] for r in results], dtype=float)
     dvars = np.array([r[4] for r in results], dtype=float)
 
-    # FDR on the Wald p-values (standard for the DE test)
+    # Choose which p-value to expose as the main "p_val" for active_score weighting and default filtering.
+    # "wald": the coefficient test (standard for logFC-like effect)
+    # "lrt": the likelihood ratio test for the condition term contribution (ties directly to delta_variance)
+    if mixed_model_pval == "lrt":
+        main_pvals = p_lrts
+    else:
+        if mixed_model_pval != "wald":
+            logger.warning("mixed_model_pval must be 'wald' or 'lrt'; falling back to 'wald'.")
+        main_pvals = p_walds
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        p_adjs = multipletests(p_walds, method="fdr_bh")[1]
+        p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
 
     de_df = pd.DataFrame(index=var_names)
     de_df["logFC"] = pd.Series(logfcs, index=var_names)
-    de_df["p_val"] = pd.Series(p_walds, index=var_names)
+    de_df["p_val"] = pd.Series(main_pvals, index=var_names)
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
     de_df["delta_var_pval"] = pd.Series(p_lrts, index=var_names)
