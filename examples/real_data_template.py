@@ -92,10 +92,13 @@ print("Unspiced global fraction :", meta.get("unspliced_global_fraction"))
 print("Bias correction info     :", meta["diagnostics"]["bias_correction"])
 print("Permutation approximation:", meta.get("permutation_approximation_note"))
 print("Full diagnostics dict is at adata_res.uns['scatrans']['diagnostics']")
+print("Note: by default effective_gamma and delta_variance are not added to .var (opt-in via flags).")
 
-# Effective gamma per gene (transparency)
+# Effective gamma per gene (transparency) — only present if show_effective_gamma=True was used
 if "effective_gamma" in adata_res.var.columns:
     print("effective_gamma (first 5):", adata_res.var["effective_gamma"].head().tolist())
+else:
+    print("effective_gamma not exposed (default). Pass show_effective_gamma=True to active_score to include it.")
 
 # ------------------------------------------------------------------
 # 6. Publication-quality figures (ax= support for multi-panel)
@@ -126,7 +129,7 @@ print("\nSaved real_data_comet_and_bias.pdf")
 
 # Optional: rank plot or volcano
 # scat.pl.active_score_rankplot(all_results, top_n=15, save_path="ranks.pdf")
-# scat.pl.volcano_plot(all_results, top_n=8, save_path="volcano.pdf")
+# scat.pl.volcano_plot(all_results, top_n=8, label_genes=some_gene_list, save_path="volcano.pdf")  # ggVolcano-like control
 
 # ------------------------------------------------------------------
 # 7. Functional enrichment on the significant genes
@@ -134,13 +137,19 @@ print("\nSaved real_data_comet_and_bias.pdf")
 if len(significant) > 0:
     enrich = scat.run_enrichment(
         gene_list=significant.index.tolist(),
-        gene_sets="GO_Biological_Process_2023",  # or your custom dict / gmt
+        gene_sets="GO_Biological_Process_2023",  # defaults to bundled scATrans version
         organism="mouse",   # or "human"
+        universe=adata.var_names.tolist(),  # or background= (compat); default = conservative intersect like clusterProfiler
         pval_cutoff=0.05,
     )
+    # To use a specific Enrichr historical version, just write the full name:
+    # enrich = scat.run_enrichment(..., gene_sets="GO_Biological_Process_2021")
+    # For KEGG: scat.run_kegg(..., kegg_library="KEGG_2021")
     print("\nTop enrichment terms:")
     print(enrich.head(6))
-    # scat.pl.enrich_dotplot(enrich, save_path="enrich.pdf")
+    print("universe_info:", enrich.attrs.get("universe_info"))
+    # scat.pl.enrich_dotplot(enrich, show_terms=10, save_path="enrich.pdf")
+    # or scat.pl.enrich_dotplot(enrich, show_terms=["specific term desc", "another GO term"])
 
 print("\n=== Recommended next steps ===")
 print("- Look at adata_res.var for 'active_score', 'velocity_residual', 'effective_gamma', logFC, p_adj, ...")

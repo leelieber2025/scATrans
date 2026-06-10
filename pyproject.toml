@@ -52,7 +52,15 @@ Homepage = "https://github.com/scATrans/scatrans"
 where = ["src"]
 
 [tool.setuptools.package-data]
-scatrans = ["data/*.parquet", "data/*.md"]
+scatrans = [
+    "data/*.parquet",
+    "data/*.md",
+    "data/*.gmt",
+    "data/*.tsv",
+    "data/*.txt",
+    # You can also put sets in a subfolder if you prefer:
+    # "data/gene_sets/*.gmt",
+]
 
 [tool.setuptools_scm]
 write_to = "src/scatrans/_version.py"

@@ -12,6 +12,7 @@ practices (e.g., libraries such as OmicVerse and Scanpy extensions).
 
 import logging
 from contextlib import contextmanager
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -333,6 +334,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
+    show_terms: Optional[Union[int, List[str], Tuple[str, ...]]] = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -347,6 +349,13 @@ def enrich_dotplot(
     """
     Dotplot for enrichment results (clusterProfiler style).
 
+    `show_terms` gives clusterProfiler-like flexibility:
+      - int: show top N terms (overrides top_n)
+      - list/tuple of str: show exactly the matching terms (match on Term or Description;
+        order of the list is respected when possible). This is analogous to
+        `dotplot(..., showCategory = c("term1", "term2"))`.
+
+    `top_n` is still supported for the common "top N" case (when show_terms is None).
     Supports `ax` for embedding in publication multi-panel figures.
     """
     if enrich_df.empty:
@@ -356,8 +365,35 @@ def enrich_dotplot(
     logger.info("Generating enrichment dotplot...")
     set_style()
 
-    plot_df = enrich_df.head(top_n).copy()
-    plot_df = plot_df.iloc[::-1]
+    # clusterProfiler-style term selection (show_terms takes precedence)
+    if show_terms is not None:
+        if isinstance(show_terms, int):
+            plot_df = enrich_df.head(show_terms).copy()
+        else:
+            wanted = {str(x).strip().lower() for x in show_terms}
+            def _matches(row):
+                t = str(row.get("Term", "")).strip().lower()
+                d = str(row.get("Description", "")).strip().lower()
+                for w in wanted:
+                    if w in t or w in d:
+                        return True
+                return False
+            mask = enrich_df.apply(_matches, axis=1)
+            plot_df = enrich_df[mask].copy()
+            # Try to preserve caller-specified order
+            if not plot_df.empty and len(show_terms) > 0:
+                order_map = {str(x).strip().lower(): i for i, x in enumerate(show_terms)}
+                def _order_key(row):
+                    t = str(row.get("Term", "")).strip().lower()
+                    d = str(row.get("Description", "")).strip().lower()
+                    return min(order_map.get(t, 10**9), order_map.get(d, 10**9))
+                plot_df = plot_df.copy()
+                plot_df["_sel_order"] = plot_df.apply(_order_key, axis=1)
+                plot_df = plot_df.sort_values("_sel_order").drop(columns=["_sel_order"], errors="ignore")
+    else:
+        plot_df = enrich_df.head(top_n).copy()
+
+    plot_df = plot_df.iloc[::-1]  # visual: top at top of y axis for horizontal dotplot
 
     def clean_term(text):
         text = str(text).split(" (GO:")[0].split(" (KEGG")[0]
@@ -471,6 +507,7 @@ def enrich_dotplot(
 def volcano_plot(
     df,
     top_n=10,
+    label_genes: Optional[Iterable[str]] = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
     point_scale=1.0,
@@ -484,9 +521,20 @@ def volcano_plot(
     ax=None,
 ):
     """
-    2D volcano plot.
+    2D volcano plot with ggVolcano-inspired flexibility and style options.
 
-    Supports embedding via the `ax` parameter for multi-panel figures.
+    - `top_n`: number of top genes (by active_score or p_adj) to label.
+    - `label_genes`: iterable of gene names to *force* label (manual specification,
+      even if not in top_n). This + top_n gives the common ggVolcano usage
+      pattern (label_number + explicit genes). Duplicates are handled automatically.
+    - When color_by != active_score (or not present), falls back to classic
+      up / down / ns coloring (red / blue / gray) based on cutoffs — matching
+      the popular ggVolcano "beautiful volcano" look.
+    - Cutoff lines are drawn with labels.
+    - Supports `ax` for embedding.
+
+    Style reference: https://github.com/BioSenior/ggVolcano (label control,
+    clean up/down distinction, readable labels with repel).
     """
     try:
         from adjustText import adjust_text
@@ -502,13 +550,19 @@ def volcano_plot(
     plot_df = df.copy().dropna(subset=["logFC", "p_adj"])
     plot_df["neg_log_pval"] = -np.log10(plot_df["p_adj"].astype(float) + 1e-300)
 
+    # ggVolcano-style classic coloring (up/down/ns) when not using active_score
+    use_classic = (color_by != "active_score") or ("active_score" not in plot_df.columns)
     if color_by == "active_score" and "active_score" in plot_df.columns:
         color_values = plot_df["active_score"]
         cbar_label = "Active Score"
+        colors_for_scatter = None
     else:
-        sig_up = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
-        color_values = sig_up.astype(int)
-        cbar_label = "Significant (up)"
+        up_mask = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+        down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+        color_values = np.where(up_mask, 2, np.where(down_mask, 1, 0))  # 2=up, 1=down, 0=ns
+        cbar_label = None
+        # Use explicit nice colors similar to common ggVolcano / EnhancedVolcano
+        colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]  # ns, down, up
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -519,24 +573,26 @@ def volcano_plot(
 
     sizes = np.clip(plot_df.get("active_score", 50) ** 1.3 * 8 * point_scale + 15, 12, 180)
 
-    scatter = ax.scatter(
+    scatter_kwargs = dict(
         x=plot_df["logFC"],
         y=plot_df["neg_log_pval"],
-        c=color_values,
         s=sizes,
-        cmap=cmap,
         alpha=0.75,
         edgecolors="#444444",
         linewidth=0.4,
         zorder=3,
     )
+    if colors_for_scatter is not None:
+        scatter = ax.scatter(c=color_values, cmap=None, color=[colors_for_scatter[int(c)] for c in color_values], **scatter_kwargs)
+    else:
+        scatter = ax.scatter(c=color_values, cmap=cmap, **scatter_kwargs)
 
     ax.axhline(
         -np.log10(pval_cutoff),
         color="#d62728",
         linestyle="--",
         linewidth=1.2,
-        alpha=0.8,
+        alpha=0.85,
         label=f"p_adj = {pval_cutoff}",
     )
     ax.axvline(
@@ -544,18 +600,28 @@ def volcano_plot(
         color="#d62728",
         linestyle="--",
         linewidth=1.2,
-        alpha=0.8,
+        alpha=0.85,
         label=f"logFC = {logfc_cutoff}",
     )
-    ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.7)
 
+    # --- ggVolcano-like gene labeling: top_n + manually specified genes ---
+    genes_to_label = set()
+    if label_genes is not None:
+        genes_to_label.update(str(g).strip() for g in label_genes if str(g).strip())
+
+    # Always include the top_n (by active_score when available)
     if "active_score" in plot_df.columns:
-        top_genes = plot_df.nlargest(top_n, "active_score")
+        top_df = plot_df.nlargest(top_n, "active_score")
     else:
-        top_genes = plot_df.nsmallest(top_n, "p_adj")
+        top_df = plot_df.nsmallest(top_n, "p_adj")
+    for g in top_df.index:
+        genes_to_label.add(str(g))
+
+    label_df = plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy() if genes_to_label else pd.DataFrame()
 
     texts = []
-    for idx, row in top_genes.iterrows():
+    for idx, row in label_df.iterrows():
         txt = ax.text(
             row["logFC"],
             row["neg_log_pval"],
@@ -563,7 +629,7 @@ def volcano_plot(
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
             color="#111111",
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7),
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.75),
         )
         texts.append(txt)
 

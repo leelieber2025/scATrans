@@ -58,8 +58,8 @@ def active_score(
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
     active_fdr_cutoff: float = 0.05,
-    de_method: str = "t-test_overestim_var",
-    pseudobulk_de_backend: str = "pydeseq2",
+    de_method: str = "t-test_overestim_var",          # freely switchable basic option, e.g. "wilcoxon"
+    pseudobulk_de_backend: str = "pydeseq2",          # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
     perm_de_backend: str = "fast",
     n_perm: int = 100,
@@ -93,38 +93,44 @@ def active_score(
     use_delta_variance_pval: bool = False,
     delta_var_pval_cutoff: float = 0.05,
     mixed_model_pval: str = "wald",  # "wald" or "lrt" - which p-value to use for the DE part of active_score when use_mixed_model=True
+    # Bias correction control (default on for basic pipeline cleanliness; opt-out for exploration)
+    bias_correction: str = "huber_length_intron",
+    # Opt-in transparency for per-gene reference gamma (keeps default output clean)
+    show_effective_gamma: bool = False,
+    # Advanced convenience for users primarily interested in nascent RNA excess
+    prioritize_velocity: bool = False,
 ) -> Tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Identify genes that are actively transcribed using a composite "active score".
+    Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
+    relative to a reference group, using a composite score that also incorporates
+    differential expression statistics.
 
-    The method integrates:
-    - Differential expression (logFC and p-value) between target and reference groups.
-    - Velocity signal approximated by the difference in unspliced abundance after
-      a simple reference-based gamma correction (with optional scVelo moments smoothing
-      in "advanced" mode). The per-gene effective gamma is stored in .var["effective_gamma"]
-      for transparency.
-    - Bias correction for gene length and intron number via Huber regression on the
-      velocity delta (or median fallback). Detailed fit diagnostics (coefficients, n_genes_used,
-      fallback status) are recorded in adata.uns["scatrans"]["diagnostics"]["bias_correction"].
-    - Optional permutation testing for gene-level significance and FDR (note: for speed,
-      velocity layers/gammas are computed once on the original labeling and only group
-      assignments are permuted).
-    - Optional mixed linear model (LMM) DE via statsmodels.mixedlm when use_mixed_model=True
-      (requires sample_col). This models cell-level data with sample as random intercept
-      (~ condition + (1 | sample)), providing replicate-aware p-values (avoids pseudoreplication).
-      Also computes delta_variance (fraction of variance explained by condition, variancePartition-style)
-      and a LRT delta_var_pval. These are stored in .var / all_results and can be used as
-      supplementary filter. See README for relation to Libra, dreamlet/dreampy, NEBULA.
-    - Rich run-time diagnostics (global unspliced fraction, bias fit quality, etc.) are
-      always stored under adata.uns["scatrans"]["diagnostics"] and a concise summary is
-      logged at completion.
+    The function computes:
+    - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
+    - A velocity delta = U_target − (gamma_ref × S_target), where gamma_ref is a
+      shrunk U/S ratio estimated in the reference group.
+    - (by default) A Huber regression correction of the delta on log(gene length) and
+      log(intron number); the residuals become velocity_residual.
+    - A soft-scaled, weighted combination of the three signals, scaled to 0–100.
 
-    A soft-scaled weighted combination of the three signals produces the final
-    active score (0–100). Results (including the processed AnnData) are returned
-    together with tables of significant and all genes.
+    Several extensions are available as explicit options (see the README section
+    "Optional advanced features"):
+    - show_effective_gamma
+    - bias_correction="none"
+    - use_mixed_model
+    - use_permutation
+    - prioritize_velocity (convenience for analyses focused on the unspliced excess term)
 
-    Full parameter reference, plotting functions, enrichment, and usage examples
-    are documented in the package README.
+    Diagnostics (including global unspliced fraction and bias fit details) are stored
+    under adata.uns["scatrans"]["diagnostics"]. The full ranked table (all_results)
+    is the main output; the built-in significant list is produced by a strict
+    conjunction of thresholds and is often small or empty.
+
+    A separate function diagnose_design is available to summarize the experimental
+    design and surface relevant warnings before analysis.
+
+    Full usage, recommended workflow, and result interpretation are documented in
+    the package README.
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
@@ -151,6 +157,26 @@ def active_score(
         raise ValueError("delta_var_pval_cutoff must be in (0, 1).")
     if mixed_model_pval not in ("wald", "lrt"):
         raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
+
+    if not isinstance(bias_correction, (str, type(None), bool)):
+        # allow bool for convenience (True/False)
+        pass
+    if not isinstance(show_effective_gamma, bool):
+        raise ValueError("show_effective_gamma must be boolean.")
+    if not isinstance(prioritize_velocity, bool):
+        raise ValueError("prioritize_velocity must be boolean.")
+
+    # Apply prioritize_velocity convenience (only if user left the default equal weights)
+    if prioritize_velocity and weight_fc == 1.0 and weight_unspliced == 1.0 and weight_pval == 1.0:
+        weight_unspliced = 3.0
+        weight_fc = 0.5
+        weight_pval = 0.5
+        logger.info(
+            "prioritize_velocity=True (advanced option): emphasizing the nascent RNA excess / "
+            "velocity_residual component in the active_score. "
+            "This is intended for users whose primary interest is condition-wise differences "
+            "in unspliced abundance after reference correction."
+        )
 
     if mode == "advanced" and use_pseudobulk and not allow_advanced_pseudobulk:
         raise ValueError(
@@ -206,6 +232,19 @@ def active_score(
         raise ValueError(f"target_group '{target_group}' not found.")
     if reference_group not in adata_input.obs[groupby].astype(str).unique():
         raise ValueError(f"reference_group '{reference_group}' not found.")
+
+    # Automatic design guidance for small-sample or replicate-structured data
+    if sample_col or use_pseudobulk:
+        try:
+            _ = diagnose_design(
+                adata_input,
+                groupby=groupby,
+                target_group=target_group,
+                reference_group=reference_group,
+                sample_col=sample_col,
+            )
+        except Exception:
+            pass  # never let diagnosis break the main analysis
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
     available_layers = list(adata_input.layers.keys())
@@ -447,6 +486,7 @@ def active_score(
         valid_feat,
         valid_expr,
         X_features,
+        bias_correction=bias_correction,
     )
 
     adata.var["velocity_delta_raw"] = delta_velocity
@@ -456,7 +496,12 @@ def active_score(
     adata.var["total_us_counts_velocity_layer"] = total_us_velocity
     adata.var["valid_expr"] = valid_expr
     adata.var["velocity_source"] = velocity_source
-    adata.var["effective_gamma"] = gamma_ref  # per-gene reference gamma used for delta (transparency)
+
+    # effective_gamma is the per-gene reference-group gamma used internally for the delta.
+    # It is only exposed to the user when explicitly requested (keeps default output clean
+    # and avoids information overload for the basic pipeline).
+    if show_effective_gamma:
+        adata.var["effective_gamma"] = gamma_ref
 
     # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
     n_valid_bias = int(bias_info.get("n_genes_used_for_fit", 0))
@@ -469,6 +514,7 @@ def active_score(
         "velocity": {
             "source": velocity_source,
             "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
+            "effective_gamma_exposed": bool(show_effective_gamma),
         },
         "mixed_model": {
             "used": bool(use_mixed_model),
@@ -556,6 +602,7 @@ def active_score(
                     prior_weight,
                     de_preprocess,
                     strict_pydeseq2_counts,
+                    bias_correction=bias_correction,
                 )
                 for i in range(n_perm)
             )
@@ -625,9 +672,13 @@ def active_score(
         "sample_col": sample_col if use_mixed_model else None,
         "use_delta_variance_pval": bool(use_delta_variance_pval),
         "delta_var_pval_cutoff": float(delta_var_pval_cutoff),
+        "bias_correction": bias_correction,
+        "show_effective_gamma": bool(show_effective_gamma),
+        "prioritize_velocity": bool(prioritize_velocity),
         # New rich diagnostics for usability and reproducibility (high priority)
         "diagnostics": diagnostics,
-        # Explicit note on permutation approximation (important for paper & trust)
+        # Explicit note on permutation approximation (important for honesty & trust).
+        # Only present when use_permutation=True.
         "permutation_approximation_note": (
             "For efficiency, velocity layers (raw or Mu/Ms) and effective_gamma are fixed from the original (non-permuted) data. "
             "Only group labels are shuffled when recomputing delta and the composite active_score inside permutations."
@@ -636,6 +687,9 @@ def active_score(
     }
 
     # ==================== SIGNIFICANT GENES + RETURN ====================
+    # Build result columns. By default we keep the output focused on the basic pipeline.
+    # effective_gamma and delta_* columns are only present when their corresponding
+    # opt-in flags were used.
     cols = [
         "active_score",
         "velocity_delta_raw",
@@ -649,8 +703,9 @@ def active_score(
         "valid_expr",
         "gene_length",
         "intron_number",
-        "effective_gamma",  # new transparency column (may be all-same in heuristic)
     ]
+    if show_effective_gamma and "effective_gamma" in adata.var.columns:
+        cols.append("effective_gamma")
     if use_permutation:
         cols.extend(["active_score_pval", "active_score_fdr"])
     if "delta_variance" in adata.var.columns:
@@ -889,3 +944,137 @@ def filter_active_genes(
 
     filtered = df[mask].sort_values("active_score", ascending=False)
     return filtered
+
+
+def diagnose_design(
+    adata_input: Any,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+    sample_col: Optional[str] = None,
+    min_cells_per_sample: int = 10,
+) -> Dict[str, Any]:
+    """
+    Analyze the experimental design and provide guidance on suitable analysis choices
+    and expected power/limitations.
+
+    This is intended as a pre-flight or post-subset diagnostic to help users
+    interpret warnings and choose between single-cell, pseudobulk, or mixed-model paths.
+
+    Returns a dictionary with keys:
+      - n_cells_target, n_cells_reference
+      - n_samples_target, n_samples_reference (if sample_col provided)
+      - unspliced_global_fraction
+      - recommendations: list of human-readable strings
+      - warnings: list of human-readable strings
+      - suggested_preset: "heuristic", "pseudobulk", or None
+    """
+    adata = adata_input.copy()
+
+    if groupby not in adata.obs.columns:
+        raise ValueError(f"groupby '{groupby}' not found in adata.obs")
+
+    target_mask = adata.obs[groupby].astype(str) == str(target_group)
+    ref_mask = adata.obs[groupby].astype(str) == str(reference_group)
+
+    n_t = int(target_mask.sum())
+    n_r = int(ref_mask.sum())
+
+    result: Dict[str, Any] = {
+        "n_cells_target": n_t,
+        "n_cells_reference": n_r,
+        "n_samples_target": None,
+        "n_samples_reference": None,
+        "unspliced_global_fraction": None,
+        "recommendations": [],
+        "warnings": [],
+        "suggested_preset": None,
+    }
+
+    # Global unspliced fraction (important technical QC)
+    try:
+        ufrac = _qc.unspliced_global(
+            adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
+        )
+        result["unspliced_global_fraction"] = float(ufrac)
+        if ufrac > 0.5:
+            result["warnings"].append(
+                f"Global unspliced fraction is high ({ufrac:.1%}). "
+                "This often indicates nuclear enrichment or gDNA contamination and can "
+                "reduce the reliability of velocity-based signals."
+            )
+    except Exception:
+        pass
+
+    # Sample structure
+    if sample_col and sample_col in adata.obs.columns:
+        n_s_t = adata.obs.loc[target_mask, sample_col].nunique()
+        n_s_r = adata.obs.loc[ref_mask, sample_col].nunique()
+        result["n_samples_target"] = int(n_s_t)
+        result["n_samples_reference"] = int(n_s_r)
+
+        if min(n_s_t, n_s_r) < 3:
+            result["warnings"].append(
+                f"Very few biological samples per group (target={n_s_t}, reference={n_s_r}). "
+                "Pseudobulk aggregation will have extremely low power for velocity delta. "
+                "Consider using the cell-level mixed-model path (use_mixed_model=True) "
+                "instead of use_pseudobulk=True, or interpret results with extreme caution."
+            )
+        elif min(n_s_t, n_s_r) < 5:
+            result["warnings"].append(
+                f"Small number of biological samples per group (target={n_s_t}, reference={n_s_r}). "
+                "Power for detecting differential nascent RNA excess will be limited. "
+                "Permutation-based FDR (if used) will also have reduced reliability."
+            )
+            result["suggested_preset"] = "pseudobulk"
+
+        result["recommendations"].append(
+            "With multiple samples per group, both pseudobulk (with PyDESeq2 or scanpy) "
+            "and cell-level mixed model (use_mixed_model=True) are viable. "
+            "See the small-sample guidance in the documentation."
+        )
+    else:
+        result["recommendations"].append(
+            "No sample_col provided. The analysis will treat cells as independent. "
+            "If cells come from multiple biological replicates, consider providing sample_col "
+            "and using either use_pseudobulk=True or use_mixed_model=True to avoid "
+            "pseudoreplication."
+        )
+
+    # Very small total cell numbers
+    if min(n_t, n_r) < 50:
+        result["warnings"].append(
+            f"Very small number of cells in at least one group (target={n_t}, reference={n_r}). "
+            "Velocity delta estimation and any downstream permutation testing will have low power."
+        )
+
+    # Suggest preset
+    if result["suggested_preset"] is None:
+        if sample_col and result.get("n_samples_target", 0) >= 5:
+            result["suggested_preset"] = "pseudobulk"
+        else:
+            result["suggested_preset"] = "heuristic"
+
+    # General advice
+    result["recommendations"].append(
+        "After running active_score, always inspect adata.uns['scatrans']['diagnostics'] "
+        "and the distributions in the returned all_results DataFrame before applying cutoffs."
+    )
+
+    # Print a concise user-facing summary
+    logger.info("Design diagnosis:")
+    logger.info("  Cells — target: %d | reference: %d", n_t, n_r)
+    if result["n_samples_target"] is not None:
+        logger.info(
+            "  Samples — target: %d | reference: %d",
+            result["n_samples_target"], result["n_samples_reference"]
+        )
+    if result["unspliced_global_fraction"] is not None:
+        logger.info("  Global unspliced fraction: %.1f%%", result["unspliced_global_fraction"] * 100)
+
+    for w in result["warnings"]:
+        logger.warning("  [WARNING] %s", w)
+    for r in result["recommendations"]:
+        logger.info("  [RECOMMENDATION] %s", r)
+
+    return result

@@ -229,6 +229,17 @@ def _pseudobulk_with_layers(
     return adata_pb
 
 
+def _is_bias_correction_enabled(val: Any) -> bool:
+    """Return True unless the user explicitly disabled bias correction."""
+    if val is None or val is False:
+        return False
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in ("none", "off", "no", "false", "disable", ""):
+            return False
+    return True
+
+
 def _fit_huber_bias_correction(
     delta_velocity: np.ndarray,
     gene_length: np.ndarray,
@@ -240,28 +251,50 @@ def _fit_huber_bias_correction(
     min_fit_obs: int = 30,
     huber_epsilon: float = 1.35,
     huber_max_iter: int = 500,
+    bias_correction: str = "huber_length_intron",
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Shared Huber regression bias correction (or median fallback).
 
     Used by both the main analysis path and the permutation tasks so the
     correction logic stays in one place (DRY).
+
+    bias_correction controls behavior:
+      - "huber_length_intron" (default), "huber", "yes", "on": perform the
+        length+intron Huber correction (with median fallback if regression
+        cannot be fit).
+      - "none", "off", False, None: disable correction entirely; residual is
+        the raw delta_velocity (no subtraction of fit or median). This keeps
+        the basic analysis clean for users who do not want the correction.
+
     Returns (residual, bias_info_dict) where bias_info contains:
       - "bias_corrected": bool
+      - "method": the effective method used ("huber_length_intron" or "none")
       - "n_genes_used_for_fit": int
       - "fallback_to_median": bool
       - "coef_gene_length", "coef_intron_number" (if regression succeeded)
       - "intercept" (if available)
     """
     residual = np.zeros_like(delta_velocity, dtype=float)
+    method = str(bias_correction) if bias_correction is not None else "huber_length_intron"
     bias_info: Dict[str, Any] = {
         "bias_corrected": False,
+        "method": method,
         "n_genes_used_for_fit": 0,
         "fallback_to_median": False,
         "coef_gene_length": np.nan,
         "coef_intron_number": np.nan,
         "intercept": np.nan,
     }
+
+    if not _is_bias_correction_enabled(bias_correction):
+        # No correction at all: residual == raw delta (clipped for invalid expr)
+        residual = np.array(delta_velocity, dtype=float, copy=True)
+        residual[~valid_expr] = 0.0
+        bias_info["bias_corrected"] = False
+        bias_info["fallback_to_median"] = False
+        bias_info["n_genes_used_for_fit"] = 0
+        return residual, bias_info
 
     fit_mask = valid_feat & valid_expr
     n_fit = int(fit_mask.sum())

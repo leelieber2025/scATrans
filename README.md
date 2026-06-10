@@ -1,8 +1,8 @@
 # scATrans
 
-scATrans is a Python package for the analysis of active transcription in single-cell RNA sequencing data. It computes a composite score for genes based on the unspliced (nascent) RNA fraction, differential expression between experimental groups, and correction for technical biases related to gene length and intron number.
+scATrans computes a composite score that integrates differential expression with a simple reference-based measure of excess unspliced (nascent) RNA between two groups. It is designed for users working with single-cell spliced/unspliced or mature/nascent data who want to rank genes according to this combined signal.
 
-The package implements a dual-track approach (heuristic and advanced) with optional permutation testing for assessing the statistical significance of the resulting scores.
+The package supplies a basic analysis path together with several optional extensions. All methods have limitations; results should be interpreted in light of the diagnostics and the experimental design. The tool does not claim to be a gold standard or to recover "truly active" genes in an absolute sense.
 
 ## Installation
 
@@ -17,9 +17,9 @@ pip install "scatrans[advanced,gene_features]" gseapy
 pip install "scatrans[pseudobulk]"
 ```
 
-The package includes precomputed gene feature tables (gene length and intron number) for mouse. These are used by default for bias correction.
+The package ships precomputed gene feature tables (gene length and intron number) for mouse. These are used for bias correction when available.
 
-To install from source for development:
+To install from source:
 
 ```bash
 git clone https://github.com/scATrans/scatrans.git
@@ -27,614 +27,596 @@ cd scatrans
 pip install -e ".[dev]"
 ```
 
-If the editable install fails outside a git repository (a common issue with dynamic versioning), force a version with:
-
-```bash
-SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SCATRANS=0.7.0-dev pip install -e ".[dev]"
-```
-
-**Logging.** The package uses the Python `logging` module under the name `scatrans`. The command-line tools configure basic INFO-level output. In scripts or notebooks, logging can be configured as follows:
+**Logging.** The package logs under the name `scatrans`. You can control verbosity with:
 
 ```python
 import logging
 logging.getLogger("scatrans").setLevel(logging.INFO)
 ```
 
-**Quick data quality check (strongly recommended).** Before (or during) analysis it is useful to inspect the global unspliced fraction:
+**Quick data quality check (recommended).** Before analysis it is useful to inspect the global unspliced fraction:
 
 ```python
 import scatrans as scat
 ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 ```
 
-`active_score` now automatically calls this and records the value in diagnostics (see the mode selection guide below for interpretation). A very high fraction can indicate technical problems with the velocity layers.
+`active_score` automatically runs this check and records the value in diagnostics.
 
-## Quick Start
+---
+
+## Core Positioning
+
+scATrans helps users extract **condition-wise nascent RNA relative excess** signals (a lightweight proxy for differential active transcription) from single-cell velocity-style data.
+
+- **Basic pipeline (on by default):** DE + unspliced excess after reference gamma correction + optional light bias correction for length/intron number + composite scoring + gene filtering + enrichment + plotting.
+- **Advanced options are opt-in:** They are powerful but add complexity and information overload. New users should start with defaults.
+- **Honest by design:** The default `significant` list is deliberately strict (often empty or very small on real data). The primary deliverable is the full ranked table (`all_results`). Diagnostics are always provided so you can judge whether the signals are trustworthy in your data.
+
+---
+
+## Quick Start (Minimal Default Flow) — Recommended
 
 ```python
 import scanpy as sc
 import scatrans as scat
 
-# Load data containing spliced/unspliced or mature/nascent layers
+# 1. Load data that contains spliced/unspliced or mature/nascent layers
 adata = sc.read_h5ad("your_data.h5ad")
 
-# Attach gene features for bias correction (uses bundled mouse data by default)
+# 2. (Optional but recommended) Attach gene features for bias correction
+#    Uses the bundled mouse table by default.
 adata = scat.add_gene_features(adata)
 
-# Compute active transcription scores
+# 3. Run the analysis with default parameters — no need to worry about
+#    bias_correction, effective_gamma, mixed models, etc.
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    mode="heuristic",
-    use_permutation=True,
-    n_perm=200,
-    show_plot=True,
 )
 
-print(significant.head())
+# 4. The most important output for almost everyone is all_results (full ranked table)
+print(all_results.head())
 ```
 
-> **Important**: The default `significant` list is deliberately strict. On real data it is very common to get 0 or very few genes.  
-> The primary deliverable is `all_results` (full ranked table). Most users then apply custom filters on `all_results` to obtain their final biological gene list (see the detailed workflow section below).
+**Key point:** The default settings run a basic analysis without requiring decisions about `bias_correction`, `effective_gamma`, `use_mixed_model`, or `use_permutation`.
 
-## The active_score Function
+Pseudobulk analysis (`use_pseudobulk`) and choice of differential expression test (`de_method`, e.g. "wilcoxon") are standard configuration options that can be selected according to the experimental design (see the section on common basic switches).
 
-The main analysis function is `active_score`. It accepts a large number of parameters to control data preprocessing, differential expression, velocity estimation, bias correction, statistical testing, and output.
+The built-in `significant` list uses a strict conjunction of thresholds and is frequently small or empty. This behavior is expected. The primary output for most users is the full ranked table returned as `all_results`.
 
-### Core Parameters
+---
 
-| Parameter                  | Default          | Description |
-|----------------------------|------------------|-------------|
-| `adata_input`              | (required)       | AnnData object with layers for spliced/unspliced (or mature/nascent). |
-| `groupby`                  | `"condition"`    | Column in `adata.obs` defining the groups to compare. |
-| `target_group`             | `"GA"`           | Name of the group of interest. |
-| `reference_group`          | `"Ctrl"`         | Name of the reference group. |
-| `subset_col`, `subset_values` | `None`        | Optional column and values to subset cells before analysis. |
-| `weight_fc`, `weight_unspliced`, `weight_pval` | `1.0` | Relative weights used when combining fold change, unspliced residual, and p-value into the final active score. |
-| `pval_cutoff`, `logfc_cutoff` | `0.05`, `0.5` | Thresholds used for the **default** `significant` list (combined with `velocity_residual > 0`). These do **not** limit what is present in `all_results`. |
-| `active_fdr_cutoff`        | `0.05`           | FDR threshold for the default significant list when `use_permutation=True`. |
+## Basic Analysis Workflow (Recommended Path)
 
-### Differential Expression and Pseudobulk
-
-| Parameter                  | Default              | Description |
-|----------------------------|----------------------|-------------|
-| `de_method`                | `"t-test_overestim_var"` | Method passed to `scanpy.tl.rank_genes_groups`. |
-| `pseudobulk_de_backend`    | `"pydeseq2"`         | Backend for differential expression when `use_pseudobulk=True`. Options: `"pydeseq2"`, `"scanpy"`. |
-| `use_pseudobulk`           | `False`              | Whether to aggregate to pseudobulk before analysis. |
-| `sample_col`               | `None`               | Column identifying biological samples (required when `use_pseudobulk=True`, and also when `use_mixed_model=True` for the random intercept). |
-| `min_cells`, `min_counts`  | `10`, `1000`         | Minimum cells and counts required to retain a pseudobulk sample. |
-| `pb_x_layer`, `pb_use_total_for_x` | `"spliced"`, `True` | Controls the expression matrix used for pseudobulk aggregation. |
-| `strict_pydeseq2_counts`   | `True`               | If True, raises an error when input does not appear to be raw counts for PyDESeq2. |
-
-### Mixed Models and Delta Variance (Replicate-Aware DE)
-
-scATrans supports an optional mixed linear model (LMM) path for the differential component of the active score. This is particularly useful for datasets with multiple biological samples (replicates) per condition/group, where treating individual cells as independent observations can lead to inflated significance (pseudoreplication).
-
-- Enabled via `use_mixed_model=True` (requires `sample_col`).
-- Uses `statsmodels.formula.api.mixedlm("y ~ C(condition)", ..., groups=sample)` on log1p library-size normalized expression (LMM on log-scale is the standard lightweight approach also used by dream/dreamlet/variancePartition).
-- Returns the usual `logFC` (fixed-effect coef), `p_val`/`p_adj` (Wald test on condition term) **and**:
-  - `delta_variance`: fraction of total modeled variance (fixed-effect contribution + random intercept var + residual) attributable to the condition of interest. This is directly inspired by `variancePartition` "fraction of variation explained".
-  - `delta_var_pval`: likelihood-ratio test (LRT) p-value comparing the full model vs. a reduced model without the condition term.
-- `delta_variance` is **always** added to `all_results` (and `adata.var`) when `use_mixed_model=True`. You can use it post-hoc to filter (e.g. `all_results[all_results["delta_variance"] > 0.05]` for genes where condition explains a non-trivial fraction of variance).
-- Use `use_delta_variance_pval=True` (and `delta_var_pval_cutoff=0.05`) to make the LRT p-value part of the **significant gene mask** (supplementary filter alongside p_adj, logFC, velocity residual, etc.).
-
-**Power considerations**: Enabling `use_mixed_model=True` replaces the simple DE p-values/logFC with more statistically rigorous LMM-based estimates. This is generally **more conservative** (larger p-values for the same raw difference when there is substantial sample-to-sample variation), which reduces the risk of inflated discoveries due to pseudoreplication. The velocity_residual component of the active_score is completely unaffected. 
-
-If you are primarily driven by a strong velocity signal, you can increase `weight_unspliced` (and/or decrease `weight_pval`) to let the nascent RNA excess term dominate the composite score even if the LMM p-value is more conservative. The new `mixed_model_pval="lrt"` option lets you use the likelihood-ratio p-value (directly tied to the delta_variance concept) instead of the Wald coefficient test for the DE part of the score. Delta variance itself is an *additive* piece of information/filter — it does not automatically make the core active_score stricter unless you explicitly enable `use_delta_variance_pval`.
-
-In short, the additions give you better control and validity without forcing a power loss on the unique velocity-driven part of the method. The original simple DE path remains the default for maximum sensitivity when sample structure is not a concern.
-- Relation to referenced packages (implementation choice):
-  - Follows the spirit of **dreamlet / variancePartition** (pseudobulk LMM + explicit variance fractions) and its 2026 Python port **dreampy** — we use a native statsmodels LMM + explicit delta variance computation without requiring heavy limma/voom reimplementation.
-  - **Libra** (R) provides a menu of mixed models (LMM, NB-GLMM etc.); we expose the fast Gaussian LMM path.
-  - For true count-based **negative binomial mixed models** optimized for scRNA, **NEBULA** (R primary, with Python interest) is excellent but heavier; our LMM is a practical, fast, widely-validated approximation on the log scale. For production count NBMM you can run NEBULA/dreampy separately on pseudobulks and combine results.
-- Recommendation: Use `use_pseudobulk=True + pydeseq2` (or scanpy) for count-driven pseudobulk DE when you have a reasonable number of samples per group (ideally ≥5–6 after filtering). Use `use_mixed_model=True` (cell-level with sample random effect) when you want to retain single-cell resolution for the velocity signal while still properly accounting for sample structure (avoids pseudoreplication).
-
-**Important practical guidance for small numbers of samples** (e.g. only 3 biological samples, as seen in some real datasets like the EC.h5ad example):
-
-- With `use_pseudobulk=True` on very few samples, aggregation often causes `velocity_residual` to collapse to near-zero for the large majority of genes (most signal is averaged away). Combined with any non-trivial weight on the unspliced term, the composite `active_score` becomes very low for most genes. Permutation power is also extremely limited.
-- In such low-n regimes, running with `use_pseudobulk=False` + `use_mixed_model=True` (sample as random intercept) frequently yields more informative results: the velocity excess signal remains visible at cell level for genes that truly differ, while the LMM still respects sample correlation and `delta_variance` provides an additional robust filter.
-- Always inspect the actual distributions in `all_results` (`active_score`, `velocity_residual`, `active_score_fdr`, etc.) before choosing cutoffs. The `filter_active_genes(..., preset="pseudobulk")` or `preset="heuristic"` helpers can help pick starting thresholds appropriate to your run mode.
-
-In short: pseudobulk is powerful and statistically cleaner **when you have enough samples**. With very few samples it can make the velocity component of the active score almost disappear. The mixed-model path at cell level is often the better compromise.
-
-**Real-data example from GA_test.h5ad** (6 individuals, ~18k cells, groupby="sample" (GA vs Ctrl), sample_col="individual", same weights as many users):
-- Without mixed_model: median active_score ~19.4, >10k genes with velocity_residual >0, thousands pass reasonable active_score thresholds.
-- With use_mixed_model=True: on gene subsets, median delta_variance drops to ~0.0002 (only ~1/300 genes >0.05). Using `filter_active_genes(..., preset="pseudobulk")` or heuristic + delta filter becomes extremely strict (often <10 genes).
-- Lesson: the added mixed + delta_variance features are powerful for validity but can dramatically reduce the number of genes you would call "interesting" when individual variation is large. Use `preset` + inspect distributions + tune `weight_unspliced` / `mixed_model_pval="lrt"` to balance sensitivity. For pure discovery power on velocity-driven signal, the default (no mixed) path often surfaces more candidates that you can then validate with mixed/delta post-hoc.
-
-| Parameter                    | Default | Description |
-|------------------------------|---------|-------------|
-| `use_mixed_model`            | `False` | Enable LMM DE + delta variance computation (requires `sample_col`). |
-| `use_delta_variance_pval`    | `False` | If True, `delta_var_pval < delta_var_pval_cutoff` is added to the significant gene criteria. |
-| `delta_var_pval_cutoff`      | `0.05`  | Threshold for the optional delta variance LRT p-value filter. |
-| `sample_col`                 | `None`  | Also used as the grouping factor for `(1 \| sample)` random intercept. |
-| `mixed_model_pval`           | `"wald"` | When `use_mixed_model=True`: which p-value to feed into the active_score composite and default filters ("wald" for the coefficient test, or "lrt" for the model-comparison test that aligns with delta_variance). |
-
-Example:
+### 3.1 Run active_score (default parameters)
 
 ```python
-import scatrans as scat
 adata_res, significant, all_results = scat.active_score(
-    adata,
+    adata_input=adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    sample_col="patient_id",      # or "sample", "donor" etc.
-    use_mixed_model=True,
-    use_delta_variance_pval=True, # include delta_var_pval in sig filter
-    delta_var_pval_cutoff=0.05,
-    # other params...
+    show_plot=True,   # shows a comet plot for quick visual check
 )
-# Post-filter example using delta_variance (supplementary)
-top_drivers = all_results[all_results["delta_variance"] > 0.1].head(20)
 ```
 
-The mixed model settings, number of samples used for RE, and median delta_variance are recorded in `adata.uns["scatrans"]["diagnostics"]["mixed_model"]` and the top-level metadata.
+This performs:
+- Differential expression between the two groups
+- Velocity delta (nascent excess) using a reference-group gamma
+- Light Huber bias correction on gene length + intron number (default)
+- Composite active_score (0–100)
+- Rich diagnostics written to `adata_res.uns["scatrans"]["diagnostics"]`
 
-### Permutation Testing
+### 3.1.1 Common basic switches: pseudobulk and DE test method
 
-| Parameter                  | Default     | Description |
-|----------------------------|-------------|-------------|
-| `use_permutation`          | `False`     | Enable permutation testing to obtain gene-level p-values and FDR. |
-| `perm_de_backend`          | `"fast"`    | DE backend used inside permutations (`"fast"` = scanpy, `"same"` = same as main analysis). |
-| `n_perm`                   | `100`       | Number of permutations. |
-| `auto_adjust_n_perm`       | `True`      | Reduce `n_perm` automatically for very small pseudobulk designs. |
-| `random_seed`              | `42`        | Random seed for reproducibility of permutations and neighbor graphs. |
+These two are **standard basic options**, not advanced exploration features. You can turn them on freely depending on your data and analysis preferences:
 
-### Dual-Track Velocity Estimation
-
-| Parameter                      | Default     | Description |
-|--------------------------------|-------------|-------------|
-| `mode`                         | `"heuristic"` | `"heuristic"` uses a global ratio method. `"advanced"` uses scVelo moments for local smoothing (requires the `advanced` extra). |
-| `advanced_fallback`            | `True`      | Fall back to heuristic mode if the advanced track fails. |
-| `advanced_n_neighbors`, `advanced_n_pcs` | `30`, `30` | Neighbor and PCA parameters for the advanced (scVelo moments) track. |
-| `advanced_use_precomputed`     | `False`     | Use existing Mu/Ms layers instead of recomputing moments. |
-| `allow_advanced_pseudobulk`    | `False`     | Permit advanced mode on pseudobulk data (experimental). |
-| `advanced_recompute_neighbors` | `True`      | Force recomputation of the neighbor graph in advanced mode. |
-| `prior_weight`                 | `5.0`       | Strength of the prior used when computing the reference gamma (velocity delta). |
-
-### Choosing `mode`: heuristic vs advanced (and common pitfalls)
-
-**Recommendation (quick decision guide):**
-
-- Use the default `mode="heuristic"` for most analyses, especially:
-  - Small cell numbers (< ~50-100 total in the two groups being compared)
-  - When the reference group is small or has low unspliced counts
-  - When you want the most direct "target excess relative to reference baseline" interpretation
-  - For pseudobulk data (advanced is experimental and can over-smooth)
-
-- Try `mode="advanced"` (requires `pip install "scatrans[advanced]"`) when:
-  - You have a reasonable number of cells (ideally > 100-200 in the contrast)
-  - You want local neighborhood smoothing (via scVelo `pp.moments`) to reduce Poisson noise in U/S counts
-  - The data is not pseudobulk (or you explicitly set `allow_advanced_pseudobulk=True`)
-
-**Key conceptual difference**
-- Both modes ultimately compute a group-level "excess unspliced" delta using a reference-derived gamma.
-- `heuristic` uses raw (or size-factor normalized) counts + a simple reference-group gamma (with shrinkage prior).
-- `advanced` first computes locally-smoothed Mu/Ms moments, then applies the **same** reference-gamma delta formula on the smoothed values. The main practical benefit is noise reduction from moments, **not** a fundamentally different velocity model.
-
-**Common pitfalls & limitations**
-- Advanced can be unstable or slow with very few cells or when neighbor graph construction fails — it falls back gracefully when `advanced_fallback=True` (default).
-- The "velocity" here is **not** scVelo's full stochastic or dynamical model (we deliberately kept it simple and group-contrast focused). It is a lightweight proxy for differential active transcription.
-- Permutation testing (when enabled) fixes the velocity/Mu/Ms layers from the original labeling for speed; only the group labels are shuffled. This is documented in `adata.uns["scatrans"]["permutation_approximation_note"]`.
-- Global unspliced fraction > ~50% often indicates technical issues (nuclear enrichment, gDNA contamination). The package now automatically computes and logs this (see `qc.unspliced_global`).
-- Bias correction quality depends on having enough genes with reliable length/intron annotations. Check `uns["scatrans"]["diagnostics"]["bias_correction"]` after a run.
-- Results are most interpretable for **clear binary biological contrasts**. Mixed cell states within a "target" group can dilute the signal.
-
-A rich set of diagnostics (including the global unspliced fraction, bias regression coefficients, number of genes used for fitting, effective gamma per gene, etc.) is now stored in `adata.uns["scatrans"]["diagnostics"]` and a concise summary is printed to the log at the end of every `active_score` run. Always inspect these before interpreting significant genes.
-
-### Layer Handling
-
-| Parameter             | Default      | Description |
-|-----------------------|--------------|-------------|
-| `spliced_layer`       | `"spliced"`  | Name of the spliced (mature) layer. |
-| `unspliced_layer`     | `"unspliced"`| Name of the unspliced (nascent) layer. |
-| `de_preprocess`       | `"auto"`     | Preprocessing applied before DE (`"auto"`, `"normalize_log1p"`, or `"none"`). |
-
-### Bias Correction and Filtering
-
-| Parameter             | Default | Description |
-|-----------------------|---------|-------------|
-| `min_total_counts`    | `50`    | Minimum total (spliced + unspliced) counts required for a gene to be considered expressed. |
-| `gene_type_filter`    | `None`  | If provided, restricts analysis to genes where `adata.var["gene_type"]` equals this value. |
-
-### Output Control
-
-| Parameter     | Default | Description |
-|---------------|---------|-------------|
-| `show_plot`   | `True`  | Whether to display a summary plot at the end of the analysis (delegates to `scat.pl.comet_plot`). |
-| `n_jobs`      | `-1`    | Number of parallel jobs (used for permutation testing and certain DE backends). `-1` uses all available cores. |
-
-**Return value.** The function returns a tuple `(adata_res, significant, all_results)`:
-- `adata_res`: The processed AnnData object (subsetted and/or aggregated) with results written to `.var` and `.uns["scatrans"]`.
-- `significant`: DataFrame of genes passing the **built-in** significance criteria (see below), sorted by active score. This list is intentionally conservative and can easily be empty (or very small) on real data.
-- `all_results`: The most important output for most users — a DataFrame containing **all** genes with every computed score and intermediate value (`active_score`, `logFC`, `p_val`, `p_adj`, `velocity_residual`, `delta_variance`, etc.), sorted by active score descending. This table is what you should inspect and filter to obtain your final biological gene list.
-
-Columns added to `adata.var` typically include `active_score`, `velocity_residual`, `logFC`, `p_val`, `p_adj`, and (when permutation is used) `active_score_pval` and `active_score_fdr`. When `use_mixed_model=True`, `delta_variance` and `delta_var_pval` are also added (and included in `all_results`).
-
-### Recommended practical workflow: default `significant` vs. custom post-filtering on `all_results`
-
-The built-in significance mask used for `significant` is a **strict conjunction** of several conditions:
-
-```text
-p_adj < pval_cutoff
-AND logFC > logfc_cutoff
-AND velocity_residual > 0
-AND valid_expr (sufficient total counts)
-AND active_score > 0
-AND (if use_permutation) active_score_fdr < active_fdr_cutoff
-AND (if use_delta_variance_pval) delta_var_pval < delta_var_pval_cutoff
-```
-
-In practice, especially when `use_permutation=True` (recommended for rigor) together with a non-trivial `velocity_residual` requirement, it is **very common** for the default `significant` to contain 0 or only a handful of genes. This does **not** mean the analysis failed — the composite `active_score` and the full `all_results` table are still highly informative.
-
-**The recommended real-world usage pattern is therefore two-step:**
-
-1. Run `active_score` once (with your preferred parameters, `show_plot=True` is useful) to obtain the complete ranking in `all_results`.
-2. Inspect `all_results` (it is already sorted by `active_score` descending) and derive a custom `final_significant` list using thresholds that make biological sense for your experiment.
-
-Example:
+**Pseudobulk mode** (recommended when you have multiple biological replicates per condition):
 
 ```python
-import scatrans as scat
-
-# 1. Run the software normally to obtain the full ranked results
-#    (the default `sig_targets` is frequently empty or very small)
-adata_res, sig_targets, all_results = scat.active_score(
+adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
     groupby="condition",
-    target_group="SCI",
-    reference_group="UN",
-    use_permutation=True,
-    n_perm=300,
-    active_fdr_cutoff=0.2,
-    pval_cutoff=0.05,
-    logfc_cutoff=0.3,
-    weight_fc=0.5,
-    weight_unspliced=2.0,
-    weight_pval=1.0,
+    target_group="Disease",
+    reference_group="Control",
+    use_pseudobulk=True,
+    sample_col="sample",                    # column identifying biological samples/individuals
+    pseudobulk_de_backend="pydeseq2",       # or "scanpy"
+    min_cells=5,
+    min_counts=100,
     show_plot=True,
 )
-
-print(f"Number of genes in the default sig_targets: {len(sig_targets)}")   # often 0
-
-# 2. Use the built-in helper (recommended) or your own logic on all_results
-#    to obtain a final, biologically meaningful gene list.
-#    The helper only applies filters for columns that are actually present.
-
-# Calling with no arguments returns everything (sorted). To apply
-# the commonly useful "recommended" filters, pass explicit values:
-final_significant = scat.filter_active_genes(
-    all_results,
-    active_score_cutoff=55,
-    pval_cutoff=0.05,
-    velocity_residual_cutoff=1.0,
-    logfc_cutoff=0.35,
-    active_score_fdr_cutoff=0.25,      # only used if use_permutation=True
-    effective_gamma_min=0.05,          # recommended default (see effective_gamma section)
-    effective_gamma_max=1.0,           # optional upper bound
-    # delta_variance_min=0.05,         # uncomment if you used use_mixed_model=True
-)
-
-print(f"Number of genes after custom filtering: {len(final_significant)}")
-
-# Inspect the most relevant columns
-display_cols = [
-    "active_score", "logFC", "p_val", "p_adj",
-    "active_score_pval", "active_score_fdr",
-    "velocity_residual", "effective_gamma"
-]
-display_cols = [c for c in display_cols if c in final_significant.columns]
-print(final_significant.head(15)[display_cols])
-
-# Save for downstream analysis (enrichment, plotting, validation, etc.)
-final_significant.to_csv("final_significant_genes_SCI.csv")
 ```
 
-**Tips for choosing custom thresholds**
-- Start by inspecting the distributions in `all_results.head(50)` or `all_results.describe()` for `active_score`, `velocity_residual`, `logFC`, and (if available) `active_score_fdr`.
-- `velocity_residual > 0` is already required by the default significance mask. Raising the threshold (e.g. > 0.5 or > 1.0) is an effective way to retain only genes with a clear excess of nascent RNA.
-- When `use_permutation=True`, `active_score_fdr` is usually the most relevant statistical filter for the final composite score. A cutoff in the 0.2–0.3 range is common for exploratory analyses (stricter than the default 0.05 used internally for `significant`).
-- The condition on `effective_gamma > 0` (and not NaN) is a light guard against genes where the velocity reference gamma was unreliable (very low counts in the reference group). In most cases the existing `valid_expr` column already handles the worst offenders.
-- When `use_mixed_model=True`, consider also requiring `delta_variance > X` (higher values mean the experimental condition explains a larger fraction of the gene's variance after modeling sample-level random effects).
-- You can combine any columns available in `all_results`. Always guard for column existence in your script if you sometimes run with/without `use_permutation` or `use_mixed_model`.
-- After obtaining `final_significant`, pass its index (or `.index.tolist()`) to `scat.run_enrichment(...)` or the plotting functions.
+- Requires `sample_col`.
+- `pseudobulk_de_backend="pydeseq2"` uses the count-based DESeq2 model (install with `pip install "scatrans[pseudobulk]"`).
+- `pseudobulk_de_backend="scanpy"` + `de_method="wilcoxon"` (or `"t-test_overestim_var"`) uses scanpy's rank_genes_groups on the aggregated data.
 
-This two-step approach (trust the software for computation + rich ranking, apply domain knowledge for final selection) is the most common and productive way to use scATrans on real single-cell velocity datasets.
-
-### The `filter_active_genes` helper function
-
-Because the default `significant` list returned by `active_score` is intentionally conservative and frequently empty, most users derive their final gene list from `all_results`.
-
-`scat.filter_active_genes` provides a convenient, documented way to do this.
-
-Calling it with only the DataFrame (no extra keyword arguments) and no `preset` returns the **full** `all_results` table sorted by active_score descending (fully permissive, no filtering applied).
-
-The function now supports a `preset` argument that automatically chooses sensible default thresholds for different analysis styles:
-
-- `preset="heuristic"` (or `"single_cell"`): stricter defaults suitable for typical single-cell heuristic runs with default weights (active_score >= 55, velocity_residual > 1.0, logFC > 0.35, etc.).
-- `preset="pseudobulk"`: more lenient defaults that account for the much smaller scale of `active_score` and `velocity_residual` after sample-level aggregation (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
-- `preset="permissive"` (or `"none"`): no filtering.
-
-Explicitly passed cutoff arguments always override the preset.
-
-Example using a preset for a pseudobulk analysis:
+**Switching the DE statistical test** (works for both single-cell and pseudobulk):
 
 ```python
-import scatrans as scat
-
-adata_res, sig_targets, all_results = scat.active_score(...)
-
-final_significant = scat.filter_active_genes(
-    all_results,
-    preset="pseudobulk",                 # chooses appropriate lenient defaults
-    # You can still override individual values:
-    # active_score_cutoff=8,
-    # active_score_fdr_cutoff=0.25,
+# Use Wilcoxon rank-sum test instead of the default t-test
+adata_res, significant, all_results = scat.active_score(
+    ...,
+    de_method="wilcoxon",                 # any method supported by scanpy.tl.rank_genes_groups
 )
 ```
 
-See the function docstring for complete details. The helper safely ignores columns that do not exist (e.g. `active_score_fdr` when `use_permutation=False`).
+When using `use_pseudobulk=True` + `pseudobulk_de_backend="scanpy"`, the `de_method` you choose (including `"wilcoxon"`) will be used for the pseudobulk DE step.
 
-**Important note on scale differences**: With `use_pseudobulk=True` (or heavy re-weighting such as `weight_unspliced=2.0`), the composite `active_score` values are often much lower and `velocity_residual` values are typically near zero. The "single-cell heuristic" numbers will frequently return almost nothing in these cases. Always inspect the actual distributions in your `all_results` first:
+These choices are recorded in `adata_res.uns["scatrans"]` (`de_method`, `pseudobulk_de_backend`, `use_pseudobulk`).
 
-```python
-print(all_results[["active_score", "velocity_residual", "logFC", "active_score_fdr"]].describe())
-```
+The `filter_active_genes` helper has a `preset="pseudobulk"` that applies more lenient default thresholds suitable after aggregation.
 
-Then choose (or let the preset choose) cutoffs appropriate for your run.
+### 3.2 Gene filtering with filter_active_genes (core output tool)
 
-### Recommended Practical Pipeline (Balancing Power and Validity)
-
-When your data has clear sample/individual structure (e.g., multiple cells per `individual` or `sample`), the new mixed-model and delta-variance features give you powerful tools for statistical validity, but they can also make results more conservative. The following two-stage pipeline is recommended for most real-world analyses. It maximizes discovery power for the velocity-driven signal while using mixed models + delta variance for rigorous validation and final filtering.
-
-**Stage 1 – Discovery (higher sensitivity, velocity-focused)**
-- Run `active_score` with `use_mixed_model=False` (or `True` but ignore delta for now).
-- Use a relatively high `weight_unspliced` (e.g. 2.0) so the nascent-RNA excess signal dominates the composite score.
-- Obtain `all_results`.
-- Use `filter_active_genes` with an appropriate `preset` (or explicit lenient cutoffs) that emphasizes `active_score` and `velocity_residual`. Inspect distributions first:
+Because the built-in `significant` list is strict, most users derive their final list from `all_results` using `filter_active_genes`.
 
 ```python
-import scatrans as scat
-import pandas as pd
-
-# Stage 1 – discovery run (example parameters similar to GA_test.h5ad)
-adata_res, sig_targets, all_results = scat.active_score(
-    adata_input=adata,
-    groupby="sample",
-    target_group="GA",
-    reference_group="Ctrl",
-    sample_col="individual",
-    use_mixed_model=False,          # discovery phase – keep sensitivity
-    use_permutation=True,
-    n_perm=300,
-    active_fdr_cutoff=0.1,
-    show_plot=True,
-    weight_fc=0.5,
-    weight_unspliced=2.0,
-    weight_pval=1.0,
-    pval_cutoff=0.05,
-    logfc_cutoff=0.25,
-)
-
-print(all_results[["active_score", "velocity_residual", "logFC"]].describe())
-
-# Candidate list focused on velocity + composite score
+# Start permissive, then tighten based on your data
 candidates = scat.filter_active_genes(
     all_results,
-    preset="pseudobulk",            # or "heuristic" – choose based on your run
-    # You can also pass explicit values after inspecting quantiles
-)
-print(f"Candidates from Stage 1: {len(candidates)}")
-```
-
-**Stage 2 – Validation & High-Confidence Filtering (use mixed model + delta_variance)**
-- Re-run (or use the same `all_results` if you already computed mixed-model statistics) with `use_mixed_model=True`.
-- Look at `delta_variance` on your Stage-1 candidates.
-- Apply a final filter that also requires a meaningful `delta_variance` (condition explains variance beyond the random effect of individuals).
-
-```python
-# Stage 2 – run with mixed model (or re-use previous results if you stored them)
-adata_res, sig_targets, all_results_mixed = scat.active_score(
-    adata_input=adata,
-    groupby="sample",
-    target_group="GA",
-    reference_group="Ctrl",
-    sample_col="individual",
-    use_mixed_model=True,
-    mixed_model_pval="lrt",         # often slightly more powerful for overall effect
-    use_permutation=True,
-    n_perm=300,
-    active_fdr_cutoff=0.1,
-    show_plot=True,
-    weight_fc=0.5,
-    weight_unspliced=2.0,
-    weight_pval=1.0,
+    active_score_cutoff=30,
+    velocity_residual_cutoff=0.5,
+    logfc_cutoff=0.3,
     pval_cutoff=0.05,
-    logfc_cutoff=0.25,
 )
 
-# Final high-confidence list: velocity signal + composite score + robust delta_variance
-final_significant = scat.filter_active_genes(
-    all_results_mixed,
-    preset="pseudobulk",
-    delta_variance_min=0.05,        # require condition to explain ≥5% variance after individual RE
-)
-
-print(f"Final high-confidence genes: {len(final_significant)}")
-print(final_significant.head(15)[
-    ["active_score", "velocity_residual", "delta_variance", "active_score_fdr"]
-])
-
-final_significant.to_csv("final_significant_genes_GA.csv")
+# Or use presets that choose reasonable defaults for common analysis styles
+candidates = scat.filter_active_genes(all_results, preset="heuristic")
+# or preset="pseudobulk" after aggregation, or preset="permissive"
 ```
 
-**Why this pipeline?**
-- Stage 1 preserves power for the unique velocity (nascent RNA excess) signal that is the core of scATrans.
-- Stage 2 uses the statistically more rigorous mixed-model p-values and `delta_variance` only for final selection, avoiding the power loss that occurs when you apply conservative LMM statistics to the entire genome at the discovery stage.
-- You remain fully in control via weights, presets, and explicit cutoffs.
-- On real data with individual structure (e.g. GA_test.h5ad with 6 individuals or EC.h5ad with 3 samples), this approach typically yields a manageable candidate list in Stage 1 and a high-confidence final list in Stage 2 that is far more likely to replicate.
+The helper safely ignores filters for columns that do not exist (e.g. `active_score_fdr` when you did not use `use_permutation`).
 
-You can of course collapse the two stages into a single run if you prefer, but the staged approach has proven practical for balancing sensitivity and validity.
-
-### Understanding and filtering on `effective_gamma`
-
-`effective_gamma` is the per-gene **reference-group unspliced-to-spliced ratio** (U/S) computed with a small shrinkage prior (`prior_weight=5` by default). It is used internally to calculate the velocity delta:
-
-```
-delta = U_target - (effective_gamma × S_target)
-```
-
-It therefore reflects the transcriptional “baseline” in the reference (control) group.
-
-**Typical range (heuristic mode, realistic data):**
-- 5th percentile: ~0.07
-- Median: ~0.40–0.45
-- 95th percentile: ~0.74
-- Overall observed range in well-powered data: roughly 0.02 – 0.85
-
-In pure heuristic mode the values for many genes can be quite similar (close to the global reference gamma). In advanced mode (scVelo moments) they show more per-gene variation.
-
-**Recommended filtering practice**
-
-- **Lower bound (most important):** `effective_gamma > 0.05` (default in `filter_active_genes`).
-  - Removes genes whose gamma estimate in the reference group is dominated by the prior because unspliced counts were extremely low. These produce noisy or unreliable velocity deltas.
-  - On many datasets this keeps ~90–95% of genes while discarding the noisiest tail.
-  - If you have very deep data you may safely use `0.03` or even `0.02`. If your reference group is small or low-quality, consider `0.08`.
-
-- **Upper bound (optional):** `effective_gamma < 1.0` (or 0.8–0.9).
-  - Genes with very high effective_gamma were already producing a lot of nascent RNA relative to mature RNA in the reference group.
-  - Use this if you want to focus on genes that were relatively “quiet” in the control and became active in the target condition.
-
-- **Best practice:** Always inspect the actual distribution in your data:
-
-  ```python
-  print(all_results["effective_gamma"].describe())
-  print(all_results["effective_gamma"].quantile([0.05, 0.10, 0.90, 0.95]))
-  ```
-
-  Then choose thresholds that make sense for your biological question rather than using universal magic numbers.
-
-The `filter_active_genes` helper exposes `effective_gamma_min` and `effective_gamma_max` with the defaults above so that the most common safe choice is easy to apply while still allowing full customization.
-
-## Gene Feature Attachment
-
-Bias correction requires per-gene length and intron number information.
-
-```python
-adata = scat.add_gene_features(adata, organism="mouse")
-```
-
-Priority order for supplying features:
-1. `gene_features_path`: Full path to a user-provided parquet file.
-2. `gene_feature_file`: Filename of a file present inside the package data directory.
-3. `organism`: Selects a default bundled table (`"mouse"` or `"human"`).
-
-Use `scat.list_available_gene_features()` to inspect the tables shipped with the installation.
-
-The command-line tool `generate-gene-features` (installed with the `gene_features` extra) can be used to create custom tables from GTF files:
-
-```bash
-generate-gene-features --gtf genes.gtf --output mouse_features.parquet --organism mouse
-```
-
-## Plotting
-
-The `scat.pl` submodule provides functions for visualizing analysis results. A consistent, clean style suitable for scientific publication (vector output, minimal non-data ink, readable sizes) is used by default. The style is inspired by professional single-cell visualization libraries such as OmicVerse.
-
-```python
-import scatrans as scat
-scat.pl.set_style()   # Call once for good defaults (or pass parameters)
-```
-
-A temporary style can be applied with:
-
-```python
-with scat.pl.style_context(linewidth=0.8, labelsize=10):
-    scat.pl.comet_plot(...)
-```
-
-### Main Plot Functions and External Axes (`ax=` / `axes=`)
-
-All primary plotting functions accept an `ax` (or `axes`) parameter. This enables embedding plots into custom multi-panel figures — a common requirement for publication-quality composite figures.
-
-- `comet_plot(df, top_n=12, save_path=None, title=..., point_scale=1.0, figsize=(8, 6), dpi=300, fontsize=12, cmap="coolwarm", ax=None)`
-  - Recommended: log fold change vs. bias-corrected unspliced residual.
-
-- `volcano_plot(df, top_n=10, save_path=None, logfc_cutoff=0.5, pval_cutoff=0.05, color_by="active_score", ax=None)`
-  - 2D volcano plot.
-
-- `volcano_3d(df, top_n=8, save_path=None, ..., ax=None)`
-  - 3D visualization.
-
-- `bias_diagnostic_plot(results_df, save_path=None, ..., show_regression=True, axes=None)`
-  - Before/after bias correction (pass `axes=(ax1, ax2)` for two panels).
-
-- `enrich_dotplot(enrich_df, top_n=15, save_path=None, x="GeneRatio", color_by=..., size_by=..., cmap=..., ax=None)`
-  - Enrichment dot plot (highly customizable).
-
-Additional functions (`enrich_barplot`, `active_score_rankplot`, `active_genes_heatmap`) are available for convenience. `active_score_rankplot` now has a lightweight real implementation; `active_genes_heatmap` delegates to `scanpy.pl.heatmap`.
-
-**Example – multi-panel figure with external axes**
-
-```python
-import matplotlib.pyplot as plt
-import scatrans as scat
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-scat.pl.comet_plot(all_results, top_n=8, ax=axes[0], title="Comet")
-scat.pl.volcano_plot(all_results, top_n=6, ax=axes[1], title="Volcano")
-plt.tight_layout()
-fig.savefig("multi_panel.pdf", dpi=300, bbox_inches="tight")
-```
-
-All functions write high-quality output when `save_path` is provided (300 dpi default, tight bbox, vector-friendly fonts via `set_style`).
-
-See the `examples/` directory:
-- `examples/synthetic_active_transcription.py` — fully runnable synthetic demo (good for quick testing of the API and plotting).
-- `examples/real_data_template.py` — heavily commented template showing the **recommended real-data workflow**, including pre-flight QC, diagnostics inspection, bias diagnostic plots, and enrichment. Copy and adapt it.
-
-All plotting functions support `ax=` / `axes=` for embedding in multi-panel publication figures.
-
-All plotting functions accept `save_path`. When supplied, the figure is saved at the requested DPI with `bbox_inches="tight"`.
-
-## Functional Enrichment
+### 3.3 Functional enrichment
 
 Over-representation analysis is available via `run_enrichment`:
 
 ```python
-res = scat.run_enrichment(
-    gene_list=significant.index.tolist(),
-    gene_sets="GO_Biological_Process_2023",
+enrich_res = scat.run_enrichment(
+    gene_list=candidates.index.tolist(),
+    gene_sets="GO_Biological_Process_2023",  # defaults to the bundled scATrans version
     organism="mouse",
-    background=adata.var_names.tolist(),
+    # `universe` (preferred) or `background` (compat). Default behavior is
+    # clusterProfiler-like conservative: intersect with genes that have
+    # annotation in the chosen gene_sets. Use force_universe=True to disable.
+    universe=adata.var_names.tolist(),
     pval_cutoff=0.05,
     min_size=5,
     max_size=500,
 )
+# New in output (for convenience + clusterProfiler compatibility):
+#   - "neg_log10_padj" column
+#   - res.attrs["universe_info"] with effective_universe_size, dropped_by_annotation_filter, etc.
 ```
 
-Convenience wrappers `run_kegg` and `simplify_enrichment` (Jaccard-based redundancy reduction) are also provided.
-
-## kb_python and Custom Layer Names
-
-When input data use `'mature'` and `'nascent'` layers (kb_python output), the package automatically detects and remaps them to the internal `'spliced'` / `'unspliced'` names. Custom layer names can also be supplied explicitly:
+**run_kegg** (convenience wrapper for KEGG pathways):
 
 ```python
-scat.active_score(
-    adata,
-    spliced_layer="mature",
-    unspliced_layer="nascent",
-    ...
+kegg_res = scat.run_kegg(
+    gene_list=candidates.index.tolist(),
+    organism="mouse",           # or "human"
+    # Defaults to the bundled "KEGG_scATrans" (ClusterProfiler-derived) set
+    universe=adata.var_names.tolist(),   # or background= (backward compat)
+    pval_cutoff=0.05,
 )
 ```
 
+### Default: use the package's bundled gene sets (clearest logic)
+
+The package **defaults to its own bundled gene sets** (the ones extracted from clusterProfiler for better consistency with R/clusterProfiler).
+
+- You mainly only need to specify the organism (for KEGG).
+- Common base names are automatically mapped to the bundled versions.
+
+```python
+# KEGG — just specify organism, gets the bundled version automatically
+kegg = scat.run_kegg(gene_list=genes, organism="mouse")
+
+# GO — use a base/friendly name, gets the bundled scATrans version
+go = scat.run_enrichment(
+    gene_list=genes,
+    gene_sets="GO_Biological_Process_2023",
+    universe=background,
+)
+```
+
+### Using original Enrichr versions
+
+To use a specific historical Enrichr/gseapy version, **just write the exact gene set name** (the one that includes the year/version). The system will detect that it is an Enrichr-style versioned library and load it directly via gseapy.
+
+```python
+# Specific Enrichr version for KEGG — just write the name
+kegg_2021 = scat.run_kegg(
+    genes, organism="mouse",
+    kegg_library="KEGG_2021"     # or KEGG_2019, KEGG_2016, etc.
+)
+
+# Specific version for GO
+go_2021 = scat.run_enrichment(
+    genes,
+    gene_sets="GO_Biological_Process_2021",  # 2023, 2021, 2019, 2018, 2017...
+    universe=background,
+)
+
+# Even without the year in some cases, but the year-containing names are the clearest signal
+```
+
+`gene_set_source` remains as an **explicit override** if you ever need to force one side:
+
+- `gene_set_source="scatrans"` → force the bundled version
+- `gene_set_source="enrichr"` → force the gseapy/Enrichr path
+
+Discovery (what bundled sets are available):
+
+```python
+print(scat.list_bundled_gene_sets())
+# ['GO_Biological_Process_scATrans.gmt', 'KEGG_scATrans.gmt', ...]
+```
+
+**Motivation**: Default should be the package's own sets with almost no extra parameters (only organism for KEGG). Choosing an Enrichr version should be as simple as writing the gene set name you want.
+
+**Adding your own sets**: Drop `.gmt` files into `src/scatrans/data/`. See `src/scatrans/data/README.md`.
+
+**simplify_enrichment** (reduce redundant terms using Jaccard similarity):
+
+```python
+simplified = scat.simplify_enrichment(
+    enrich_res,
+    similarity_cutoff=0.5,
+    min_count=3,
+    method="jaccard",           # currently the only supported method
+)
+```
+
+`run_kegg` and `simplify_enrichment` are convenience wrappers around the core `run_enrichment` function.
+
+### 3.4 Visualization
+
+```python
+import scatrans as scat
+
+scat.pl.comet_plot(all_results, top_n=12, title="Active Drivers")
+scat.pl.volcano_plot(all_results, top_n=10, label_genes=["YourGene1", "YourGene2"])  # or just top_n
+scat.pl.bias_diagnostic_plot(all_results)   # before/after bias correction view
+```
+
+All plotting functions support `ax=` / `axes=` for embedding in multi-panel publication figures and `save_path=` for high-quality output (300 dpi, tight bbox, vector-friendly fonts).
+
+---
+
+## Helper Functions
+
+### diagnose_design
+
+`diagnose_design` is a utility to analyze your experimental design (cell counts, number of biological replicates, global unspliced fraction, etc.) and give practical recommendations and warnings. It is especially useful when you have a small number of samples or are deciding whether to use pseudobulk or mixed-model analysis.
+
+**Basic usage:**
+
+```python
+import scanpy as sc
+import scatrans as scat
+
+adata = sc.read_h5ad("your_velocity_data.h5ad")
+
+diag = scat.diagnose_design(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    sample_col="sample"          # highly recommended if you have biological replicates
+)
+
+# Inspect the results
+print("Warnings:")
+for w in diag["warnings"]:
+    print("  -", w)
+
+print("\nRecommendations:")
+for r in diag["recommendations"]:
+    print("  -", r)
+
+print("\nSuggested preset for filter_active_genes:", diag.get("suggested_preset"))
+```
+
+**What it returns:**
+
+A dictionary containing:
+- `n_cells_target`, `n_cells_reference`
+- `n_samples_target`, `n_samples_reference` (when `sample_col` is provided)
+- `unspliced_global_fraction`
+- `warnings`: list of strings (e.g. low power warnings)
+- `recommendations`: list of strings
+- `suggested_preset`: "heuristic", "pseudobulk", or None
+
+**Automatic usage:**
+
+`diagnose_design` is automatically called inside `active_score(...)` whenever you pass `sample_col` or set `use_pseudobulk=True`. You will see its output in the log.
+
+### run_kegg and simplify_enrichment
+
+These are convenience functions built on top of `run_enrichment`.
+
+**run_kegg** – Run KEGG pathway enrichment directly:
+
+```python
+kegg_res = scat.run_kegg(
+    gene_list=significant.index.tolist(),   # or from all_results
+    organism="mouse",                       # "mouse" or "human"
+    universe=adata.var_names.tolist(),      # recommended (background= also works)
+    pval_cutoff=0.05,
+    min_size=5,
+    max_size=500,
+    return_all=False,                       # False = only significant terms
+    # Defaults to bundled scATrans / clusterProfiler-derived KEGG set.
+    # To use the original Enrichr version instead: kegg_library="KEGG_2026"
+)
+
+print(kegg_res[["Term", "p.adjust", "Count"]].head())
+```
+
+The `gene_set_source` parameter (default `"scatrans"`) controls which KEGG set is used.
+See the section "Choosing gene sets explicitly with `gene_set_source`" above for full details
+and examples for both GO and KEGG.
+
+**simplify_enrichment** – Remove redundant terms from enrichment results (Jaccard-based):
+
+```python
+# After obtaining an enrichment result
+simplified = scat.simplify_enrichment(
+    kegg_res,                    # or enrich_res from run_enrichment
+    similarity_cutoff=0.5,       # Jaccard similarity threshold
+    min_count=3,                 # minimum number of genes in a term
+    by="p.adjust",               # column to sort by
+    ascending=True,
+    method="jaccard",            # currently only "jaccard" is supported
+)
+
+print(f"Reduced from {len(kegg_res)} to {len(simplified)} terms")
+print(simplified[["Term", "p.adjust", "Count"]].head())
+```
+
+This function looks for common gene list columns (`Genes`, `Lead_genes`, etc.) automatically.
+
+---
+
+## Result Interpretation and Notes
+
+### Default `significant` is often empty or very small — this is normal
+
+The internal significance mask is a strict conjunction:
+- `p_adj < pval_cutoff`
+- `logFC > logfc_cutoff`
+- `velocity_residual > 0`
+- sufficient expression
+- `active_score > 0`
+- (if `use_permutation`) `active_score_fdr < active_fdr_cutoff`
+- (if `use_delta_variance_pval`) `delta_var_pval < cutoff`
+
+On real data this frequently returns 0–few genes. **Use `all_results`** and apply your own biologically motivated filters.
+
+### Always start from `all_results`
+
+It is already sorted by `active_score` descending and contains every gene that passed basic expression filters together with all computed values.
+
+### Diagnostics (always inspect these)
+
+After every run look at:
+
+```python
+meta = adata_res.uns["scatrans"]
+print(meta["diagnostics"]["unspliced_global_fraction"])
+print(meta["diagnostics"]["bias_correction"])
+print(meta.get("permutation_approximation_note"))
+```
+
+- **unspliced_global_fraction**: > ~50% often indicates technical problems (nuclear enrichment, gDNA contamination).
+- **bias_correction**: number of genes used for the fit, coefficients, whether median fallback was used.
+- **permutation_approximation_note**: only present when `use_permutation=True`. Records that velocity layers/gamma were fixed for speed.
+
+---
+
+## Optional Advanced Features (Opt-in)
+
+The following options can be enabled when relevant to the analysis goals:
+
+- `use_permutation=True`: compute a permutation-based FDR for the composite score. When enabled, a note describing the approximation (velocity layers and reference gamma are fixed from the original labeling) is stored in the results.
+- `bias_correction="none"`: disable the length/intron correction on the velocity delta. The raw delta is then used directly as `velocity_residual`.
+- `show_effective_gamma=True`: include the per-gene reference-group U/S ratio (used internally for the delta calculation) in the output tables.
+- `use_mixed_model=True`: fit a mixed linear model with sample as random intercept and obtain `delta_variance` (fraction of modeled variance attributed to condition) along with a likelihood-ratio p-value.
+- `prioritize_velocity=True`: convenience flag that increases the relative weight given to the velocity_residual (nascent excess) term while decreasing the weights on the differential expression terms. This option is provided for analyses whose primary goal is to highlight differences in unspliced abundance after reference correction. It is documented under advanced features because it changes the balance of the composite score.
+
+A helper function `diagnose_design` is available to summarize cell and sample counts, global unspliced fraction, and to surface warnings and suggestions before or between runs of `active_score`.
+
+These options are not enabled by default. When used, the corresponding diagnostics should be examined.
+
+### use_permutation=True
+
+Adds `active_score_pval` and `active_score_fdr` columns. The permutation shuffles only group labels; velocity layers and the reference gamma are computed once on the original data for speed. This approximation is documented in `permutation_approximation_note`.
+
+### bias_correction
+
+By default the package applies a Huber regression of the raw velocity delta on log(gene length) and log(intron number) and uses the residuals as `velocity_residual`. This step can be disabled by setting `bias_correction="none"`, in which case the raw (reference-gamma corrected) delta is used directly.
+
+The correction is intended to reduce technical contributions from gene length and intron number to the unspliced excess term. Whether length or intron number carry biological signal of interest in a given dataset is a scientific judgment that the user must make; the correction is therefore optional. The `bias_diagnostic_plot` function can be used to inspect the relationship before and after correction.
+
+### show_effective_gamma=True
+
+Adds the column `effective_gamma` (reference-group shrunk U/S ratio) to `adata.var` and to the results tables. Many genes will have similar values in pure heuristic mode; advanced (moments) mode usually shows more per-gene variation.
+
+Recommended light guard in `filter_active_genes` (when the column is present):
+
+```python
+final = scat.filter_active_genes(
+    all_results,
+    effective_gamma_min=0.05,   # removes genes whose gamma is dominated by the prior
+    effective_gamma_max=1.0,    # optional
+)
+```
+
+### use_mixed_model=True + delta_variance
+
+Requires `sample_col` (the column identifying biological replicates/individuals).
+
+- Replaces the simple DE statistics with LMM estimates (cell-level with sample as random intercept).
+- Adds `delta_variance` (fraction of total modeled variance explained by condition) and `delta_var_pval` (LRT).
+- `delta_variance` is always available in `all_results` when the flag is on; you can use it post-hoc as an additional filter.
+- Use `use_delta_variance_pval=True` only if you want the LRT p-value to participate in the built-in `significant` mask.
+
+**Practical note on small numbers of samples:** With very few biological replicates, pseudobulk aggregation can drive most `velocity_residual` values close to zero. In such regimes the cell-level mixed-model path (`use_mixed_model=True`, `use_pseudobulk=False`) often preserves more of the velocity signal while still respecting sample structure.
+
+The mixed-model settings and median `delta_variance` are recorded in diagnostics.
+
+### mode="advanced"
+
+Uses scVelo moments for local smoothing before computing the group-wise gamma delta. It is still a simple reference-gamma excess calculation on the smoothed moments, not a full stochastic or dynamical model.
+
+- Recommended only when you have a reasonable number of cells and want noise reduction.
+- Falls back to heuristic when it fails (`advanced_fallback=True` by default).
+- Experimental on pseudobulk data.
+
+---
+
+## Limitations
+
+The method implements a composite score based on a simplified, reference-group gamma excess calculation for the unspliced layer together with standard differential expression statistics.
+
+- The unspliced excess term is a group-contrast proxy and is not equivalent to scVelo's full stochastic or dynamical models.
+- The approach is most straightforward to interpret for clear binary group contrasts. Heterogeneity within the target group can reduce the observed signal.
+- When `use_permutation=True`, only the group labels are permuted; the velocity layers and reference gamma are computed once on the original data for computational efficiency. This approximation is recorded in the results metadata.
+- Global unspliced fractions above ~50% are flagged by the package, as they may indicate technical issues affecting the velocity layers.
+- Bias correction performance depends on the number and quality of genes with length and intron annotations.
+- With small numbers of biological replicates, power for the velocity component and for permutation-based FDR is limited. Users should examine the full distributions in `all_results`.
+- `delta_variance` and the associated mixed-model p-values tend to be conservative in the presence of substantial between-sample variation.
+
+Users should examine the diagnostics stored under `adata.uns["scatrans"]["diagnostics"]`, the distributions of scores in the returned tables, and (where possible) the raw spliced/unspliced counts for candidate genes before biological interpretation.
+
+---
+
+## API Reference (Simplified)
+
+### Core functions
+
+- `active_score(...)` — main analysis. Returns `(adata_res, significant, all_results)`.
+- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`.
+
+### Basic parameters (most users only need these)
+
+These are the common "free switches" for the basic pipeline (including pseudobulk and DE method choice):
+
+| Parameter                  | Default                  | Notes |
+|----------------------------|--------------------------|-------|
+| `adata_input`              | (required)               | AnnData with spliced/unspliced (or mature/nascent) layers |
+| `groupby`                  | `"condition"`            | obs column defining the groups |
+| `target_group` / `reference_group` | `"GA"` / `"Ctrl"` | The two conditions to compare |
+| `use_pseudobulk`           | `False`                  | Set to `True` + provide `sample_col` for pseudobulk analysis |
+| `sample_col`               | `None`                   | Required when `use_pseudobulk=True` (biological replicate identifier) |
+| `pseudobulk_de_backend`    | `"pydeseq2"`             | `"pydeseq2"` or `"scanpy"` (when `use_pseudobulk=True`) |
+| `de_method`                | `"t-test_overestim_var"` | DE method for scanpy path (e.g. `"wilcoxon"`, `"t-test"`, ...) |
+| `show_plot`                | `True`                   | Show a comet plot at the end |
+| `min_total_counts`         | `50`                     | Minimum total (S+U) counts to consider a gene expressed |
+
+### Opt-in advanced / exploration parameters (see "Optional Advanced Features")
+
+- `use_permutation`, `n_perm`, `active_fdr_cutoff`
+- `bias_correction` ("huber_length_intron" or "none")
+- `show_effective_gamma`
+- `use_mixed_model`, `use_delta_variance_pval`, `mixed_model_pval`
+- `mode` ("heuristic" or "advanced")
+
+Full signatures and all parameters are documented in the function docstrings and the source.
+
+### Other commonly used functions
+
+- `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
+- `list_available_gene_features()`
+- `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — analyzes cell/sample counts and global unspliced fraction; returns warnings, recommendations, and a suggested `filter_active_genes` preset. Automatically called internally when `sample_col` or `use_pseudobulk=True` is used.
+- `run_enrichment(...)`, `run_kegg(...)`, `simplify_enrichment(...)`, `list_bundled_gene_sets()`
+- `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
+- `scat.qc.unspliced_global(adata)`
+
+### Layer names
+
+The package auto-detects `mature`/`nascent` (kb_python) and remaps them internally. You can also pass `spliced_layer=...` and `unspliced_layer=...` explicitly.
+
+---
+
+## Gene Feature Attachment & CLI
+
+```python
+adata = scat.add_gene_features(adata, organism="mouse")
+# or provide your own table
+adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
+```
+
+After installing the `gene_features` extra, the `generate-gene-features` CLI is available for creating custom tables from GTF files.
+
+---
+
+## Plotting Style
+
+```python
+import scatrans as scat
+scat.pl.set_style()                 # once, for good defaults
+# or temporary:
+with scat.pl.style_context(linewidth=0.8):
+    scat.pl.comet_plot(...)
+```
+
+All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel figures) and `save_path=` (high-quality 300 dpi output).
+
+### Main Plotting Functions
+
+- `scat.pl.comet_plot(results_df, top_n=12, ...)`  
+  Recommended: log fold change vs. bias-corrected unspliced residual (velocity_residual), sized and colored by active_score.
+
+- `scat.pl.volcano_plot(results_df, top_n=10, label_genes=None, ...)`  
+  2D volcano (logFC vs. -log10(p_adj)). Supports `label_genes=[...]` for manual gene labels
+  (combined with top_n) — ggVolcano style flexibility. Classic up/down/ns coloring when
+  not using active_score. See https://github.com/BioSenior/ggVolcano for style inspiration.
+
+- `scat.pl.bias_diagnostic_plot(results_df, ...)`  
+  Before/after view of the effect of length+intron bias correction on the velocity delta.
+
+- `scat.pl.enrich_dotplot(enrich_df, top_n=15, show_terms=None, ...)`  
+  Enrichment dot plot (clusterProfiler style). `show_terms` accepts int (top N) or
+  list of term strings/Descriptions (exact or partial match, order preserved) —
+  directly analogous to `dotplot(..., showCategory=...)` / `showCategory=c("...")`.
+  Also available as `enrich_barplot`.
+
+- `scat.pl.volcano_3d(results_df, ...)`  
+  3D volcano (logFC × -log10(p) × velocity_residual).
+
+- `scat.pl.active_score_rankplot(results_df, top_n=20, ...)`  
+  Simple horizontal barplot of top active scores.
+
+- `scat.pl.active_genes_heatmap(adata, genes, groupby=..., ...)`  
+  Convenience wrapper around `scanpy.pl.heatmap` for selected genes.
+
+- `scat.pl.velocity_phase_portraits(adata, genes, groupby=..., ...)`  
+  Quick unspliced vs. spliced phase portraits for selected genes (useful for inspecting nascent excess).
+
+- `scat.pl.set_style()` and `scat.pl.style_context()`  
+  Control global publication-style settings (vector fonts, minimal ink, etc.).
+
+- `scat.pl.set_nature_style()` (legacy alias for `set_style`).
+
+---
+
 ## Command-Line Interface
 
-After installing with the `gene_features` extra, the `generate-gene-features` command is available for creating custom gene feature tables from GTF annotation files.
+Only the gene-feature generator is exposed as a CLI (`generate-gene-features`).
+
+---
 
 ## License
 
 MIT License.
+
+---
+
+*This README emphasizes the basic, honest, low-ceremony workflow. Advanced capabilities remain available for users who need them and are willing to read the diagnostics.*
