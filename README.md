@@ -15,6 +15,9 @@ pip install "scatrans[advanced,gene_features]" gseapy
 
 # With support for pseudobulk differential expression using PyDESeq2
 pip install "scatrans[pseudobulk]"
+
+# Optional: Memento (Cell 2024) as an additional cell-level DE backend
+pip install "scatrans[memento]"
 ```
 
 The package ships precomputed gene feature tables (gene length and intron number) for mouse. These are used for bias correction when available.
@@ -475,9 +478,7 @@ The mixed-model settings and median `delta_variance` are recorded in diagnostics
 
 Uses scVelo moments for local smoothing before computing the group-wise gamma delta. It is still a simple reference-gamma excess calculation on the smoothed moments, not a full stochastic or dynamical model.
 
-- Recommended only when you have a reasonable number of cells and want noise reduction.
-- Falls back to heuristic when it fails (`advanced_fallback=True` by default).
-- Experimental on pseudobulk data.
+Recommended only when you have a reasonable number of cells and want noise reduction. Falls back to heuristic when it fails (`advanced_fallback=True` by default). Experimental on pseudobulk data.
 
 ---
 
@@ -501,8 +502,9 @@ Users should examine the diagnostics stored under `adata.uns["scatrans"]["diagno
 
 ### Core functions
 
-- `active_score(...)` — main analysis. Returns `(adata_res, significant, all_results)`.
-- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`.
+- `active_score(...)` — main analysis for active transcription from velocity data. Returns `(adata_res, significant, all_results)`.
+- `differential_expression(...)` — standalone DE (no velocity data required). Supports the same backends as `active_score` (including optional Memento). Returns `(adata, results_df)`.
+- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`. Works for both `active_score` and `differential_expression` results.
 
 ### Basic parameters (most users only need these)
 
@@ -613,10 +615,43 @@ Only the gene-feature generator is exposed as a CLI (`generate-gene-features`).
 
 ---
 
+## Additional Capability: Standalone Differential Expression
+
+While the primary focus of scATrans is composite active transcription scoring from spliced/unspliced (velocity) data via `active_score`, the package also provides a general-purpose differential expression entry point that does **not** require velocity layers.
+
+```python
+import scatrans as scat
+
+# Works on regular count AnnData (no spliced/unspliced needed)
+adata, de_results = scat.differential_expression(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    # de_method="t-test_overestim_var",   # or "wilcoxon", etc. (default)
+    # use_memento_de=True,                # optional: use the integrated Memento (Cell 2024) backend
+    # memento_capture_rate=0.07,
+)
+
+# Then use the same downstream tools as with active_score results
+candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)
+enrich = scat.run_enrichment(candidates.index.tolist(), gene_sets="GO_Biological_Process_2023")
+scat.pl.volcano_plot(de_results)
+scat.pl.enrich_dotplot(enrich)
+```
+
+`differential_expression` supports the same flexible backends as `active_score` (scanpy methods, PyDESeq2 pseudobulk, mixed models, and optionally Memento as a method-of-moments estimator). The returned table is directly compatible with `filter_active_genes`, enrichment functions, and all `scat.pl.*` plotting helpers.
+
+This makes the package useful even if you only need modern DE + enrichment + visualization, while the core `active_score` workflow remains the recommended path when you have velocity information.
+
+See `examples/memento_de_example.py` for a complete demonstration of both the velocity-focused and pure-DE usage patterns.
+
+---
+
 ## License
 
 MIT License.
 
 ---
 
-*This README emphasizes the basic, honest, low-ceremony workflow. Advanced capabilities remain available for users who need them and are willing to read the diagnostics.*
+*This README emphasizes the basic, honest, low-ceremony workflow centered on active transcription analysis from velocity data. Advanced capabilities (including standalone DE with Memento support) remain available for users who need them.*
