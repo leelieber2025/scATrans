@@ -545,6 +545,9 @@ def enrich_dotplot(
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        # Leave extra space on the right for colorbar (p.adjust) + size legend (Count)
+        # This prevents overlap between the two legends (common issue when both are present).
+        fig.subplots_adjust(right=0.78)
         _created_fig = True
     else:
         fig = ax.figure
@@ -571,7 +574,11 @@ def enrich_dotplot(
     ax.yaxis.grid(True, linestyle=":", color="#EEEEEE", alpha=0.5, zorder=0)
     ax.set_axisbelow(True)
 
-    cbar = plt.colorbar(scatter, ax=ax, shrink=0.4, pad=0.03, aspect=15)
+    cbar = plt.colorbar(scatter, ax=ax, shrink=0.38, pad=0.08, aspect=14)
+    # Note: when we create the figure we also do fig.subplots_adjust(right=0.78)
+    # so that the colorbar (p.adjust) and the size legend (Count) have dedicated horizontal space
+    # and do not overlap. The bbox_to_anchor for the size legend is set further right (1.18)
+    # to sit beside the colorbar. This addresses the reported legend overlap.
     cbar_label = color_col
     if color_col == "Adjusted P-value":
         cbar_label = "Adjusted P-value (smaller = more sig.)"
@@ -584,6 +591,9 @@ def enrich_dotplot(
     # using the actual data values from the size_by column. This guarantees:
     #   - dots in the plot have clearly different sizes (see _scale_sizes above)
     #   - the legend shows the real Count / GeneRatio / ... numbers
+    #
+    # Positioned further right (after the colorbar) and with subplots_adjust(right=0.78)
+    # when we create the figure, to avoid overlap with the p.adjust colorbar legend.
     try:
         # Choose a few representative values (min, ~median, max of the plotted data)
         size_vals = pd.to_numeric(plot_df[size_col], errors="coerce").dropna().astype(float)
@@ -602,7 +612,9 @@ def enrich_dotplot(
             labels = []
             for rv in reps:
                 # compute the marker size that corresponds to this data value
-                s_for_rv = _scale_sizes(pd.Series([rv]), min_s=50, max_s=280)[0]
+                # use the same dot limits as the main plot for consistent legend sizes
+                s_for_rv = _scale_sizes(pd.Series([rv]), min_s=50, max_s=280,
+                                        dot_max=dot_max, dot_min=dot_min, smallest_dot=smallest_dot)[0]
                 h = ax.scatter([], [], s=s_for_rv, c="#555555", alpha=0.7,
                                edgecolors="#333333", linewidths=0.5)
                 handles.append(h)
@@ -615,7 +627,7 @@ def enrich_dotplot(
                     handles, labels,
                     title=size_col,
                     loc="center left",
-                    bbox_to_anchor=(1.02, 0.5),
+                    bbox_to_anchor=(1.18, 0.5),  # further right to sit after the colorbar
                     frameon=False,
                     title_fontsize=fontsize - 1,
                     labelspacing=1.2,
