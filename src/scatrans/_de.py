@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import anndata as ad
 import numpy as np
@@ -17,6 +17,7 @@ import pandas as pd
 import scanpy as sc
 from joblib import Parallel, delayed
 from scipy import sparse
+from scipy.sparse import csr_matrix
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 
@@ -47,6 +48,8 @@ def _run_de_wrapper(
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
+    # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
+    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
 ) -> pd.DataFrame:
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
 
@@ -82,6 +85,7 @@ def _run_de_wrapper(
             capture_rate=memento_capture_rate,
             num_boot=memento_num_boot,
             n_cpus=memento_n_cpus,
+            counts=counts,
         )
 
     ad_temp = adata.copy() if labels is not None else adata
@@ -391,6 +395,7 @@ def _run_memento_de(
     capture_rate: float = 0.07,
     num_boot: int = 5000,
     n_cpus: int = -1,
+    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
 ) -> pd.DataFrame:
     """Memento (method of moments) cell-level DE backend.
 
@@ -422,23 +427,73 @@ def _run_memento_de(
     # Binary treatment column expected by memento.binary_test_1d
     ad_temp.obs["stim"] = (ad_temp.obs[use_groupby].astype(str) == target_group).astype(int)
 
-    # Memento expects (or strongly prefers) raw non-negative integer counts in .X
-    if not _is_integer_counts_like(ad_temp.X):
-        if "counts" in getattr(ad_temp, "layers", {}):
-            ad_temp.X = ad_temp.layers["counts"].copy()
-            logger.info("Memento: using 'counts' layer as raw counts input.")
-        else:
-            logger.warning(
-                "Memento input does not look like raw integer counts and no 'counts' layer was found. "
-                "Memento (method-of-moments + hypergeometric model) performs best on raw counts; "
-                "results may be unreliable. Provide a 'counts' layer or ensure adata.X contains unnormalized counts."
-            )
+    # --- Resolve raw counts for Memento ---
+    # Priority:
+    # 1. Explicit `counts` argument (most flexible)
+    # 2. adata.layers["counts"]
+    # 3. adata.raw (if it has the counts)
+    # 4. Current .X if it already looks like raw counts
 
-    # Memento (via its wrappers) requires scipy CSR for .X
-    from scipy.sparse import csr_matrix, issparse
+    def _to_csr(x):
+        from scipy.sparse import csr_matrix, issparse
+        if issparse(x):
+            return x.tocsr()
+        return csr_matrix(np.asarray(x))
+
+    raw_counts = None
+
+    if counts is not None:
+        if isinstance(counts, str):
+            if counts in ad_temp.layers:
+                raw_counts = ad_temp.layers[counts]
+            else:
+                raise ValueError(f"counts='{counts}' layer not found in adata.layers")
+        elif isinstance(counts, ad.AnnData):
+            raw_counts = counts.X
+            if counts.var_names.tolist() != ad_temp.var_names.tolist():
+                common = counts.var_names.intersection(ad_temp.var_names)
+                if len(common) == 0:
+                    raise ValueError("No overlapping genes between provided counts AnnData and current adata")
+                raw_counts = counts[:, common].X
+                ad_temp = ad_temp[:, common].copy()
+        else:
+            raw_counts = counts
+
+        if raw_counts is not None:
+            raw_counts = _to_csr(raw_counts)
+            logger.info("Memento: using explicitly provided counts.")
+
+    if raw_counts is None and "counts" in getattr(ad_temp, "layers", {}):
+        raw_counts = ad_temp.layers["counts"]
+        logger.info("Memento: using 'counts' layer.")
+        raw_counts = _to_csr(raw_counts)
+
+    if raw_counts is None and hasattr(ad_temp, "raw") and ad_temp.raw is not None:
+        if ad_temp.raw.shape[1] >= ad_temp.shape[1]:
+            raw_counts = ad_temp.raw.X
+            logger.info("Memento: using counts from adata.raw.")
+            raw_counts = _to_csr(raw_counts)
+
+    if raw_counts is None:
+        if _is_integer_counts_like(ad_temp.X):
+            raw_counts = ad_temp.X
+            logger.info("Memento: using current .X (looks like raw counts).")
+            raw_counts = _to_csr(raw_counts)
+
+    if raw_counts is None:
+        logger.warning(
+            "Could not obtain raw counts for Memento. "
+            "Memento works best with raw integer UMI counts. "
+            "Please call scat.pp.store_raw_counts(adata) early (before HVG + log), "
+            "or provide via the `counts` parameter, or ensure adata.raw / layers['counts'] has raw counts."
+        )
+        raw_counts = _to_csr(ad_temp.X)
+
+    ad_temp.X = raw_counts
+
+    from scipy.sparse import issparse
     if not (issparse(ad_temp.X) and type(ad_temp.X) == csr_matrix):
         ad_temp.X = csr_matrix(ad_temp.X)
-        logger.debug("Memento: converted .X to CSR matrix.")
 
     # Effective cpus
     effective_cpus = n_cpus if n_cpus and n_cpus > 0 else -1

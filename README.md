@@ -46,6 +46,37 @@ ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 
 `active_score` automatically runs this check and records the value in diagnostics.
 
+### Preserving raw counts (important for Memento / count-based DE)
+
+scATrans DE backends that use Memento (or PyDESeq2) require raw integer counts. Many users end up with `adata.X` containing only HVGs + log1p data after standard Scanpy preprocessing. To support reliable DE on as many genes as possible (QC-filtered full gene set, not just 2000-3000 HVGs), call this early:
+
+```python
+import scatrans as scat
+
+# Immediately after loading + basic QC (min cells/genes, mito filter etc.),
+# but BEFORE highly_variable_genes, normalize_total, log1p, or HVG subsetting.
+scat.store_raw_counts(adata, layer="counts", save_raw=True)  # default: also sets adata.raw
+
+# Now safe to continue with standard preprocessing for visualization etc.
+sc.pp.highly_variable_genes(adata, n_top_genes=3000)
+# ... normalize, log1p, neighbors, umap ...
+```
+
+- `store_raw_counts` saves to `layers["counts"]` (for the genes present at call time) and by default also sets `adata.raw`.
+- You can disable .raw with `save_raw=False`.
+- For Memento DE, prefer running on a large gene set (after basic QC, before aggressive HVG). HVGs are mainly for dimensionality reduction and visualization.
+- The function is also available for the main `active_score` workflow when using Memento.
+
+Optionally, if you have done HVG + log1p for visualization but later want the raw counts back in `.X` (for the genes currently selected), you can use:
+
+```python
+# Restore raw counts into .X (non-destructive by default)
+adata_raw = scat.restore_raw_counts(adata, layer="counts", inplace=False)
+# or inplace=True to modify the current adata
+```
+
+See also the "Additional Capability: Standalone Differential Expression" section below for the pure-DE (no velocity) use case.
+
 ---
 
 ## Core Positioning
@@ -622,6 +653,9 @@ While the primary focus of scATrans is composite active transcription scoring fr
 ```python
 import scatrans as scat
 
+# Early (right after load + basic QC, before HVG/normalize/log):
+scat.store_raw_counts(adata, layer="counts", save_raw=True)
+
 # Works on regular count AnnData (no spliced/unspliced needed)
 adata, de_results = scat.differential_expression(
     adata,
@@ -645,6 +679,39 @@ scat.pl.enrich_dotplot(enrich)
 This makes the package useful even if you only need modern DE + enrichment + visualization, while the core `active_score` workflow remains the recommended path when you have velocity information.
 
 See `examples/memento_de_example.py` for a complete demonstration of both the velocity-focused and pure-DE usage patterns.
+
+**Important: raw counts requirement**
+
+Count-based backends (Memento, PyDESeq2) work best with raw integer counts. The very common pattern of
+
+```python
+sc.pp.highly_variable_genes(adata, ...)
+adata = adata[:, adata.var.highly_variable].copy()
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+```
+
+leaves `adata.X` as log-transformed HVGs only, which is unsuitable.
+
+**Recommended practice** (do early):
+
+```python
+import scatrans as scat
+
+# Before HVG + normalize + log1p
+scat.ensure_raw_counts(adata)          # saves raw counts to adata.layers["counts"]
+
+# Then normal Scanpy preprocessing
+sc.pp.highly_variable_genes(adata, ...)
+adata = adata[:, adata.var.highly_variable].copy()
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+
+# Now safe
+adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
+```
+
+`ensure_raw_counts()` will also try to recover from `adata.raw`. The functions emit clear warnings when they detect this situation.
 
 ---
 

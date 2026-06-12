@@ -31,6 +31,7 @@ from ._de import _run_de_wrapper
 from ._permutation import _single_permutation_task
 from ._utils import (
     _get_exponential_scale_lambda,
+    _is_integer_counts_like,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
     _soft_scale,
@@ -890,6 +891,8 @@ def differential_expression(
     random_seed: int = 42,
     n_jobs: int = -1,
     gene_type_filter: Optional[str] = None,
+    # Allow providing raw counts separately when adata.X is already HVG+log (very common)
+    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
 ) -> Tuple[ad.AnnData, pd.DataFrame]:
     """
     Standalone differential expression (DE) using the same flexible backends
@@ -967,6 +970,9 @@ def differential_expression(
             "(Memento is a cell-level method-of-moments estimator)."
         )
 
+    # Note on raw counts: users should call scat.store_raw_counts(adata) early.
+    # The DE backends will use layers[layer] or adata.raw when available.
+
     # --- prepare data (pseudobulk if requested) ---
     adata = adata_input.copy()
 
@@ -1017,6 +1023,7 @@ def differential_expression(
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
         memento_n_cpus=memento_n_cpus,
+        counts=counts,
     )
 
     # Store results
@@ -1096,6 +1103,108 @@ def differential_expression(
 
     logger.info("DE completed. %d genes in results table.", len(results))
     return adata, results
+
+
+def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = True, overwrite: bool = False) -> None:
+    """
+    Store raw counts (and optionally adata.raw) early in the analysis,
+    right after loading and basic QC, but BEFORE HVG selection, normalization, or log1p.
+
+    This preserves the full (post-QC) gene set + raw counts for count-based DE methods
+    such as Memento (use_memento_de=True in differential_expression).
+
+    By default, it also sets adata.raw (recommended for many tools). Use save_raw=False
+    to disable saving to .raw (only the layer will be saved).
+
+    Recommended workflow:
+        adata = sc.read_h5ad(...)
+        # basic QC: filter cells/genes, mito etc.
+        scat.store_raw_counts(adata)   # saves to layers["counts"] + adata.raw (default)
+
+        # now safe to do HVG for visualization etc.
+        sc.pp.highly_variable_genes(adata, n_top_genes=3000)
+        # ... normalize, log1p, neighbors, umap etc. on the HVG adata
+
+        # For DE (Memento etc.), use as many genes as possible.
+        # You can run on the full post-QC genes before HVG subset, or on current adata
+        # (the layer/raw will provide raw counts for the genes present at call time).
+        adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
+
+    For best Memento results, perform DE on a large gene set (QC-filtered full genes,
+    not just 2000-3000 HVGs). HVGs are mainly for dimensionality reduction/visualization.
+    """
+    if layer in adata.layers and not overwrite:
+        if _is_integer_counts_like(adata.layers[layer]):
+            logger.debug(f"Layer '{layer}' already exists with integer counts.")
+            if save_raw and getattr(adata, "raw", None) is not None and not overwrite:
+                return
+        else:
+            logger.warning(f"Existing layer '{layer}' does not look like raw counts.")
+
+    if not _is_integer_counts_like(adata.X):
+        logger.warning(
+            "Current adata.X does not look like raw integer counts. "
+            "store_raw_counts should be called early (after basic QC, before normalize/log1p/HVG)."
+        )
+
+    adata.layers[layer] = adata.X.copy()
+    logger.info(f"Saved raw counts to adata.layers['{layer}'].")
+
+    if save_raw:
+        if getattr(adata, "raw", None) is not None and not overwrite:
+            logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
+        else:
+            adata.raw = adata.copy()
+            logger.info("Set adata.raw to preserve full data (disable with save_raw=False).")
+
+
+def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Optional[any]:
+    """
+    Restore raw counts from the stored layer (preferred) or adata.raw back into .X.
+
+    This is useful when you have done HVG + log1p on .X for visualization,
+    but want to work with (or pass to other tools) the raw counts for the
+    genes currently in the adata (or the preserved set).
+
+    It only uses explicitly stored raw data (from store_raw_counts), never
+    attempts to recover from log-transformed data.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The AnnData object.
+    layer : str
+        The layer name where raw counts were stored (default "counts").
+    inplace : bool
+        If True, modify adata in place and return None.
+        If False (default), return a new AnnData with .X set to raw counts.
+
+    Returns
+    -------
+    AnnData or None
+        If not inplace, a copy of adata with raw counts in .X.
+    """
+    if layer in adata.layers:
+        raw = adata.layers[layer].copy()
+        source = f"layers['{layer}']"
+    elif getattr(adata, "raw", None) is not None:
+        raw = adata.raw.X.copy()
+        source = "adata.raw"
+    else:
+        raise ValueError(
+            f"No raw counts found in layer '{layer}' or adata.raw. "
+            "Call scat.store_raw_counts(adata) early to preserve them."
+        )
+
+    if inplace:
+        adata.X = raw
+        logger.info(f"Restored raw counts from {source} into adata.X (inplace).")
+        return None
+    else:
+        adata_restored = adata.copy()
+        adata_restored.X = raw
+        logger.info(f"Created copy with raw counts from {source} in .X.")
+        return adata_restored
 
 
 _NOT_PROVIDED = object()
