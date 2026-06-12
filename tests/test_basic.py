@@ -12,10 +12,6 @@ Covers:
 - Metadata written to adata.uns / .var
 """
 
-import os
-import tempfile
-from pathlib import Path
-
 import matplotlib
 
 matplotlib.use("Agg")  # headless for CI / no display
@@ -26,7 +22,6 @@ import pytest
 import scanpy as sc
 
 import scatrans as scat
-
 
 # --------------------------- fixtures ---------------------------
 
@@ -159,7 +154,7 @@ def test_layer_remapping_kb_python_style(adata_mature_nascent):
 
 def test_add_gene_features_and_list(adata_basic):
     # Should not crash even if features are incomplete
-    before = adata_basic.var.columns.tolist()
+    adata_basic.var.columns.tolist()
     out = scat.add_gene_features(adata_basic, organism="mouse")
     assert out is adata_basic
     # list should return something (now re-exported at top level for convenience)
@@ -194,6 +189,91 @@ def test_simplify_enrichment():
     )
     simp = scat.simplify_enrichment(df, similarity_cutoff=0.1, min_count=1)
     assert len(simp) <= len(df)
+
+
+def test_run_enrichment_universe_and_new_output():
+    """Test clusterProfiler-aligned universe handling + enriched output columns/attrs."""
+    genes = ["GeneA", "GeneB", "GeneC", "GeneX"]
+    gene_sets = {
+        "TERM1": ["GeneA", "GeneB", "GeneD"],
+        "TERM2": ["GeneC", "GeneE", "GeneF"],
+        "TERM3": ["GeneA", "GeneC"],
+    }
+    # No background -> uses gene_sets union
+    res1 = scat.run_enrichment(
+        genes, gene_sets=gene_sets, pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    assert "neg_log10_padj" in res1.columns
+    assert "p.adjust" in res1.columns
+    assert "universe_info" in res1.attrs
+    ui = res1.attrs["universe_info"]
+    assert ui["effective_universe_size"] > 0
+    assert res1.attrs.get("clusterprofiler_aligned") is True
+
+    # Provide background (like adata.var_names) -> by default intersected (conservative, clusterProfiler-like)
+    bg = ["GeneA", "GeneB", "GeneC", "GeneY", "GeneZ"]  # GeneY/Z have no annotation in gene_sets
+    res2 = scat.run_enrichment(
+        genes, gene_sets=gene_sets, universe=bg, pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    ui2 = res2.attrs["universe_info"]
+    assert ui2["provided_size"] == 5
+    assert ui2["restricted_to_gene_sets"] is True
+    assert ui2["dropped_by_annotation_filter"] >= 2  # Y and Z dropped
+    assert ui2["effective_universe_size"] == 3  # A,B,C
+
+    # force_universe=True should keep the full provided size
+    res3 = scat.run_enrichment(
+        genes,
+        gene_sets=gene_sets,
+        background=bg,
+        force_universe=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+    )
+    ui3 = res3.attrs["universe_info"]
+    assert ui3["force_universe"] is True
+    assert ui3["effective_universe_size"] == 5
+    assert ui3["dropped_by_annotation_filter"] == 0
+
+
+def test_enrich_plot_show_terms(adata_basic):
+    """Test that enrich_dotplot accepts show_terms (int or list) like clusterProfiler showCategory."""
+    # Build a fake enrichment df similar to real output
+    fake = pd.DataFrame(
+        {
+            "Term": ["T1 long name (GO:0001)", "T2 (KEGG:123)", "T3 foo bar", "T4"],
+            "Description": ["desc1", "desc2", "the third", "fourth"],
+            "p.adjust": [0.001, 0.01, 0.05, 0.2],
+            "GeneRatio": [0.1, 0.2, 0.05, 0.01],
+            "Count": [5, 3, 2, 1],
+            "neg_log10_padj": [3.0, 2.0, 1.3, 0.7],
+        }
+    )
+    # int
+    fig, ax = scat.pl.enrich_dotplot(fake, show_terms=2, top_n=99)
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    # list of terms (partial match on Term or Description)
+    fig2, ax2 = scat.pl.enrich_dotplot(fake, show_terms=["T3", "desc1"])
+    plt.close("all")
+    # explicitly use Count on x-axis (user-requested flexibility)
+    fig3, ax3 = scat.pl.enrich_dotplot(fake, x="Count", top_n=3)
+    plt.close("all")
+    # also exercise FoldEnrichment
+    if "FoldEnrichment" not in fake.columns:
+        fake = fake.copy()
+        fake["FoldEnrichment"] = [2.5, 1.8, 3.1, 1.2]
+    fig4, ax4 = scat.pl.enrich_dotplot(fake, x="FoldEnrichment", top_n=2)
+    plt.close("all")
+
+    # size_by="Count" must produce visibly different dot sizes (was a reported bug)
+    # We just exercise it; visual correctness is checked in integration runs.
+    fig5, ax5 = scat.pl.enrich_dotplot(fake, size_by="Count", top_n=4)
+    plt.close("all")
+    fig6, ax6 = scat.pl.enrich_dotplot(fake, size_by="GeneRatio", top_n=3)
+    plt.close("all")
 
 
 # --------------------------- plotting (headless) ---------------------------
@@ -261,6 +341,12 @@ def test_plotting_with_ax_parameter(adata_basic):
     assert a2 is axes[1]
     plt.close(fig)
 
+    # ggVolcano-style manual gene labels + top_n
+    f3, a3 = scat.pl.volcano_plot(
+        allr, top_n=3, label_genes=["GeneA", allr.index[0]] if len(allr) > 0 else None
+    )
+    plt.close("all")
+
 
 def test_edge_cases_low_features(adata_basic):
     """When gene features are missing/NaN the pipeline should still run (median fallback)."""
@@ -318,6 +404,7 @@ def test_cli_main_is_callable():
 
 
 # --------------------------- mixed model + delta variance ---------------------------
+
 
 def test_mixed_model_basic(adata_mixed_small):
     """use_mixed_model=True produces delta_variance / delta_var_pval and runs without crash."""
@@ -399,6 +486,7 @@ def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
 
 
 # --------------------------- filter_active_genes helper ---------------------------
+
 
 def test_filter_active_genes_basic(adata_mixed_small):
     """filter_active_genes should work, be robust to missing columns, and respect thresholds."""

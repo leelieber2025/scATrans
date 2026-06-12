@@ -7,7 +7,7 @@ Extracted from original tl.py.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import anndata as ad
 import numpy as np
@@ -25,7 +25,7 @@ def _compute_velocity_delta(
     t_mask: np.ndarray,
     r_mask: np.ndarray,
     prior_weight: float = 5.0,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Classic (global ratio) velocity delta used by the heuristic track."""
     U_t = _get_group_mean(uns_layer, t_mask)
     S_t = _get_group_mean(spl_layer, t_mask)
@@ -54,7 +54,7 @@ def _compute_moments_velocity_delta(
     use_precomputed: bool = False,
     recompute_neighbors: bool = True,
     random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Advanced track: use scVelo moments (Mu/Ms) for local smoothing before delta."""
     try:
         import scvelo as scv
@@ -64,7 +64,7 @@ def _compute_moments_velocity_delta(
             "Please install it with: pip install scvelo or 'scatrans[advanced]'"
         ) from e
 
-    info: Dict[str, Any] = {}
+    info: dict[str, Any] = {}
     had_moments_before = "Mu" in adata_comp.layers and "Ms" in adata_comp.layers
 
     if use_precomputed and "Mu" in adata_comp.layers and "Ms" in adata_comp.layers:

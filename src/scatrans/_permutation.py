@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import scanpy as sc
@@ -17,11 +17,13 @@ from joblib import Parallel, delayed
 from statsmodels.stats.multitest import multipletests
 
 from ._de import _run_de_wrapper
-from ._utils import _fit_huber_bias_correction, _soft_scale
-from ._velocity import _compute_velocity_delta
 
 # local import to avoid circulars at module load
-from ._utils import _is_bias_correction_enabled  # for documentation only; actual decision is inside the fit function
+from ._utils import (
+    _fit_huber_bias_correction,
+    _soft_scale,
+)
+from ._velocity import _compute_velocity_delta
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def _single_permutation_task(
     target_group: str,
     reference_group: str,
     adata_subset: Any,
-    X_features: Optional[np.ndarray],
+    X_features: np.ndarray | None,
     valid_feat: np.ndarray,
     uns_layer: Any,
     spl_layer: Any,
@@ -51,6 +53,11 @@ def _single_permutation_task(
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
     bias_correction: str = "huber_length_intron",
+    # Memento support for permutation (advanced, usually False for speed)
+    use_memento_de: bool = False,
+    memento_capture_rate: float = 0.07,
+    memento_num_boot: int = 5000,
+    memento_n_cpus: int = -1,
 ) -> np.ndarray:
     """One permutation replicate. Returns the active score vector for that shuffle.
 
@@ -89,11 +96,17 @@ def _single_permutation_task(
         n_jobs=1,
         labels=shuffled_labels,
         strict_pydeseq2_counts=strict_pydeseq2_counts,
+        use_memento_de=use_memento_de,
+        memento_capture_rate=memento_capture_rate,
+        memento_num_boot=memento_num_boot,
+        memento_n_cpus=memento_n_cpus,
     )
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _, _gamma_ref = _compute_velocity_delta(uns_layer, spl_layer, t_mask, r_mask, prior_weight)
+    delta_velocity, _, _gamma_ref = _compute_velocity_delta(
+        uns_layer, spl_layer, t_mask, r_mask, prior_weight
+    )
 
     total_us_for_filter = np.asarray(total_us_for_filter)
     valid_expr = total_us_for_filter >= min_total_counts
@@ -131,7 +144,7 @@ def run_permutation_test(
     target_group: str,
     reference_group: str,
     adata: Any,
-    X_features: Optional[np.ndarray],
+    X_features: np.ndarray | None,
     valid_feat: np.ndarray,
     velocity_layer_for_perm_uns: Any,
     velocity_layer_for_perm_spl: Any,
@@ -151,6 +164,11 @@ def run_permutation_test(
     strict_pydeseq2_counts: bool,
     real_score: np.ndarray,
     bias_correction: str = "huber_length_intron",
+    # Memento forwarding for advanced consistent permutation
+    use_memento_de: bool = False,
+    memento_capture_rate: float = 0.07,
+    memento_num_boot: int = 5000,
+    memento_n_cpus: int = -1,
 ) -> tuple:
     """Run the full parallel permutation and return (pvals, fdr, use_fdr_for_significance, reason_if_disabled).
 
@@ -186,6 +204,10 @@ def run_permutation_test(
                 de_preprocess,
                 strict_pydeseq2_counts,
                 bias_correction=bias_correction,
+                use_memento_de=use_memento_de,
+                memento_capture_rate=memento_capture_rate,
+                memento_num_boot=memento_num_boot,
+                memento_n_cpus=memento_n_cpus,
             )
             for i in range(n_perm)
         )

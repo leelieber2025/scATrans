@@ -50,6 +50,16 @@ print(f"Global unspliced fraction: {ufrac:.2%}")
 # If this is > ~0.5 you should investigate library prep / alignment before trusting active transcription signals.
 
 # ------------------------------------------------------------------
+# 2.5 Preserve raw counts + original spliced/unspliced (CRITICAL for Memento DE and correct enrichment)
+# ------------------------------------------------------------------
+# Call this early, before any HVG, normalize, or log1p. It saves the full post-QC gene set
+# raw counts (and raw velocity layers) so that later Memento, PyDESeq2, and enrichment
+# automatically use the true measured background instead of whatever is left in .X after HVG.
+scat.store_raw_counts(adata, layer="counts", save_raw=False)
+# After this, you can safely do standard Scanpy preprocessing for visualization.
+# For DE/enrichment on as many genes as possible, use the adata (or a non-HVG-subset copy) when calling those functions.
+
+# ------------------------------------------------------------------
 # 3. Attach gene features (length + intron count) for bias correction
 # ------------------------------------------------------------------
 # The package ships mouse tables. For human or custom annotations use:
@@ -129,7 +139,7 @@ print("\nSaved real_data_comet_and_bias.pdf")
 
 # Optional: rank plot or volcano
 # scat.pl.active_score_rankplot(all_results, top_n=15, save_path="ranks.pdf")
-# scat.pl.volcano_plot(all_results, top_n=8, save_path="volcano.pdf")
+# scat.pl.volcano_plot(all_results, top_n=8, label_genes=some_gene_list, save_path="volcano.pdf")  # ggVolcano-like control
 
 # ------------------------------------------------------------------
 # 7. Functional enrichment on the significant genes
@@ -137,13 +147,24 @@ print("\nSaved real_data_comet_and_bias.pdf")
 if len(significant) > 0:
     enrich = scat.run_enrichment(
         gene_list=significant.index.tolist(),
-        gene_sets="GO_Biological_Process_2023",  # or your custom dict / gmt
+        gene_sets="GO_Biological_Process",  # or "GO_BP" — auto-resolves to the correct
+        # organism-specific bundled built-in (Mm/Hs_GO_Biological_Process_2026.txt).
+        # No need to specify year or _scATrans suffix.
         organism="mouse",   # or "human"
+        # CRITICAL for correct background: pass adata= (the one on which you called
+        # store_raw_counts early) so it auto-uses the preserved full measured gene list
+        # instead of whatever is left after HVG. This is the most convenient & correct default.
+        adata=adata,
         pval_cutoff=0.05,
     )
+    # For KEGG the simplest is:
+    # kegg = scat.run_kegg(significant.index.tolist(), organism="mouse", adata=adata)
+    # To force a historical Enrichr version instead of the built-in: gene_sets="GO_Biological_Process_2021" or kegg_library="KEGG_2021"
     print("\nTop enrichment terms:")
     print(enrich.head(6))
-    # scat.pl.enrich_dotplot(enrich, save_path="enrich.pdf")
+    print("universe_info:", enrich.attrs.get("universe_info"))
+    # scat.pl.enrich_dotplot(enrich, show_terms=10, save_path="enrich.pdf")
+    # or scat.pl.enrich_dotplot(enrich, show_terms=["specific term desc", "another GO term"])
 
 print("\n=== Recommended next steps ===")
 print("- Look at adata_res.var for 'active_score', 'velocity_residual', 'effective_gamma', logFC, p_adj, ...")

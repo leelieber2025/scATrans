@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Optional
+from typing import Any
 
 import anndata as ad
 import numpy as np
@@ -17,6 +17,7 @@ import pandas as pd
 import scanpy as sc
 from joblib import Parallel, delayed
 from scipy import sparse
+from scipy.sparse import csr_matrix
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 
@@ -37,13 +38,24 @@ def _run_de_wrapper(
     is_pseudobulk: bool = False,
     pb_backend: str = "pydeseq2",
     n_jobs: int = 1,
-    labels: Optional[Any] = None,
+    labels: Any | None = None,
     strict_pydeseq2_counts: bool = True,
     use_mixed_model: bool = False,
-    sample_col: Optional[str] = None,
+    sample_col: str | None = None,
     mixed_model_pval: str = "wald",
+    # Memento (Cell 2024 method-of-moments) as independent cell-level DE backend
+    use_memento_de: bool = False,
+    memento_capture_rate: float = 0.07,
+    memento_num_boot: int = 5000,
+    memento_n_cpus: int = -1,
+    # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
 ) -> pd.DataFrame:
-    """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed)."""
+    """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
+
+    When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
+    This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
+    """
     if use_mixed_model:
         if sample_col is None:
             raise ValueError("sample_col must be provided when use_mixed_model=True")
@@ -56,6 +68,24 @@ def _run_de_wrapper(
             n_jobs=n_jobs,
             labels=labels,
             mixed_model_pval=mixed_model_pval,
+        )
+
+    if use_memento_de:
+        if is_pseudobulk:
+            raise ValueError(
+                "use_memento_de=True is not supported with use_pseudobulk=True "
+                "(Memento is a cell-level method-of-moments estimator; use PyDESeq2 for pseudobulk)."
+            )
+        return _run_memento_de(
+            adata,
+            groupby=groupby,
+            target_group=target_group,
+            reference_group=reference_group,
+            labels=labels,
+            capture_rate=memento_capture_rate,
+            num_boot=memento_num_boot,
+            n_cpus=memento_n_cpus,
+            counts=counts,
         )
 
     ad_temp = adata.copy() if labels is not None else adata
@@ -198,7 +228,7 @@ def _run_mixedlm_de(
     reference_group: str,
     sample_col: str,
     n_jobs: int = 1,
-    labels: Optional[Any] = None,
+    labels: Any | None = None,
     mixed_model_pval: str = "wald",
 ) -> pd.DataFrame:
     """
@@ -249,10 +279,7 @@ def _run_mixedlm_de(
             Xn = np.log1p(np.asarray(ad_expr.X))
         ad_expr.X = Xn
 
-    if sparse.issparse(ad_expr.X):
-        expr_mat = ad_expr.X.toarray()
-    else:
-        expr_mat = np.asarray(ad_expr.X)
+    expr_mat = ad_expr.X.toarray() if sparse.issparse(ad_expr.X) else np.asarray(ad_expr.X)
 
     obs = ad_temp.obs
     condition = obs[use_groupby].astype(str).values
@@ -306,7 +333,11 @@ def _run_mixedlm_de(
             var_fe = float(np.var(fe_contrib))
             re_var = 0.0
             try:
-                if hasattr(m_full, "cov_re") and m_full.cov_re is not None and len(m_full.cov_re) > 0:
+                if (
+                    hasattr(m_full, "cov_re")
+                    and m_full.cov_re is not None
+                    and len(m_full.cov_re) > 0
+                ):
                     re_var = float(np.diag(m_full.cov_re)[0])  # first (only) RE variance
             except Exception:
                 re_var = 0.0
@@ -353,4 +384,172 @@ def _run_mixedlm_de(
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
     de_df["delta_var_pval"] = pd.Series(p_lrts, index=var_names)
+    return de_df
+
+
+def _run_memento_de(
+    adata: ad.AnnData,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+    labels: Any | None = None,
+    capture_rate: float = 0.07,
+    num_boot: int = 5000,
+    n_cpus: int = -1,
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+) -> pd.DataFrame:
+    """Memento (method of moments) cell-level DE backend.
+
+    Returns a DataFrame with at minimum 'logFC', 'p_val', 'p_adj' (plus optional
+    memento_de_* and memento_dv_* columns for advanced inspection).
+    This replaces the scanpy rank_genes_groups path when use_memento_de=True.
+    """
+    try:
+        import memento
+    except ImportError as e:
+        raise ImportError(
+            "memento-de is required when use_memento_de=True. "
+            'Install with: pip install "scatrans[memento]" (or pip install memento-de)'
+        ) from e
+
+    ad_temp = adata.copy() if labels is not None else adata
+    use_groupby = groupby
+
+    if labels is not None:
+        use_groupby = "_memento_temp_group"
+        ad_temp.obs[use_groupby] = pd.Categorical(
+            np.asarray(labels).astype(str), categories=[reference_group, target_group]
+        )
+
+    # Restrict to the two groups being compared
+    keep = ad_temp.obs[use_groupby].astype(str).isin([target_group, reference_group])
+    ad_temp = ad_temp[keep].copy()
+
+    # Binary treatment column expected by memento.binary_test_1d
+    ad_temp.obs["stim"] = (ad_temp.obs[use_groupby].astype(str) == target_group).astype(int)
+
+    # --- Resolve raw counts for Memento ---
+    # Priority:
+    # 1. Explicit `counts` argument (most flexible)
+    # 2. adata.layers["counts"]
+    # 3. adata.raw (if it has the counts)
+    # 4. Current .X if it already looks like raw counts
+
+    def _to_csr(x):
+        from scipy.sparse import csr_matrix, issparse
+
+        if issparse(x):
+            return x.tocsr()
+        return csr_matrix(np.asarray(x))
+
+    raw_counts = None
+
+    if counts is not None:
+        if isinstance(counts, str):
+            if counts in ad_temp.layers:
+                raw_counts = ad_temp.layers[counts]
+            else:
+                raise ValueError(f"counts='{counts}' layer not found in adata.layers")
+        elif isinstance(counts, ad.AnnData):
+            raw_counts = counts.X
+            if counts.var_names.tolist() != ad_temp.var_names.tolist():
+                common = counts.var_names.intersection(ad_temp.var_names)
+                if len(common) == 0:
+                    raise ValueError(
+                        "No overlapping genes between provided counts AnnData and current adata"
+                    )
+                raw_counts = counts[:, common].X
+                ad_temp = ad_temp[:, common].copy()
+        else:
+            raw_counts = counts
+
+        if raw_counts is not None:
+            raw_counts = _to_csr(raw_counts)
+            logger.info("Memento: using explicitly provided counts.")
+
+    if raw_counts is None and "counts" in getattr(ad_temp, "layers", {}):
+        raw_counts = ad_temp.layers["counts"]
+        logger.info("Memento: using 'counts' layer.")
+        raw_counts = _to_csr(raw_counts)
+
+    if (
+        raw_counts is None
+        and hasattr(ad_temp, "raw")
+        and ad_temp.raw is not None
+        and ad_temp.raw.shape[1] >= ad_temp.shape[1]
+    ):
+        raw_counts = ad_temp.raw.X
+        logger.info("Memento: using counts from adata.raw.")
+        raw_counts = _to_csr(raw_counts)
+
+    if raw_counts is None and _is_integer_counts_like(ad_temp.X):
+        raw_counts = ad_temp.X
+        logger.info("Memento: using current .X (looks like raw counts).")
+        raw_counts = _to_csr(raw_counts)
+
+    if raw_counts is None:
+        logger.warning(
+            "Could not obtain raw counts for Memento. "
+            "Memento works best with raw integer UMI counts. "
+            "Please call scat.pp.store_raw_counts(adata) early (before HVG + log), "
+            "or provide via the `counts` parameter, or ensure adata.raw / layers['counts'] has raw counts."
+        )
+        raw_counts = _to_csr(ad_temp.X)
+
+    ad_temp.X = raw_counts
+
+    from scipy.sparse import issparse
+
+    if not (issparse(ad_temp.X) and isinstance(ad_temp.X, csr_matrix)):
+        ad_temp.X = csr_matrix(ad_temp.X)
+
+    # Effective cpus
+    effective_cpus = n_cpus if n_cpus and n_cpus > 0 else -1
+
+    result = memento.binary_test_1d(
+        adata=ad_temp,
+        treatment_col="stim",
+        capture_rate=capture_rate,
+        num_boot=num_boot,
+        num_cpus=effective_cpus,
+    )
+
+    # result may be indexed by gene or have a 'gene' column (handle both)
+    if isinstance(result, pd.DataFrame):
+        if "gene" in result.columns:
+            result = result.set_index("gene")
+        res_index = result.index
+    else:
+        # Fallback (should not happen)
+        res_index = ad_temp.var_names
+        result = pd.DataFrame(index=res_index)
+
+    de_df = pd.DataFrame(index=res_index)
+    de_df["logFC"] = (
+        pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
+    )
+    pvals = (
+        pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
+    )
+    de_df["p_val"] = pvals
+
+    # BH adjustment (Memento may return raw p; we make p_adj consistent with other backends)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        de_df["p_adj"] = multipletests(pvals.values, method="fdr_bh")[1]
+
+    # Expose Memento's native columns for users who want mean + variability signals
+    for src, dst in [
+        ("de_se", "memento_de_se"),
+        ("dv_coef", "memento_dv_coef"),
+        ("dv_se", "memento_dv_se"),
+        ("dv_pval", "memento_dv_pval"),
+    ]:
+        if src in result.columns:
+            de_df[dst] = pd.to_numeric(result[src], errors="coerce").reindex(res_index)
+
+    # Re-align to the var_names of the adata object that was passed into the wrapper
+    # (important for the labels= permutation case and any internal subsetting)
+    de_df = de_df.reindex(adata.var_names).fillna({"logFC": 0.0, "p_val": 1.0, "p_adj": 1.0})
+
     return de_df

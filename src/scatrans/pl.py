@@ -12,6 +12,7 @@ practices (e.g., libraries such as OmicVerse and Scanpy extensions).
 
 import logging
 from contextlib import contextmanager
+from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -26,7 +27,7 @@ logger.addHandler(logging.NullHandler())
 
 def set_style(
     fontfamily="sans-serif",
-    fonts=["Arial", "Helvetica", "DejaVu Sans"],
+    fonts=None,
     linewidth=1.0,
     labelsize=11,
     titlesize=12,
@@ -64,6 +65,8 @@ def set_style(
     **kwargs
         Any additional matplotlib rcParams (will override the defaults).
     """
+    if fonts is None:
+        fonts = ["Arial", "Helvetica", "DejaVu Sans"]
     rc_updates = {
         "font.family": fontfamily,
         "font.sans-serif": fonts,
@@ -133,6 +136,12 @@ def comet_plot(
     save_path=None,
     title="Active Transcription Drivers",
     point_scale=1.0,
+    min_size=2,
+    max_size=180,
+    s: Optional[
+        float
+    ] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
+    alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
     figsize=(8, 6),
     dpi=300,
     fontsize=12,
@@ -145,6 +154,13 @@ def comet_plot(
     Point size and color are mapped to the active score. Designed to produce
     clear figures suitable for scientific publications with minimal further
     editing.
+
+    Size control (referencing common patterns in omicverse.pl.* for direct control):
+      - `s`: if provided, use a **fixed** point size for all points (in points^2).
+        This is the simplest way to make everything small (e.g. s=3 or s=1).
+      - `point_scale`: overall multiplier for the variable size calculation.
+      - `min_size` / `max_size`: hard bounds. Use min_size=1 to allow the tiniest
+        background points when using variable sizing by active_score.
 
     Parameters
     ----------
@@ -173,7 +189,25 @@ def comet_plot(
         fig = ax.figure
         _created_fig = False
 
-    sizes = np.clip(plot_df["active_score"] ** 1.6 * 35 * point_scale + 12, 8, 220)
+    # Size scaling (inspired by flexible controls in omicverse.pl for volcano/comet-style plots).
+    # - If user passes `s=...`, use fixed size (very common request: "just make all points small").
+    # - Otherwise use active_score-powered variable sizing with user min/max.
+    if s is not None:
+        sizes = np.full(len(plot_df), float(s) * point_scale)
+        # allow s to go below the default min_size (user explicitly wants this tiny fixed size)
+        effective_min = min(1.0, min_size)
+        sizes = np.clip(sizes, effective_min, max_size)
+    else:
+        raw_sizes = plot_df["active_score"] ** 1.6 * 35 * point_scale + 3 * point_scale
+        sizes = np.clip(raw_sizes, min_size, max_size)
+
+    # Light omicverse-style diagnostics (non-intrusive)
+    if len(plot_df) > 500 and (s is None) and point_scale > 0.3 and min_size > 3:
+        logger.info(
+            "Many points detected (%d). Consider s=2 or point_scale=0.1 + min_size=1 "
+            "for cleaner comet plot (inspired by omicverse.pl best practices).",
+            len(plot_df),
+        )
 
     scatter = ax.scatter(
         x=plot_df["logFC"],
@@ -181,7 +215,7 @@ def comet_plot(
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
-        alpha=0.85,
+        alpha=alpha,
         edgecolors="#444444",
         linewidth=0.5,
         zorder=3,
@@ -200,7 +234,7 @@ def comet_plot(
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
             color="#111111",
-            bbox=dict(boxstyle="square,pad=0.1", fc="none", ec="none"),
+            bbox={"boxstyle": "square,pad=0.1", "fc": "none", "ec": "none"},
         )
         texts.append(txt)
 
@@ -209,7 +243,7 @@ def comet_plot(
             texts,
             x=plot_df["logFC"].values,
             y=plot_df["velocity_residual"].values,
-            arrowprops=dict(arrowstyle="-", color="#666666", lw=0.8, alpha=0.8),
+            arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
             ax=ax,
         )
 
@@ -243,6 +277,10 @@ def volcano_3d(
     top_n=8,
     save_path=None,
     point_scale=1.0,
+    min_size=2,
+    max_size=160,
+    s: Optional[float] = None,  # fixed point size (direct control, omicverse reference)
+    alpha: float = 0.8,
     title="3D Active Volcano Plot",
     figsize=(10, 8),
     dpi=300,
@@ -254,6 +292,11 @@ def volcano_3d(
     3D volcano-style view (logFC, -log10(p_adj), velocity residual).
 
     If `ax` (a 3D axes) is provided, plot into it.
+
+    Size control (omicverse-style):
+      - `s`: fixed point size for all points.
+      - `point_scale`, `min_size`, `max_size` for variable sizing by active_score.
+    Use s=2 or min_size=1 + small point_scale for tiny background points.
     """
     logger.info("Generating 3D volcano plot...")
     set_style()
@@ -269,7 +312,19 @@ def volcano_3d(
         fig = ax.figure
         _created_fig = False
 
-    sizes = np.clip(plot_df["active_score"] ** 1.4 * 18 * point_scale + 8, 10, 180)
+    if s is not None:
+        sizes = np.full(len(plot_df), float(s) * point_scale)
+        effective_min = min(1.0, min_size)
+        sizes = np.clip(sizes, effective_min, max_size)
+    else:
+        raw_sizes = plot_df["active_score"] ** 1.4 * 18 * point_scale + 3 * point_scale
+        sizes = np.clip(raw_sizes, min_size, max_size)
+
+    if len(plot_df) > 500 and (s is None) and point_scale > 0.3:
+        logger.info(
+            "3D volcano: %d points. For performance and clarity try s=2 or small point_scale + min_size=1.",
+            len(plot_df),
+        )
 
     scatter = ax.scatter(
         plot_df["logFC"],
@@ -278,7 +333,7 @@ def volcano_3d(
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
-        alpha=0.8,
+        alpha=alpha,
         edgecolors="#444444",
         linewidth=0.4,
         zorder=3,
@@ -333,6 +388,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
+    show_terms: Optional[Union[int, List[str], Tuple[str, ...]]] = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -342,11 +398,32 @@ def enrich_dotplot(
     color_by="Adjusted P-value",
     size_by="Count",
     cmap="viridis_r",
+    dot_max: Optional[float] = None,
+    dot_min: Optional[float] = None,
+    smallest_dot: float = 0.0,
     ax=None,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
 
+    Common display choices (all columns from run_enrichment / run_kegg are available):
+      - `x`: what to plot on the x-axis. Supported / nice values:
+          "GeneRatio" (default), "FoldEnrichment", "Count", "-log10(p.adj)".
+          You can also pass any other numeric column present in the dataframe.
+          Example: `x="Count"` to rank terms by the number of overlapping genes.
+      - `size_by`: controls dot size (default "Count"). Common: "Count", "GeneRatio".
+      - `color_by`: controls dot color (default "Adjusted P-value" or "p.adjust").
+        Smaller p-values are usually more interesting.
+      - `dot_max`, `dot_min`, `smallest_dot`: omicverse-style controls for dot size range
+        (see omicverse.pl.dotplot for the excellent reference implementation).
+
+    `show_terms` gives clusterProfiler-like flexibility:
+      - int: show top N terms (overrides top_n)
+      - list/tuple of str: show exactly the matching terms (match on Term or Description;
+        order of the list is respected when possible). This is analogous to
+        `dotplot(..., showCategory = c("term1", "term2"))`.
+
+    `top_n` is still supported for the common "top N" case (when show_terms is None).
     Supports `ax` for embedding in publication multi-panel figures.
     """
     if enrich_df.empty:
@@ -356,8 +433,38 @@ def enrich_dotplot(
     logger.info("Generating enrichment dotplot...")
     set_style()
 
-    plot_df = enrich_df.head(top_n).copy()
-    plot_df = plot_df.iloc[::-1]
+    # clusterProfiler-style term selection (show_terms takes precedence)
+    if show_terms is not None:
+        if isinstance(show_terms, int):
+            plot_df = enrich_df.head(show_terms).copy()
+        else:
+            wanted = {str(x).strip().lower() for x in show_terms}
+
+            def _matches(row):
+                t = str(row.get("Term", "")).strip().lower()
+                d = str(row.get("Description", "")).strip().lower()
+                return any(w in t or w in d for w in wanted)
+
+            mask = enrich_df.apply(_matches, axis=1)
+            plot_df = enrich_df[mask].copy()
+            # Try to preserve caller-specified order
+            if not plot_df.empty and len(show_terms) > 0:
+                order_map = {str(x).strip().lower(): i for i, x in enumerate(show_terms)}
+
+                def _order_key(row):
+                    t = str(row.get("Term", "")).strip().lower()
+                    d = str(row.get("Description", "")).strip().lower()
+                    return min(order_map.get(t, 10**9), order_map.get(d, 10**9))
+
+                plot_df = plot_df.copy()
+                plot_df["_sel_order"] = plot_df.apply(_order_key, axis=1)
+                plot_df = plot_df.sort_values("_sel_order").drop(
+                    columns=["_sel_order"], errors="ignore"
+                )
+    else:
+        plot_df = enrich_df.head(top_n).copy()
+
+    plot_df = plot_df.iloc[::-1]  # visual: top at top of y axis for horizontal dotplot
 
     def clean_term(text):
         text = str(text).split(" (GO:")[0].split(" (KEGG")[0]
@@ -373,6 +480,7 @@ def enrich_dotplot(
     count_candidates = ["Count", "Size", "leadingEdge_count"]
     size_col = next((c for c in count_candidates if c in plot_df.columns), "Count")
 
+    requested_x = x
     if x == "-log10(p.adj)" or x == "-log10(p.adjust)":
         if pval_col:
             plot_df["neg_log_padj"] = -np.log10(plot_df[pval_col].astype(float).clip(lower=1e-300))
@@ -383,9 +491,25 @@ def enrich_dotplot(
             x_label = x_col
     else:
         x_col = x if x in plot_df.columns else "GeneRatio"
-        x_label = x_col
+        # Nice labels for the common x choices users care about (GeneRatio / FoldEnrichment / Count)
+        if x_col == "GeneRatio":
+            x_label = "Gene Ratio"
+        elif x_col == "FoldEnrichment":
+            x_label = "Fold Enrichment"
+        elif x_col == "Count":
+            x_label = "Count"
+        else:
+            x_label = x_col
 
-    if x_col == "GeneRatio" and "FoldEnrichment" in plot_df.columns:
+    # Heuristic: if the *effective* x is GeneRatio (i.e. user asked for default or explicitly "GeneRatio")
+    # and it has very low variation across terms, auto-switch to FoldEnrichment (common in real data
+    # where most terms have similar gene ratios). Only applies when user did not explicitly request
+    # something else like "Count".
+    if (
+        x_col == "GeneRatio"
+        and "FoldEnrichment" in plot_df.columns
+        and requested_x in (None, "GeneRatio", "generatio", "gene_ratio")
+    ):
         gene_ratio_range = plot_df["GeneRatio"].max() - plot_df["GeneRatio"].min()
         if gene_ratio_range < 0.08:
             logger.warning(
@@ -401,10 +525,45 @@ def enrich_dotplot(
     else:
         color_col = pval_col if pval_col else plot_df.columns[0]
 
-    sizes = np.clip(plot_df[size_col] * 18 + 30, 20, 400)
+    # Robust dot size scaling (the root cause of "all dots look the same size").
+    # Previous formula `val * 18 + 30` produced almost no visual difference
+    # when the chosen size variable (Count or GeneRatio) had modest range
+    # in the selected terms. We now do a proper min-max normalization to a
+    # fixed, clearly visible marker area range. This guarantees that as long
+    # as the underlying size_by values are not all identical, the dots will
+    # have obviously different sizes.
+    def _scale_sizes(vals, min_s=50, max_s=280, dot_max=None, dot_min=None, smallest_dot=0.0):
+        vals = pd.to_numeric(vals, errors="coerce").astype(float)
+        # Apply omicverse-style dot size limits before scaling
+        if dot_max is not None:
+            vals = np.minimum(vals, dot_max)
+        if dot_min is not None:
+            vals = np.maximum(vals, dot_min)
+        vmin = vals.min()
+        vmax = vals.max()
+        if pd.isna(vmin) or pd.isna(vmax) or vmax <= vmin or len(vals) == 0:
+            return np.full(len(vals), (min_s + max_s) / 2.0)
+        sizes = min_s + (max_s - min_s) * (vals - vmin) / (vmax - vmin)
+        if smallest_dot > 0:
+            sizes = (
+                smallest_dot
+                + (1 - smallest_dot) * (sizes - min_s) / (max_s - min_s) * (max_s - min_s)
+                + min_s * smallest_dot
+            )  # rough preserve
+            # simpler: re-map fraction
+            frac = (vals - vmin) / (vmax - vmin) if vmax > vmin else 0
+            sizes = min_s + (max_s - min_s) * (smallest_dot + (1 - smallest_dot) * frac)
+        return np.clip(sizes, 20, 500)
+
+    sizes = _scale_sizes(
+        plot_df[size_col], dot_max=dot_max, dot_min=dot_min, smallest_dot=smallest_dot
+    )
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        # Leave extra space on the right for colorbar (p.adjust) + size legend (Count)
+        # This prevents overlap between the two legends (common issue when both are present).
+        fig.subplots_adjust(right=0.78)
         _created_fig = True
     else:
         fig = ax.figure
@@ -431,27 +590,74 @@ def enrich_dotplot(
     ax.yaxis.grid(True, linestyle=":", color="#EEEEEE", alpha=0.5, zorder=0)
     ax.set_axisbelow(True)
 
-    cbar = plt.colorbar(scatter, ax=ax, shrink=0.4, pad=0.03, aspect=15)
+    cbar = plt.colorbar(scatter, ax=ax, shrink=0.38, pad=0.08, aspect=14)
+    # Note: when we create the figure we also do fig.subplots_adjust(right=0.78)
+    # so that the colorbar (p.adjust) and the size legend (Count) have dedicated horizontal space
+    # and do not overlap. The bbox_to_anchor for the size legend is set further right (1.18)
+    # to sit beside the colorbar. This addresses the reported legend overlap.
     cbar_label = color_col
     if color_col == "Adjusted P-value":
         cbar_label = "Adjusted P-value (smaller = more sig.)"
     cbar.set_label(cbar_label, fontsize=fontsize - 1, fontweight="bold", rotation=270, labelpad=20)
     cbar.outline.set_visible(False)
 
+    # Reliable size legend (replaces the previous legend_elements + hardcoded inverse).
+    # The old inverse ` (s-30)/18 ` was tied to the broken scaling formula and
+    # often failed or showed wrong numbers. We now manually create proxy artists
+    # using the actual data values from the size_by column. This guarantees:
+    #   - dots in the plot have clearly different sizes (see _scale_sizes above)
+    #   - the legend shows the real Count / GeneRatio / ... numbers
+    #
+    # Positioned further right (after the colorbar) and with subplots_adjust(right=0.78)
+    # when we create the figure, to avoid overlap with the p.adjust colorbar legend.
     try:
-        handles, labels = scatter.legend_elements(
-            prop="sizes", alpha=0.6, num=4, func=lambda s: f"{max(1, int((s - 30) / 18))}"
-        )
-        ax.legend(
-            handles,
-            labels,
-            title=size_col,
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            frameon=False,
-            title_fontsize=fontsize - 1,
-        )
+        # Choose a few representative values (min, ~median, max of the plotted data)
+        size_vals = pd.to_numeric(plot_df[size_col], errors="coerce").dropna().astype(float)
+        if len(size_vals) > 0:
+            reps = []
+            reps.append(size_vals.min())
+            if len(size_vals) > 2:
+                reps.append(size_vals.median())
+            reps.append(size_vals.max())
+            # remove near-duplicates
+            reps = sorted({round(r, 4) if size_col != "Count" else int(round(r)) for r in reps})
+            if not reps:
+                reps = [size_vals.iloc[0]]
+
+            handles = []
+            labels = []
+            for rv in reps:
+                # compute the marker size that corresponds to this data value
+                # use the same dot limits as the main plot for consistent legend sizes
+                s_for_rv = _scale_sizes(
+                    pd.Series([rv]),
+                    min_s=50,
+                    max_s=280,
+                    dot_max=dot_max,
+                    dot_min=dot_min,
+                    smallest_dot=smallest_dot,
+                )[0]
+                h = ax.scatter(
+                    [], [], s=s_for_rv, c="#555555", alpha=0.7, edgecolors="#333333", linewidths=0.5
+                )
+                handles.append(h)
+                if size_col == "Count":
+                    labels.append(str(int(round(rv))))
+                else:
+                    labels.append(f"{rv:.2g}" if rv < 1 else f"{rv:.2f}")
+            if handles:
+                ax.legend(
+                    handles,
+                    labels,
+                    title=size_col,
+                    loc="center left",
+                    bbox_to_anchor=(1.18, 0.5),  # further right to sit after the colorbar
+                    frameon=False,
+                    title_fontsize=fontsize - 1,
+                    labelspacing=1.2,
+                )
     except Exception:
+        # Never let legend problems break the main plot
         pass
 
     sns.despine(ax=ax, top=True, right=True, left=False, bottom=False)
@@ -471,9 +677,16 @@ def enrich_dotplot(
 def volcano_plot(
     df,
     top_n=10,
+    label_genes: Optional[Iterable[str]] = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
     point_scale=1.0,
+    min_size=2,
+    max_size=160,
+    s: Optional[
+        float
+    ] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
+    alpha: float = 0.75,
     figsize=(8, 6),
     dpi=300,
     fontsize=12,
@@ -484,9 +697,27 @@ def volcano_plot(
     ax=None,
 ):
     """
-    2D volcano plot.
+    2D volcano plot with ggVolcano-inspired flexibility and style options.
 
-    Supports embedding via the `ax` parameter for multi-panel figures.
+    - `top_n`: number of top genes (by active_score or p_adj) to label.
+    - `label_genes`: iterable of gene names to *force* label (manual specification,
+      even if not in top_n). This + top_n gives the common ggVolcano usage
+      pattern (label_number + explicit genes). Duplicates are handled automatically.
+    - When color_by != active_score (or not present), falls back to classic
+      up / down / ns coloring (red / blue / gray) based on cutoffs — matching
+      the popular ggVolcano "beautiful volcano" look.
+    - Cutoff lines are drawn with labels.
+    - Supports `ax` for embedding.
+
+    Size control (addresses "even smallest points are still too big"; modeled after flexible controls in omicverse.pl.volcano etc.):
+      - `s`: if given, forces a **fixed** point size for all scatters (e.g. s=2 or s=1 for tiny points).
+        This bypasses score-based variable sizing entirely — simplest for clean small-point volcanos.
+      - `point_scale`: global multiplier.
+      - `min_size` / `max_size`: bounds for the variable sizing case.
+      - When no "active_score" (pure DE volcano), uses small p-value based base so points start small.
+
+    Style reference: https://github.com/BioSenior/ggVolcano (label control,
+    clean up/down distinction, readable labels with repel).
     """
     try:
         from adjustText import adjust_text
@@ -502,13 +733,18 @@ def volcano_plot(
     plot_df = df.copy().dropna(subset=["logFC", "p_adj"])
     plot_df["neg_log_pval"] = -np.log10(plot_df["p_adj"].astype(float) + 1e-300)
 
+    # ggVolcano-style classic coloring (up/down/ns) when not using active_score
     if color_by == "active_score" and "active_score" in plot_df.columns:
         color_values = plot_df["active_score"]
         cbar_label = "Active Score"
+        colors_for_scatter = None
     else:
-        sig_up = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
-        color_values = sig_up.astype(int)
-        cbar_label = "Significant (up)"
+        up_mask = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+        down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+        color_values = np.where(up_mask, 2, np.where(down_mask, 1, 0))  # 2=up, 1=down, 0=ns
+        cbar_label = None
+        # Use explicit nice colors similar to common ggVolcano / EnhancedVolcano
+        colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]  # ns, down, up
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -517,26 +753,46 @@ def volcano_plot(
         fig = ax.figure
         _created_fig = False
 
-    sizes = np.clip(plot_df.get("active_score", 50) ** 1.3 * 8 * point_scale + 15, 12, 180)
+    # Size logic (omicverse-inspired direct `s` control + our variable + min/max).
+    if s is not None:
+        sizes = np.full(len(plot_df), float(s) * point_scale)
+        effective_min = min(1.0, min_size)
+        sizes = np.clip(sizes, effective_min, max_size)
+    else:
+        # variable
+        size_val = plot_df.get("active_score", plot_df.get("neg_log_pval", 4))
+        raw_sizes = size_val**1.3 * 8 * point_scale + 3 * point_scale
+        sizes = np.clip(raw_sizes, min_size, max_size)
 
-    scatter = ax.scatter(
-        x=plot_df["logFC"],
-        y=plot_df["neg_log_pval"],
-        c=color_values,
-        s=sizes,
-        cmap=cmap,
-        alpha=0.75,
-        edgecolors="#444444",
-        linewidth=0.4,
-        zorder=3,
-    )
+    # Light diagnostic (omicverse style)
+    if len(plot_df) > 1000 and (s is None) and point_scale > 0.25:
+        logger.info(
+            "Large number of points (%d) in volcano. For cleaner view consider "
+            "s=2 (fixed small) or point_scale<=0.15 + min_size=1.",
+            len(plot_df),
+        )
+
+    scatter_kwargs = {
+        "x": plot_df["logFC"],
+        "y": plot_df["neg_log_pval"],
+        "s": sizes,
+        "alpha": alpha,
+        "edgecolors": "#444444",
+        "linewidth": 0.4,
+        "zorder": 3,
+    }
+    if colors_for_scatter is not None:
+        # Classic up/down/ns: provide explicit color list (do not pass c= together with color=)
+        scatter = ax.scatter(c=[colors_for_scatter[int(c)] for c in color_values], **scatter_kwargs)
+    else:
+        scatter = ax.scatter(c=color_values, cmap=cmap, **scatter_kwargs)
 
     ax.axhline(
         -np.log10(pval_cutoff),
         color="#d62728",
         linestyle="--",
         linewidth=1.2,
-        alpha=0.8,
+        alpha=0.85,
         label=f"p_adj = {pval_cutoff}",
     )
     ax.axvline(
@@ -544,18 +800,32 @@ def volcano_plot(
         color="#d62728",
         linestyle="--",
         linewidth=1.2,
-        alpha=0.8,
+        alpha=0.85,
         label=f"logFC = {logfc_cutoff}",
     )
-    ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.7)
 
+    # --- ggVolcano-like gene labeling: top_n + manually specified genes ---
+    genes_to_label = set()
+    if label_genes is not None:
+        genes_to_label.update(str(g).strip() for g in label_genes if str(g).strip())
+
+    # Always include the top_n (by active_score when available)
     if "active_score" in plot_df.columns:
-        top_genes = plot_df.nlargest(top_n, "active_score")
+        top_df = plot_df.nlargest(top_n, "active_score")
     else:
-        top_genes = plot_df.nsmallest(top_n, "p_adj")
+        top_df = plot_df.nsmallest(top_n, "p_adj")
+    for g in top_df.index:
+        genes_to_label.add(str(g))
+
+    label_df = (
+        plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy()
+        if genes_to_label
+        else pd.DataFrame()
+    )
 
     texts = []
-    for idx, row in top_genes.iterrows():
+    for idx, row in label_df.iterrows():
         txt = ax.text(
             row["logFC"],
             row["neg_log_pval"],
@@ -563,7 +833,7 @@ def volcano_plot(
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
             color="#111111",
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7),
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
         )
         texts.append(txt)
 
@@ -572,7 +842,7 @@ def volcano_plot(
             texts,
             x=plot_df["logFC"].values,
             y=plot_df["neg_log_pval"].values,
-            arrowprops=dict(arrowstyle="-", color="#888888", lw=0.7, alpha=0.7),
+            arrowprops={"arrowstyle": "-", "color": "#888888", "lw": 0.7, "alpha": 0.7},
             ax=ax,
         )
 
@@ -612,6 +882,7 @@ def bias_diagnostic_plot(
     dpi=300,
     fontsize=11,
     show_regression=True,
+    point_size=10,
     axes=None,
 ):
     """
@@ -619,6 +890,8 @@ def bias_diagnostic_plot(
     correction on velocity delta (before vs after).
 
     Supports external `axes` (tuple of two Axes) for embedding in custom figures.
+
+    `point_size`: size for the background gene cloud (default 10, was 15).
     """
     logger.info("Generating bias correction diagnostic plot...")
     set_style()
@@ -648,7 +921,7 @@ def bias_diagnostic_plot(
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
     y_raw = plot_df["velocity_delta_raw"]
-    ax1.scatter(x, y_raw, s=15, alpha=0.5, c="#1f77b4", edgecolors="none")
+    ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c="#1f77b4", edgecolors="none")
     if show_regression:
         from scipy.stats import linregress
 
@@ -673,7 +946,7 @@ def bias_diagnostic_plot(
 
     # Right: After correction
     y_res = plot_df["velocity_residual"]
-    ax2.scatter(x, y_res, s=15, alpha=0.5, c="#2ca02c", edgecolors="none")
+    ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
     ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
     ax2.set_ylabel("Velocity Residual (bias-corrected)", fontsize=fontsize, fontweight="bold")
@@ -844,7 +1117,8 @@ def velocity_phase_portraits(
     ncols = min(3, n)
     nrows = math.ceil(n / ncols)
     fig, axes = plt.subplots(
-        nrows, ncols,
+        nrows,
+        ncols,
         figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
         dpi=150,
         squeeze=False,
