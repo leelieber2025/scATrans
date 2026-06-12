@@ -147,18 +147,19 @@ print("\nSaved real_data_comet_and_bias.pdf")
 if len(significant) > 0:
     enrich = scat.run_enrichment(
         gene_list=significant.index.tolist(),
-        gene_sets="GO_Biological_Process_2023",  # defaults to bundled scATrans version
+        gene_sets="GO_Biological_Process",  # or "GO_BP" — auto-resolves to the correct
+        # organism-specific bundled built-in (Mm/Hs_GO_Biological_Process_2026.txt).
+        # No need to specify year or _scATrans suffix.
         organism="mouse",   # or "human"
-        # CRITICAL: universe must be the FULL set of measured genes (post basic QC,
-        # before any HVG subset). Never pass only the HVGs after highly_variable_genes.
-        # Best: call scat.store_raw_counts(adata) early, then pass adata= the version
-        # that still has (or can recover) the original gene list.
-        adata=adata,  # preferred when store_raw_counts was used — auto-uses preserved raw_gene_list
+        # CRITICAL for correct background: pass adata= (the one on which you called
+        # store_raw_counts early) so it auto-uses the preserved full measured gene list
+        # instead of whatever is left after HVG. This is the most convenient & correct default.
+        adata=adata,
         pval_cutoff=0.05,
     )
-    # To use a specific Enrichr historical version, just write the full name:
-    # enrich = scat.run_enrichment(..., gene_sets="GO_Biological_Process_2021")
-    # For KEGG: scat.run_kegg(..., kegg_library="KEGG_2021")
+    # For KEGG the simplest is:
+    # kegg = scat.run_kegg(significant.index.tolist(), organism="mouse", adata=adata)
+    # To force a historical Enrichr version instead of the built-in: gene_sets="GO_Biological_Process_2021" or kegg_library="KEGG_2021"
     print("\nTop enrichment terms:")
     print(enrich.head(6))
     print("universe_info:", enrich.attrs.get("universe_info"))

@@ -418,7 +418,7 @@ def active_score(
     # Auto-resolve preserved raw counts from store_raw_counts if available
     # This lets Memento "just work" on the original measured genes even after HVG + log on .X
     resolved_counts = None
-    if use_memento_de and resolved_counts is None:
+    if use_memento_de:
         if "scatrans" in adata.uns and "raw_gene_list" in adata.uns.get("scatrans", {}):
             if "counts" in adata.layers:
                 resolved_counts = adata.layers["counts"]

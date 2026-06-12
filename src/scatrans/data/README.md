@@ -47,11 +47,12 @@ print(scat.list_bundled_gene_sets())
 kegg = scat.run_kegg(my_genes, organism="mouse")
 
 # GO base name — automatically resolved to the correct Hs/Mm 2026 built-in
+# (only the BP + KEGG 2026 files are bundled; other GO branches fall back to gseapy/Enrichr if named explicitly)
 res = scat.run_enrichment(
     gene_list=my_genes,
-    gene_sets="GO_Biological_Process",
-    # universe should be your full measured gene set (see main README)
-    background=background_genes,
+    gene_sets="GO_Biological_Process",  # or "GO_BP"
+    # Best: pass adata= after store_raw_counts(...) for automatic correct universe
+    adata=adata,
 )
 
 # To use original Enrichr or a specific historical version: just write the full name

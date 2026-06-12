@@ -169,10 +169,11 @@ if len(cands) > 0:
     try:
         enrich = scat.run_enrichment(
             gene_list=cands.index.tolist(),
-            gene_sets="GO_Biological_Process_scATrans",  # uses bundled set (no extra gseapy required)
-            adata=plain,   # if store_raw_counts was called on this object, it will
-                           # automatically use the preserved full measured gene set
-                           # as the background (much better than passing HVGs).
+            gene_sets="GO_Biological_Process",  # base name — auto uses the correct
+            # bundled organism-specific 2026 set (Mm/Hs). Legacy _scATrans names are
+            # also auto-mapped for convenience. Pass adata= so universe is auto from store.
+            organism="mouse",  # or "human"; only needed for KEGG or to disambiguate
+            adata=plain,
             pval_cutoff=0.2,
         )
         print(f"Enrichment ran, got {len(enrich)} terms.")

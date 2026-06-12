@@ -76,8 +76,10 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
 
     Example:
         sets = scat.list_bundled_gene_sets()
-        res = scat.run_enrichment(genes, gene_sets="KEGG_scATrans")          # or "KEGG_scATrans.gmt"
-        res = scat.run_enrichment(genes, gene_sets="GO_Biological_Process_scATrans")
+        # Recommended: just use base names + organism (auto-resolves to the Hs/Mm 2026 built-ins)
+        res = scat.run_kegg(genes, organism="mouse")
+        res = scat.run_enrichment(genes, gene_sets="GO_Biological_Process", organism="mouse")
+        # Legacy names are also accepted and mapped to the 2026 sets.
     """
     discovered: List[str] = []
     try:
@@ -124,6 +126,7 @@ def _try_load_bundled_gene_set(
     """
     candidates = [name]
     if not name.endswith((".gmt", ".tsv", ".txt")):
+        candidates.append(name + ".txt")
         candidates.append(name + ".gmt")
         candidates.append(name + ".tsv")
 
@@ -157,10 +160,6 @@ def _resolve_gene_set_name(
     if source == "enrichr":
         return requested
 
-    # If user explicitly asked for a scATrans bundled name, respect it
-    if "scATrans" in requested or requested.endswith(("_scATrans", "_scatrans")):
-        return requested
-
     prefix = "Mm"
     o = str(organism).lower()
     if o in ("human", "hs", "hsa"):
@@ -170,16 +169,13 @@ def _resolve_gene_set_name(
 
     # New organism-specific 2026 defaults (the 4 files added to data/)
     # These become the default built-in library if user does not specify a year/version.
+    # Only map names for which we actually ship bundled files (BP + KEGG for each organism).
     default_map = {
-        # GO base names -> organism 2026 built-in
+        # GO base names -> organism 2026 built-in (only BP is bundled)
         "GO_Biological_Process": f"{prefix}_GO_Biological_Process_2026",
         "GO_Biological_Process_2023": f"{prefix}_GO_Biological_Process_2026",
         "GO_Biological_Process_2026": f"{prefix}_GO_Biological_Process_2026",
         "GO_BP": f"{prefix}_GO_Biological_Process_2026",
-        "GO_Cellular_Component": f"{prefix}_GO_Cellular_Component_2026",
-        "GO_CC": f"{prefix}_GO_Cellular_Component_2026",
-        "GO_Molecular_Function": f"{prefix}_GO_Molecular_Function_2026",
-        "GO_MF": f"{prefix}_GO_Molecular_Function_2026",
         # KEGG
         "KEGG": f"{prefix}_KEGG_2026",
         "KEGG_2026": f"{prefix}_KEGG_2026",
@@ -189,6 +185,22 @@ def _resolve_gene_set_name(
     mapped = default_map.get(requested)
     if mapped is not None:
         return mapped
+
+    # Legacy *_scATrans (and .gmt) names from older examples/docs.
+    # Map them to the current organism's 2026 built-in for seamless backward compat
+    # (old .gmt files are no longer shipped; the 2026 txt files are the supported bundled sets).
+    if "scATrans" in requested or "_scATrans" in requested.lower() or "_scatrans" in requested.lower():
+        # strip extension and legacy suffix to get base
+        base = requested
+        for ext in (".gmt", ".txt", ".tsv"):
+            if base.lower().endswith(ext):
+                base = base[: -len(ext)]
+        base = base.replace("_scATrans", "").replace("_scatrans", "").strip("._ ").lower()
+        if base in ("go_biological_process", "go_bp", "go_biological_process_2023", "go_biological_process_2026"):
+            return f"{prefix}_GO_Biological_Process_2026"
+        if "kegg" in base:
+            return f"{prefix}_KEGG_2026"
+        # unknown legacy: fall through (will likely fail bundled and gseapy with helpful list)
 
     # If the user wrote a very specific year that we have a bundled for, use it
     # (e.g. they can still ask for 2023 if the file exists, but we now default to 2026)

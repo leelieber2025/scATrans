@@ -290,9 +290,10 @@ go = scat.run_enrichment(
     gene_list=genes,
     gene_sets="GO_Biological_Process",   # or "GO_BP"
     organism="mouse",
-    # universe should be your full measured gene set (the package will use
-    # the list saved by store_raw_counts if you pass adata= or the old universe=)
-    universe=background,
+    # Recommended: pass adata= (after you did store_raw_counts early) — it will
+    # automatically use the preserved full measured genes as universe/background.
+    # Explicit universe= or background= always wins if provided.
+    adata=adata,
 )
 ```
 
@@ -311,9 +312,9 @@ kegg_2021 = scat.run_kegg(
 go_2021 = scat.run_enrichment(
     genes,
     gene_sets="GO_Biological_Process_2021",  # 2023, 2021, 2019, 2018, 2017...
-    # `background` or `universe` should be the full set of genes considered
-    # in your experiment (not limited to HVGs).
-    universe=background,
+    # For background: still prefer adata= (from store_raw_counts) over manual universe=.
+    adata=adata,
+    # universe=background,   # explicit still accepted and takes precedence
 )
 
 # Even without the year in some cases, but the year-containing names are the clearest signal
@@ -710,10 +711,13 @@ adata, de_results = scat.differential_expression(
 # Then use the same downstream tools as with active_score results
 candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)
 
-# IMPORTANT: when calling run_enrichment / run_kegg, make sure the implicit or
-# explicit `universe` / `background` is the full set of genes that were measured
-# in the experiment (not just the HVGs in the current adata).
-enrich = scat.run_enrichment(candidates.index.tolist(), gene_sets="GO_Biological_Process")  # defaults to built-in Hs/Mm 2026 for the organism
+# Preferred (most convenient + correct): after scat.store_raw_counts(adata) early in your flow,
+# just pass adata= here. It auto-supplies the full measured gene list as background/universe.
+enrich = scat.run_enrichment(
+    candidates.index.tolist(),
+    gene_sets="GO_Biological_Process",  # auto → correct Hs/Mm 2026 bundled
+    adata=adata,
+)
 scat.pl.volcano_plot(de_results)
 scat.pl.enrich_dotplot(enrich)
 ```
