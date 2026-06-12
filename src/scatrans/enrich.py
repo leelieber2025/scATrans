@@ -338,6 +338,7 @@ def run_enrichment(
     gene_sets: Union[Mapping[str, Iterable[Any]], str],
     universe: Optional[Iterable[Any]] = None,
     background: Optional[Iterable[Any]] = None,
+    adata: Optional[Any] = None,   # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
     pval_cutoff: float = 0.05,
     min_size: int = 5,
     max_size: int = 500,
@@ -363,6 +364,18 @@ def run_enrichment(
       `options(enrichment_force_universe = TRUE)`).
     - If neither provided, universe = union of all genes present in the gene_sets
       (safe default, similar to clusterProfiler when no universe given).
+
+    New smart default (recommended):
+    - If you do not pass `universe` or `background`, but you pass an `adata` on which
+      `scat.store_raw_counts(adata)` was previously called, `run_enrichment` will
+      automatically use the preserved full measured gene list (`adata.uns["scatrans"]["raw_gene_list"]`)
+      as the background. This is the safest and most convenient behavior for
+      single-cell data.
+    - Explicit `universe=...` or `background=...` always takes precedence.
+
+    Historical note on `universe`:
+    Passing `universe=adata.var_names.tolist()` after HVG subsetting is usually wrong.
+    The background should be the genes that were actually measured in the experiment.
 
     Returned DataFrame is rich: clusterProfiler-compatible columns + RichFactor,
     string helpers, TermSize, neg_log10_padj, plus detailed `.attrs["universe_info"]`
@@ -400,7 +413,27 @@ def run_enrichment(
 
     # --- Universe / background resolution (clusterProfiler-aligned conservative default) ---
     # `universe` is now the preferred name; `background` kept for full backward compat.
+    #
+    # Smart default: if the user did not explicitly pass universe/background,
+    # and they pass an `adata` on which `store_raw_counts` was previously called,
+    # we automatically use the preserved full measured gene list.
+    # This is much more robust than relying on adata.var_names after HVG subsetting.
     provided = universe if universe is not None else background
+
+    if provided is None and adata is not None:
+        try:
+            if "scatrans" in adata.uns and "raw_gene_list" in adata.uns["scatrans"]:
+                preserved = adata.uns["scatrans"]["raw_gene_list"]
+                if preserved:
+                    provided = preserved
+                    if verbose:
+                        _log_info(
+                            "Using preserved raw_gene_list from adata.uns['scatrans'] "
+                            f"({len(preserved)} genes) as universe (from previous store_raw_counts)."
+                        )
+        except Exception:
+            pass   # be defensive
+
     provided_is_str_all = False
     bg_set: set = set()
     if provided is not None:
@@ -520,6 +553,7 @@ def run_kegg(
     organism: str = "mouse",
     universe: Optional[Iterable[Any]] = None,
     background: Optional[Iterable[Any]] = None,
+    adata: Optional[Any] = None,   # forwarded to run_enrichment for smart universe default
     pval_cutoff: float = 0.05,
     min_size: int = 5,
     max_size: int = 500,
@@ -564,6 +598,7 @@ def run_kegg(
         gene_sets=kegg_library,
         universe=universe,
         background=background,
+        adata=adata,
         pval_cutoff=pval_cutoff,
         min_size=min_size,
         max_size=max_size,

@@ -414,6 +414,17 @@ def active_score(
             "capture_rate=%.4f, num_boot=%d. This replaces scanpy rank_genes_groups for the DE leg of active_score.",
             memento_capture_rate, memento_num_boot
         )
+
+    # Auto-resolve preserved raw counts from store_raw_counts if available
+    # This lets Memento "just work" on the original measured genes even after HVG + log on .X
+    resolved_counts = None
+    if use_memento_de and resolved_counts is None:
+        if "scatrans" in adata.uns and "raw_gene_list" in adata.uns.get("scatrans", {}):
+            if "counts" in adata.layers:
+                resolved_counts = adata.layers["counts"]
+            elif getattr(adata, "raw", None) is not None:
+                resolved_counts = adata.raw.X
+
     de_df = _run_de_wrapper(
         adata,
         groupby,
@@ -431,6 +442,7 @@ def active_score(
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
         memento_n_cpus=memento_n_cpus,
+        counts=resolved_counts,
     )
 
     adata.var["logFC"] = de_df["logFC"]
@@ -904,7 +916,9 @@ def differential_expression(
     followed by scATrans' downstream tools:
 
         candidates = scat.filter_active_genes(de_results, ...)
-        enrich = scat.run_enrichment(candidates.index.tolist(), ...)
+        # For enrichment, pass adata= (if store_raw_counts was used) so it uses
+        # the preserved full measured gene set as universe, not just current HVGs.
+        enrich = scat.run_enrichment(candidates.index.tolist(), ..., adata=adata)
         scat.pl.volcano_plot(de_results, ...)
         scat.pl.enrich_dotplot(enrich, ...)
 
@@ -969,6 +983,19 @@ def differential_expression(
             "use_memento_de=True is not supported with use_pseudobulk=True "
             "(Memento is a cell-level method-of-moments estimator)."
         )
+
+    # Auto-resolve preserved raw counts from scatrans metadata if user called store_raw_counts early
+    # This makes Memento / PyDESeq2 "just work" without user manually passing counts= or universe=
+    if counts is None and (use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")):
+        if "scatrans" in adata_input.uns and "raw_gene_list" in adata_input.uns.get("scatrans", {}):
+            # Prefer the layer if present (it has the actual count matrix for those genes)
+            if "counts" in adata_input.layers:
+                counts = adata_input.layers["counts"]
+            elif getattr(adata_input, "raw", None) is not None:
+                counts = adata_input.raw.X
+            # else the gene list is available but matrix may have been lost; wrapper will warn
+        elif "counts" in getattr(adata_input, "layers", {}):
+            counts = adata_input.layers["counts"]
 
     # Note on raw counts: users should call scat.store_raw_counts(adata) early.
     # The DE backends will use layers[layer] or adata.raw when available.
@@ -1141,6 +1168,14 @@ def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = False, 
 
     adata.layers[layer] = adata.X.copy()
     logger.info(f"Saved raw counts to adata.layers['{layer}'].")
+
+    # Save the gene list at this moment as the "measured universe" for later use
+    # in enrichment (GO/KEGG) and other count-based analyses. This survives
+    # later HVG subsetting of the main adata object.
+    if "scatrans" not in adata.uns:
+        adata.uns["scatrans"] = {}
+    adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
+    logger.info("Saved the current gene list as the measured universe for enrichment (in adata.uns['scatrans']['raw_gene_list']).")
 
     if save_raw:
         if getattr(adata, "raw", None) is not None and not overwrite:

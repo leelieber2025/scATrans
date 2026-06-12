@@ -71,6 +71,7 @@ What `store_raw_counts` does:
 This way:
 - Your visualization pipeline can use a small HVG + log1p `.X`.
 - Later you can still run `differential_expression(..., use_memento_de=True)` or `active_score` using the full-gene raw counts and the original spliced/unspliced data from the saved layers.
+- When doing enrichment, pass the gene list from the preserved full set as `universe` (see the enrichment section below for details and warnings).
 
 See also the "Additional Capability: Standalone Differential Expression" section and the HVG-vs-velocity-layers note below.
 
@@ -243,10 +244,11 @@ enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
     gene_sets="GO_Biological_Process_2023",  # defaults to the bundled scATrans version
     organism="mouse",
-    # `universe` (preferred) or `background` (compat). Default behavior is
-    # clusterProfiler-like conservative: intersect with genes that have
-    # annotation in the chosen gene_sets. Use force_universe=True to disable.
-    universe=adata.var_names.tolist(),
+    adata=adata,   # NEW: if you called store_raw_counts(adata) earlier, this will
+                   # automatically use the preserved full measured gene list as universe.
+                   # Explicit `universe=` still takes precedence if you pass it.
+    # Default behavior is clusterProfiler-like conservative: intersect with genes
+    # that have annotation in the chosen gene_sets. Use force_universe=True to disable.
     pval_cutoff=0.05,
     min_size=5,
     max_size=500,
@@ -263,7 +265,8 @@ kegg_res = scat.run_kegg(
     gene_list=candidates.index.tolist(),
     organism="mouse",           # or "human"
     # Defaults to the bundled "KEGG_scATrans" (ClusterProfiler-derived) set
-    universe=adata.var_names.tolist(),   # or background= (backward compat)
+    adata=adata,   # if store_raw_counts was called earlier, this automatically uses
+                   # the preserved full measured gene set as background (best practice).
     pval_cutoff=0.05,
 )
 ```
@@ -283,6 +286,8 @@ kegg = scat.run_kegg(gene_list=genes, organism="mouse")
 go = scat.run_enrichment(
     gene_list=genes,
     gene_sets="GO_Biological_Process_2023",
+    # `background` or `universe` here should be your full measured gene set
+    # (not just HVGs).
     universe=background,
 )
 ```
@@ -302,6 +307,8 @@ kegg_2021 = scat.run_kegg(
 go_2021 = scat.run_enrichment(
     genes,
     gene_sets="GO_Biological_Process_2021",  # 2023, 2021, 2019, 2018, 2017...
+    # `background` or `universe` should be the full set of genes considered
+    # in your experiment (not limited to HVGs).
     universe=background,
 )
 
@@ -409,7 +416,8 @@ These are convenience functions built on top of `run_enrichment`.
 kegg_res = scat.run_kegg(
     gene_list=significant.index.tolist(),   # or from all_results
     organism="mouse",                       # "mouse" or "human"
-    universe=adata.var_names.tolist(),      # recommended (background= also works)
+    adata=adata,   # preferred: if you called store_raw_counts earlier, this will
+                   # automatically use the preserved full measured gene set.
     pval_cutoff=0.05,
     min_size=5,
     max_size=500,
@@ -697,6 +705,10 @@ adata, de_results = scat.differential_expression(
 
 # Then use the same downstream tools as with active_score results
 candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)
+
+# IMPORTANT: when calling run_enrichment / run_kegg, make sure the implicit or
+# explicit `universe` / `background` is the full set of genes that were measured
+# in the experiment (not just the HVGs in the current adata).
 enrich = scat.run_enrichment(candidates.index.tolist(), gene_sets="GO_Biological_Process_2023")
 scat.pl.volcano_plot(de_results)
 scat.pl.enrich_dotplot(enrich)

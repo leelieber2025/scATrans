@@ -50,6 +50,16 @@ print(f"Global unspliced fraction: {ufrac:.2%}")
 # If this is > ~0.5 you should investigate library prep / alignment before trusting active transcription signals.
 
 # ------------------------------------------------------------------
+# 2.5 Preserve raw counts + original spliced/unspliced (CRITICAL for Memento DE and correct enrichment)
+# ------------------------------------------------------------------
+# Call this early, before any HVG, normalize, or log1p. It saves the full post-QC gene set
+# raw counts (and raw velocity layers) so that later Memento, PyDESeq2, and enrichment
+# automatically use the true measured background instead of whatever is left in .X after HVG.
+scat.store_raw_counts(adata, layer="counts", save_raw=False)
+# After this, you can safely do standard Scanpy preprocessing for visualization.
+# For DE/enrichment on as many genes as possible, use the adata (or a non-HVG-subset copy) when calling those functions.
+
+# ------------------------------------------------------------------
 # 3. Attach gene features (length + intron count) for bias correction
 # ------------------------------------------------------------------
 # The package ships mouse tables. For human or custom annotations use:
@@ -139,7 +149,11 @@ if len(significant) > 0:
         gene_list=significant.index.tolist(),
         gene_sets="GO_Biological_Process_2023",  # defaults to bundled scATrans version
         organism="mouse",   # or "human"
-        universe=adata.var_names.tolist(),  # or background= (compat); default = conservative intersect like clusterProfiler
+        # CRITICAL: universe must be the FULL set of measured genes (post basic QC,
+        # before any HVG subset). Never pass only the HVGs after highly_variable_genes.
+        # Best: call scat.store_raw_counts(adata) early, then pass adata= the version
+        # that still has (or can recover) the original gene list.
+        adata=adata,  # preferred when store_raw_counts was used — auto-uses preserved raw_gene_list
         pval_cutoff=0.05,
     )
     # To use a specific Enrichr historical version, just write the full name:

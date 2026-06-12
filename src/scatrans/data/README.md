@@ -44,6 +44,7 @@ print(scat.list_bundled_gene_sets())
 kegg = scat.run_kegg(my_genes, organism="mouse")
 
 # For GO, base name is enough — gets bundled version automatically
+# (Pass adata= or explicit universe= with your full measured gene set, not just HVGs)
 res = scat.run_enrichment(
     gene_list=my_genes,
     gene_sets="GO_Biological_Process_2023",
