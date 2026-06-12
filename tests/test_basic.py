@@ -248,6 +248,22 @@ def test_enrich_plot_show_terms(adata_basic):
     # list of terms (partial match on Term or Description)
     fig2, ax2 = scat.pl.enrich_dotplot(fake, show_terms=["T3", "desc1"])
     plt.close("all")
+    # explicitly use Count on x-axis (user-requested flexibility)
+    fig3, ax3 = scat.pl.enrich_dotplot(fake, x="Count", top_n=3)
+    plt.close("all")
+    # also exercise FoldEnrichment
+    if "FoldEnrichment" not in fake.columns:
+        fake = fake.copy()
+        fake["FoldEnrichment"] = [2.5, 1.8, 3.1, 1.2]
+    fig4, ax4 = scat.pl.enrich_dotplot(fake, x="FoldEnrichment", top_n=2)
+    plt.close("all")
+
+    # size_by="Count" must produce visibly different dot sizes (was a reported bug)
+    # We just exercise it; visual correctness is checked in integration runs.
+    fig5, ax5 = scat.pl.enrich_dotplot(fake, size_by="Count", top_n=4)
+    plt.close("all")
+    fig6, ax6 = scat.pl.enrich_dotplot(fake, size_by="GeneRatio", top_n=3)
+    plt.close("all")
 
 
 # --------------------------- plotting (headless) ---------------------------

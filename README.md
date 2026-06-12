@@ -645,21 +645,33 @@ All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel 
 
 ### Main Plotting Functions
 
-- `scat.pl.comet_plot(results_df, top_n=12, ...)`  
+- `scat.pl.comet_plot(results_df, top_n=12, point_scale=1.0, min_size=2, max_size=180, s=None, ...)`  
   Recommended: log fold change vs. bias-corrected unspliced residual (velocity_residual), sized and colored by active_score.
+  - `s=3` (or 1-5): force **fixed** small point size for everything (direct, simple control).
+  - `point_scale=0.2` + `min_size=1`: for variable sizing, make tiniest background points truly small.
+  (Size API modeled after flexible controls seen in omicverse.pl.* )
 
-- `scat.pl.volcano_plot(results_df, top_n=10, label_genes=None, ...)`  
+- `scat.pl.volcano_plot(results_df, top_n=10, label_genes=None, point_scale=1.0, min_size=2, s=None, ...)`  
   2D volcano (logFC vs. -log10(p_adj)). Supports `label_genes=[...]` for manual gene labels
   (combined with top_n) — ggVolcano style flexibility. Classic up/down/ns coloring when
   not using active_score. See https://github.com/BioSenior/ggVolcano for style inspiration.
+  Use `s=2` for uniformly small points, or min_size + point_scale for score/p-value sized tiny backgrounds.
+  Especially helpful for pure DE results (no active_score).
 
-- `scat.pl.bias_diagnostic_plot(results_df, ...)`  
+- `scat.pl.bias_diagnostic_plot(results_df, point_size=10, ...)`  
   Before/after view of the effect of length+intron bias correction on the velocity delta.
+  `point_size` controls the gene cloud density. 
 
-- `scat.pl.enrich_dotplot(enrich_df, top_n=15, show_terms=None, ...)`  
-  Enrichment dot plot (clusterProfiler style). `show_terms` accepts int (top N) or
-  list of term strings/Descriptions (exact or partial match, order preserved) —
-  directly analogous to `dotplot(..., showCategory=...)` / `showCategory=c("...")`.
+- `scat.pl.volcano_3d(results_df, point_scale=..., min_size=2, s=None, ...)`  
+  3D version of the volcano. Same size controls (`s` for fixed size).
+
+- `scat.pl.enrich_dotplot(enrich_df, top_n=15, show_terms=None, x="GeneRatio", size_by="Count", color_by="Adjusted P-value", ...)`  
+  Enrichment dot plot (clusterProfiler style). 
+  - `x`: x-axis variable — "GeneRatio" (default), "FoldEnrichment", **"Count"**, or "-log10(p.adj)".
+    Pass `x="Count"` to visualize by the number of genes in the overlap (in addition to the classic GeneRatio/FoldEnrichment views).
+  - `size_by` (dot size, default "Count"), `color_by` (default adjusted p-value).
+  - `show_terms` accepts int (top N) or list of term strings/Descriptions (exact or partial match, order preserved) —
+    directly analogous to `dotplot(..., showCategory=...)`.
   Also available as `enrich_barplot`.
 
 - `scat.pl.volcano_3d(results_df, ...)`  
