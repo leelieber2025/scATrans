@@ -22,7 +22,9 @@ You can generate similar files for other species using the CLI or `pp_bias.gener
 
 We provide GO and KEGG gene sets extracted from clusterProfiler (using the same TERM2GENE mappings), named with the package name (`*_scATrans.gmt`).
 
-These are stored as standard GMT files so they are compatible with the existing `run_enrichment` / `run_kegg` API. `run_kegg()` now defaults to the bundled scATrans version.
+These are stored as standard GMT files so they are compatible with the existing `run_enrichment` / `run_kegg` API.
+
+`run_kegg()` (and `run_enrichment` with base GO names) now defaults to the organism-specific built-in libraries (Hs_*/Mm_*_2026.txt) when you only specify `organism`. The old _scATrans names are still supported for backward compatibility.
 
 The original Enrichr collections (via gseapy) have many historical versions (different years). You can select any specific version by passing the exact name together with `gene_set_source="enrichr"`.
 
@@ -40,14 +42,15 @@ import scatrans as scat
 # List what is bundled
 print(scat.list_bundled_gene_sets())
 
-# Default — package's bundled scATrans version (only need organism for KEGG)
+# Default — organism-specific built-in library (Hs_*/Mm_*_2026)
+# You only need to give organism for KEGG (or a base GO name).
 kegg = scat.run_kegg(my_genes, organism="mouse")
 
-# For GO, base name is enough — gets bundled version automatically
-# (Pass adata= or explicit universe= with your full measured gene set, not just HVGs)
+# GO base name — automatically resolved to the correct Hs/Mm 2026 built-in
 res = scat.run_enrichment(
     gene_list=my_genes,
-    gene_sets="GO_Biological_Process_2023",
+    gene_sets="GO_Biological_Process",
+    # universe should be your full measured gene set (see main README)
     background=background_genes,
 )
 

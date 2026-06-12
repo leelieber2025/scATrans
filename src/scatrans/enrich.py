@@ -89,8 +89,13 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
     except Exception:
         discovered = []
 
-    # Fallback known names (will be populated once you add your files)
+    # Fallback known names. New organism-specific defaults (2026) are the built-in
+    # libraries when organism is given and no specific version is requested.
     known = [
+        "Hs_GO_Biological_Process_2026.txt",
+        "Hs_KEGG_2026.txt",
+        "Mm_GO_Biological_Process_2026.txt",
+        "Mm_KEGG_2026.txt",
         "GO_Biological_Process_scATrans.gmt",
         "KEGG_scATrans.gmt",
     ]
@@ -139,50 +144,57 @@ def _resolve_gene_set_name(
     """
     Resolve gene set name.
 
-    Core logic (per user request for clearest UX):
-    - Default (or source="scatrans"): always prefer the bundled scATrans / clusterProfiler-derived sets.
-      User only needs to specify organism for run_kegg. Common base names are mapped to bundled.
-    - To use original Enrichr: just write the exact gene set name (including version year),
-      e.g. "GO_Biological_Process_2021", "KEGG_2021", "GO_Biological_Process_2023".
-      Names that look like specific Enrichr versions are passed through to gseapy.
+    New default (per latest requirement):
+    - If no specific version/year is requested, default to the organism-specific
+      built-in libraries added in data/ (Hs_*/Mm_*_2026.txt for human/mouse).
+    - User only needs to specify organism (for run_kegg especially).
+    - If user writes a specific Enrichr-style name with year (e.g. GO_Biological_Process_2023
+      or KEGG_2021), it is passed through (to gseapy/Enrichr) unless it matches a bundled name.
+    - Explicit gene_set_source="enrichr" forces original Enrichr.
 
-    `gene_set_source` is an explicit override if needed:
-      - "scatrans": force bundled mapping
-      - "enrichr": force pass-through to gseapy (no mapping)
+    The 4 new built-in files are the default when nothing more specific is given.
     """
-    # Explicit force to enrichr: user wants original Enrichr, pass the name as written
-    # (they can write "GO_Biological_Process_2021" or "KEGG_2019" directly)
     if source == "enrichr":
         return requested
 
-    # Explicit force to scat or default: prefer bundled
-    # Common names (including the popular _2023 ones) are mapped to bundled.
-    # This makes "default to package's own" the simplest path.
+    # If user explicitly asked for a scATrans bundled name, respect it
     if "scATrans" in requested or requested.endswith(("_scATrans", "_scatrans")):
         return requested
 
-    scat_map = {
-        # GO
-        "GO_Biological_Process_2023": "GO_Biological_Process_scATrans",
-        "GO_Cellular_Component_2023": "GO_Cellular_Component_scATrans",
-        "GO_Molecular_Function_2023": "GO_Molecular_Function_scATrans",
-        "GO_BP": "GO_Biological_Process_scATrans",
-        "GO_CC": "GO_Cellular_Component_scATrans",
-        "GO_MF": "GO_Molecular_Function_scATrans",
-        "GO_Biological_Process": "GO_Biological_Process_scATrans",
-        "GO_Cellular_Component": "GO_Cellular_Component_scATrans",
-        "GO_Molecular_Function": "GO_Molecular_Function_scATrans",
+    prefix = "Mm"
+    o = str(organism).lower()
+    if o in ("human", "hs", "hsa"):
+        prefix = "Hs"
+    elif o in ("mouse", "mm", "mmu"):
+        prefix = "Mm"
+
+    # New organism-specific 2026 defaults (the 4 files added to data/)
+    # These become the default built-in library if user does not specify a year/version.
+    default_map = {
+        # GO base names -> organism 2026 built-in
+        "GO_Biological_Process": f"{prefix}_GO_Biological_Process_2026",
+        "GO_Biological_Process_2023": f"{prefix}_GO_Biological_Process_2026",
+        "GO_Biological_Process_2026": f"{prefix}_GO_Biological_Process_2026",
+        "GO_BP": f"{prefix}_GO_Biological_Process_2026",
+        "GO_Cellular_Component": f"{prefix}_GO_Cellular_Component_2026",
+        "GO_CC": f"{prefix}_GO_Cellular_Component_2026",
+        "GO_Molecular_Function": f"{prefix}_GO_Molecular_Function_2026",
+        "GO_MF": f"{prefix}_GO_Molecular_Function_2026",
         # KEGG
-        "KEGG_2026": "KEGG_scATrans",
-        "KEGG": "KEGG_scATrans",
+        "KEGG": f"{prefix}_KEGG_2026",
+        "KEGG_2026": f"{prefix}_KEGG_2026",
+        "KEGG_2021": f"{prefix}_KEGG_2026",  # map old popular names to new default
     }
 
-    mapped = scat_map.get(requested)
+    mapped = default_map.get(requested)
     if mapped is not None:
         return mapped
 
-    # If no mapping and not forced to scat, fall back to the name as written
-    # (this allows obscure Enrichr names or custom sets to go through to gseapy)
+    # If the user wrote a very specific year that we have a bundled for, use it
+    # (e.g. they can still ask for 2023 if the file exists, but we now default to 2026)
+    # Otherwise fall through to the name as-is (for custom or Enrichr)
+
+    # Final fallback: use as written (allows Enrichr historical or user .gmt)
     return requested
 
 ORA_COLUMNS = [
@@ -586,12 +598,11 @@ def run_kegg(
     if gseapy_org is None:
         raise ValueError(f"Unsupported organism '{organism}' for run_kegg")
 
-    # Default is always the bundled scATrans version.
-    # User only needs to specify organism.
-    # If user wants a specific Enrichr version, they just pass the full name
-    # via kegg_library (e.g. "KEGG_2021") — the resolver will detect the year and use it.
+    # Default is now the organism-specific built-in library (Hs_KEGG_2026 / Mm_KEGG_2026)
+    # added to data/. User only needs organism.
+    # Specific historical Enrichr names (e.g. "KEGG_2021") will be resolved accordingly.
     if kegg_library is None:
-        kegg_library = "KEGG_scATrans"
+        kegg_library = "KEGG"  # resolver will turn this into the correct Hs/Mm_2026 based on organism
 
     return run_enrichment(
         gene_list=gene_list,

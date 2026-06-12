@@ -242,13 +242,12 @@ Over-representation analysis is available via `run_enrichment`:
 ```python
 enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
-    gene_sets="GO_Biological_Process_2023",  # defaults to the bundled scATrans version
+    gene_sets="GO_Biological_Process",   # or "GO_BP" — automatically resolved to the
+                                         # correct organism-specific built-in (Hs/Mm_GO_..._2026)
     organism="mouse",
-    adata=adata,   # NEW: if you called store_raw_counts(adata) earlier, this will
+    adata=adata,   # if you called store_raw_counts(adata) earlier, this will
                    # automatically use the preserved full measured gene list as universe.
-                   # Explicit `universe=` still takes precedence if you pass it.
-    # Default behavior is clusterProfiler-like conservative: intersect with genes
-    # that have annotation in the chosen gene_sets. Use force_universe=True to disable.
+                   # Explicit `universe=` still takes precedence.
     pval_cutoff=0.05,
     min_size=5,
     max_size=500,
@@ -264,7 +263,7 @@ enrich_res = scat.run_enrichment(
 kegg_res = scat.run_kegg(
     gene_list=candidates.index.tolist(),
     organism="mouse",           # or "human"
-    # Defaults to the bundled "KEGG_scATrans" (ClusterProfiler-derived) set
+    # Defaults to the organism-specific built-in library (Hs_KEGG_2026 or Mm_KEGG_2026)
     adata=adata,   # if store_raw_counts was called earlier, this automatically uses
                    # the preserved full measured gene set as background (best practice).
     pval_cutoff=0.05,
@@ -273,21 +272,26 @@ kegg_res = scat.run_kegg(
 
 ### Default: use the package's bundled gene sets (clearest logic)
 
-The package **defaults to its own bundled gene sets** (the ones extracted from clusterProfiler for better consistency with R/clusterProfiler).
+The package now **defaults to the new organism-specific built-in libraries** (4 files added to data/):
 
-- You mainly only need to specify the organism (for KEGG).
-- Common base names are automatically mapped to the bundled versions.
+- `Hs_GO_Biological_Process_2026.txt` + `Hs_KEGG_2026.txt` for human
+- `Mm_GO_Biological_Process_2026.txt` + `Mm_KEGG_2026.txt` for mouse
+
+You only need to specify `organism=` (for KEGG especially). Base names like "GO_Biological_Process", "KEGG", "GO_BP" are automatically resolved to the correct organism + 2026 built-in file.
+
+If you want a specific historical Enrichr version (e.g. GO_Biological_Process_2023), just write the full name — it will be treated as an Enrichr request.
 
 ```python
-# KEGG — just specify organism, gets the bundled version automatically
+# KEGG — just specify organism, gets the correct built-in (Hs/Mm_2026) automatically
 kegg = scat.run_kegg(gene_list=genes, organism="mouse")
 
-# GO — use a base/friendly name, gets the bundled scATrans version
+# GO — base name is enough (automatically resolved to Hs/Mm_GO_..._2026)
 go = scat.run_enrichment(
     gene_list=genes,
-    gene_sets="GO_Biological_Process_2023",
-    # `background` or `universe` here should be your full measured gene set
-    # (not just HVGs).
+    gene_sets="GO_Biological_Process",   # or "GO_BP"
+    organism="mouse",
+    # universe should be your full measured gene set (the package will use
+    # the list saved by store_raw_counts if you pass adata= or the old universe=)
     universe=background,
 )
 ```
@@ -324,7 +328,7 @@ Discovery (what bundled sets are available):
 
 ```python
 print(scat.list_bundled_gene_sets())
-# ['GO_Biological_Process_scATrans.gmt', 'KEGG_scATrans.gmt', ...]
+# ['Hs_GO_Biological_Process_2026.txt', 'Hs_KEGG_2026.txt', 'Mm_GO_Biological_Process_2026.txt', 'Mm_KEGG_2026.txt', ...]
 ```
 
 **Motivation**: Default should be the package's own sets with almost no extra parameters (only organism for KEGG). Choosing an Enrichr version should be as simple as writing the gene set name you want.
@@ -422,7 +426,7 @@ kegg_res = scat.run_kegg(
     min_size=5,
     max_size=500,
     return_all=False,                       # False = only significant terms
-    # Defaults to bundled scATrans / clusterProfiler-derived KEGG set.
+    # Defaults to the organism-specific built-in (Hs/Mm_KEGG_2026).
     # To use the original Enrichr version instead: kegg_library="KEGG_2026"
 )
 
@@ -709,7 +713,7 @@ candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff
 # IMPORTANT: when calling run_enrichment / run_kegg, make sure the implicit or
 # explicit `universe` / `background` is the full set of genes that were measured
 # in the experiment (not just the HVGs in the current adata).
-enrich = scat.run_enrichment(candidates.index.tolist(), gene_sets="GO_Biological_Process_2023")
+enrich = scat.run_enrichment(candidates.index.tolist(), gene_sets="GO_Biological_Process")  # defaults to built-in Hs/Mm 2026 for the organism
 scat.pl.volcano_plot(de_results)
 scat.pl.enrich_dotplot(enrich)
 ```
