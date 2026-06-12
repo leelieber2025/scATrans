@@ -74,26 +74,26 @@ This way:
 
 See also the "Additional Capability: Standalone Differential Expression" section and the HVG-vs-velocity-layers note below.
 
-**HVG 过滤对 spliced/unspliced layers 的影响（重要）**
+**Impact of HVG filtering on spliced/unspliced layers (important)**
 
-在常规 Scanpy 操作中：
+In standard Scanpy operations:
 
 ```python
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
 adata = adata[:, adata.var.highly_variable].copy()
 ```
 
-**会同时影响 spliced/unspliced layers**：
+**This will also affect the spliced/unspliced layers**:
 
-- AnnData 的 `.layers`（包括你存的 "spliced" 和 "unspliced"）会自动跟着基因子集一起被 subset。
-- 这是 AnnData 的标准行为，通常也是**期望的**，因为 velocity 计算（gamma 估计、unspliced excess、active_score）需要和主表达矩阵对齐的相同基因集。
-- 如果你想在**可视化/聚类**时只用 HVGs，而在**差异分析（尤其是 Memento）**时使用更多基因（QC 过滤后的全基因或大集合），推荐流程是：
-  1. 加载 + 基本 QC 后立即 `scat.store_raw_counts(adata)`（保存当时的全/大基因原始计数到 layer + .raw）。
-  2. 复制一份做 HVG + 可视化：`adata_viz = adata.copy(); ... HVG on adata_viz ...`
-  3. DE 时使用**原始 adata**（或 restore 后的版本），此时它还能从 layer 拿到对应基因的 raw counts（gene 数量取决于你 store 时 adata 有多少基因）。
-  4. 如果已经对主 adata 做了 HVG subset，layer 也会只剩这些 HVGs 的 raw counts。这时 DE 也只能基于这些基因进行（符合“用户在 store 之前过滤”的原则）。
+- AnnData's `.layers` (including the "spliced" and "unspliced" you stored) are automatically subset together with the genes.
+- This is standard AnnData behavior and is usually **desired**, because velocity calculations (gamma estimation, unspliced excess, active_score) require the same gene set as the main expression matrix.
+- If you want to use HVGs only for **visualization/clustering**, but use more genes (the full post-QC gene set or a large collection) for **differential analysis (especially Memento)**, the recommended workflow is:
+  1. Immediately after loading + basic QC, call `scat.store_raw_counts(adata)` (preserves the full/large gene raw counts into the layer + .raw at that time).
+  2. Make a copy for HVG + visualization: `adata_viz = adata.copy(); ... HVG on adata_viz ...`
+  3. For DE, use the **original adata** (or the restored version), at which point it can still retrieve the corresponding raw counts from the layer (the number of genes depends on how many genes the adata had when you called store).
+  4. If you have already performed HVG subset on the main adata, the layer will also only contain raw counts for those HVGs. In that case DE can only be performed on these genes (consistent with the principle of "user performs filtering before store").
 
-简单说：HVG subset 会减少 spliced/unspliced 里保留的基因，和 .X 保持一致。想用更多基因做 DE，就要在 HVG subset 之前（或对未 subset 的 adata 副本）调用 DE 函数。
+In short: HVG subset will reduce the genes retained in spliced/unspliced, keeping it consistent with .X. If you want to use more genes for DE, you should call the DE function before HVG subset (or on a copy that has not been subset).
 
 Optionally, if you have done HVG + log1p for visualization but later want the raw counts back in `.X` (for the genes currently selected), you can use:
 
