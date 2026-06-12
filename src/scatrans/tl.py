@@ -1105,39 +1105,31 @@ def differential_expression(
     return adata, results
 
 
-def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = True, overwrite: bool = False) -> None:
+def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False) -> None:
     """
-    Store raw counts (and optionally adata.raw) early in the analysis,
-    right after loading and basic QC, but BEFORE HVG selection, normalization, or log1p.
+    Store raw counts and the original spliced/unspliced (or mature/nascent) layers
+    early in the analysis, right after loading and basic QC, but BEFORE HVG selection,
+    normalization, or log1p.
 
-    This preserves the full (post-QC) gene set + raw counts for count-based DE methods
-    such as Memento (use_memento_de=True in differential_expression).
+    This is critical for scATrans because:
+    - Memento and PyDESeq2 need raw counts for proper modeling.
+    - Velocity / active transcription analysis (active_score) needs the original
+      spliced/unspliced matrices on as many genes as possible.
 
-    By default, it also sets adata.raw (recommended for many tools). Use save_raw=False
-    to disable saving to .raw (only the layer will be saved).
+    By default we only save to the given layer (save_raw defaults to False so we do
+    not automatically touch adata.raw unless you explicitly ask for it).
 
-    Recommended workflow:
-        adata = sc.read_h5ad(...)
-        # basic QC: filter cells/genes, mito etc.
-        scat.store_raw_counts(adata)   # saves to layers["counts"] + adata.raw (default)
+    We automatically save any existing velocity layers under "raw_spliced",
+    "raw_unspliced" (or "raw_mature", "raw_nascent") so that even after you later
+    subset the main adata to HVGs, the original full-gene velocity data remains
+    available.
 
-        # now safe to do HVG for visualization etc.
-        sc.pp.highly_variable_genes(adata, n_top_genes=3000)
-        # ... normalize, log1p, neighbors, umap etc. on the HVG adata
-
-        # For DE (Memento etc.), use as many genes as possible.
-        # You can run on the full post-QC genes before HVG subset, or on current adata
-        # (the layer/raw will provide raw counts for the genes present at call time).
-        adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
-
-    For best Memento results, perform DE on a large gene set (QC-filtered full genes,
-    not just 2000-3000 HVGs). HVGs are mainly for dimensionality reduction/visualization.
+    Recommended early call:
+        scat.store_raw_counts(adata, layer="counts", save_raw=False)
     """
     if layer in adata.layers and not overwrite:
         if _is_integer_counts_like(adata.layers[layer]):
             logger.debug(f"Layer '{layer}' already exists with integer counts.")
-            if save_raw and getattr(adata, "raw", None) is not None and not overwrite:
-                return
         else:
             logger.warning(f"Existing layer '{layer}' does not look like raw counts.")
 
@@ -1155,7 +1147,16 @@ def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = True, o
             logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
         else:
             adata.raw = adata.copy()
-            logger.info("Set adata.raw to preserve full data (disable with save_raw=False).")
+            logger.info("Set adata.raw to preserve full data.")
+
+    # Preserve original velocity layers (spliced/unspliced or mature/nascent)
+    # under "raw_*" names. This way they survive later HVG subsetting on the main object.
+    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
+        if vel_name in adata.layers:
+            raw_vel_name = f"raw_{vel_name}"
+            if raw_vel_name not in adata.layers or overwrite:
+                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
+                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
 
 
 def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Optional[any]:

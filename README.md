@@ -46,26 +46,54 @@ ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 
 `active_score` automatically runs this check and records the value in diagnostics.
 
-### Preserving raw counts (important for Memento / count-based DE)
+### Preserving raw counts + original spliced/unspliced layers (strongly recommended)
 
-scATrans DE backends that use Memento (or PyDESeq2) require raw integer counts. Many users end up with `adata.X` containing only HVGs + log1p data after standard Scanpy preprocessing. To support reliable DE on as many genes as possible (QC-filtered full gene set, not just 2000-3000 HVGs), call this early:
+scATrans (especially the Memento backend and velocity/active-transcription calculations) works best when you still have access to the original raw counts and the original spliced/unspliced (or mature/nascent) matrices on as many genes as possible.
+
+Call this **early** (right after loading + basic QC, before any HVG, normalize or log1p):
 
 ```python
 import scatrans as scat
 
-# Immediately after loading + basic QC (min cells/genes, mito filter etc.),
-# but BEFORE highly_variable_genes, normalize_total, log1p, or HVG subsetting.
-scat.store_raw_counts(adata, layer="counts", save_raw=True)  # default: also sets adata.raw
+# Save raw counts + the original velocity layers for later use
+scat.store_raw_counts(adata, layer="counts", save_raw=False)
 
-# Now safe to continue with standard preprocessing for visualization etc.
+# Now you can safely do the usual Scanpy preprocessing for visualization
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
-# ... normalize, log1p, neighbors, umap ...
+# ... normalize_total, log1p, neighbors, umap, leiden ...
 ```
 
-- `store_raw_counts` saves to `layers["counts"]` (for the genes present at call time) and by default also sets `adata.raw`.
-- You can disable .raw with `save_raw=False`.
-- For Memento DE, prefer running on a large gene set (after basic QC, before aggressive HVG). HVGs are mainly for dimensionality reduction and visualization.
-- The function is also available for the main `active_score` workflow when using Memento.
+What `store_raw_counts` does:
+- Saves the current `.X` (your raw counts at that moment) into `layers["counts"]`.
+- If your adata contains `"spliced"` / `"unspliced"` (or `"mature"` / `"nascent"`) layers, it also saves them under `raw_spliced`, `raw_unspliced` etc. These preserved layers survive later HVG subsetting of the main object.
+- `save_raw=False` is now the default (we do **not** automatically set `adata.raw` unless you explicitly ask for it with `save_raw=True`).
+
+This way:
+- Your visualization pipeline can use a small HVG + log1p `.X`.
+- Later you can still run `differential_expression(..., use_memento_de=True)` or `active_score` using the full-gene raw counts and the original spliced/unspliced data from the saved layers.
+
+See also the "Additional Capability: Standalone Differential Expression" section and the HVG-vs-velocity-layers note below.
+
+**HVG 过滤对 spliced/unspliced layers 的影响（重要）**
+
+在常规 Scanpy 操作中：
+
+```python
+sc.pp.highly_variable_genes(adata, n_top_genes=3000)
+adata = adata[:, adata.var.highly_variable].copy()
+```
+
+**会同时影响 spliced/unspliced layers**：
+
+- AnnData 的 `.layers`（包括你存的 "spliced" 和 "unspliced"）会自动跟着基因子集一起被 subset。
+- 这是 AnnData 的标准行为，通常也是**期望的**，因为 velocity 计算（gamma 估计、unspliced excess、active_score）需要和主表达矩阵对齐的相同基因集。
+- 如果你想在**可视化/聚类**时只用 HVGs，而在**差异分析（尤其是 Memento）**时使用更多基因（QC 过滤后的全基因或大集合），推荐流程是：
+  1. 加载 + 基本 QC 后立即 `scat.store_raw_counts(adata)`（保存当时的全/大基因原始计数到 layer + .raw）。
+  2. 复制一份做 HVG + 可视化：`adata_viz = adata.copy(); ... HVG on adata_viz ...`
+  3. DE 时使用**原始 adata**（或 restore 后的版本），此时它还能从 layer 拿到对应基因的 raw counts（gene 数量取决于你 store 时 adata 有多少基因）。
+  4. 如果已经对主 adata 做了 HVG subset，layer 也会只剩这些 HVGs 的 raw counts。这时 DE 也只能基于这些基因进行（符合“用户在 store 之前过滤”的原则）。
+
+简单说：HVG subset 会减少 spliced/unspliced 里保留的基因，和 .X 保持一致。想用更多基因做 DE，就要在 HVG subset 之前（或对未 subset 的 adata 副本）调用 DE 函数。
 
 Optionally, if you have done HVG + log1p for visualization but later want the raw counts back in `.X` (for the genes currently selected), you can use:
 

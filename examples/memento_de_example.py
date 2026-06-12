@@ -66,9 +66,10 @@ adata.layers["counts"] = (spliced + unspliced).astype(float)
 print(f"Created synthetic velocity AnnData: {adata.shape[0]} cells × {adata.shape[1]} genes")
 print(f"Groups: {adata.obs['condition'].value_counts().to_dict()}")
 
-# Store raw counts + .raw early (before any HVG/normalize/log) -- best practice for Memento DE
-scat.store_raw_counts(adata, layer="counts", save_raw=True)
-print("Called store_raw_counts early (preserved full genes + raw in layer + .raw)")
+# Store raw counts + original spliced/unspliced layers early
+# (before any HVG/normalize/log). This is the recommended early step for scATrans.
+scat.store_raw_counts(adata, layer="counts", save_raw=False)
+print("Called store_raw_counts early (raw counts + raw_spliced/raw_unspliced preserved)")
 
 # --- Standard run with traditional DE (t-test) ---
 print("\n--- Standard active_score with default / t-test DE backend ---")
@@ -131,7 +132,7 @@ plain.layers["counts"] = X2.copy()
 print(f"Plain count-only AnnData (no velocity): {plain.shape}")
 
 # Store raw early (before any HVG/log) -- required for reliable Memento
-scat.store_raw_counts(plain, layer="counts", save_raw=True)
+scat.store_raw_counts(plain, layer="counts", save_raw=False)
 
 # Choose traditional t-test
 plain_t, de_t = scat.differential_expression(
