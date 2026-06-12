@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Optional, Union
+from typing import Any
 
 import anndata as ad
 import numpy as np
@@ -38,10 +38,10 @@ def _run_de_wrapper(
     is_pseudobulk: bool = False,
     pb_backend: str = "pydeseq2",
     n_jobs: int = 1,
-    labels: Optional[Any] = None,
+    labels: Any | None = None,
     strict_pydeseq2_counts: bool = True,
     use_mixed_model: bool = False,
-    sample_col: Optional[str] = None,
+    sample_col: str | None = None,
     mixed_model_pval: str = "wald",
     # Memento (Cell 2024 method-of-moments) as independent cell-level DE backend
     use_memento_de: bool = False,
@@ -49,7 +49,7 @@ def _run_de_wrapper(
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
     # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
-    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
 ) -> pd.DataFrame:
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
 
@@ -228,7 +228,7 @@ def _run_mixedlm_de(
     reference_group: str,
     sample_col: str,
     n_jobs: int = 1,
-    labels: Optional[Any] = None,
+    labels: Any | None = None,
     mixed_model_pval: str = "wald",
 ) -> pd.DataFrame:
     """
@@ -279,10 +279,7 @@ def _run_mixedlm_de(
             Xn = np.log1p(np.asarray(ad_expr.X))
         ad_expr.X = Xn
 
-    if sparse.issparse(ad_expr.X):
-        expr_mat = ad_expr.X.toarray()
-    else:
-        expr_mat = np.asarray(ad_expr.X)
+    expr_mat = ad_expr.X.toarray() if sparse.issparse(ad_expr.X) else np.asarray(ad_expr.X)
 
     obs = ad_temp.obs
     condition = obs[use_groupby].astype(str).values
@@ -336,7 +333,11 @@ def _run_mixedlm_de(
             var_fe = float(np.var(fe_contrib))
             re_var = 0.0
             try:
-                if hasattr(m_full, "cov_re") and m_full.cov_re is not None and len(m_full.cov_re) > 0:
+                if (
+                    hasattr(m_full, "cov_re")
+                    and m_full.cov_re is not None
+                    and len(m_full.cov_re) > 0
+                ):
                     re_var = float(np.diag(m_full.cov_re)[0])  # first (only) RE variance
             except Exception:
                 re_var = 0.0
@@ -391,11 +392,11 @@ def _run_memento_de(
     groupby: str,
     target_group: str,
     reference_group: str,
-    labels: Optional[Any] = None,
+    labels: Any | None = None,
     capture_rate: float = 0.07,
     num_boot: int = 5000,
     n_cpus: int = -1,
-    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
 ) -> pd.DataFrame:
     """Memento (method of moments) cell-level DE backend.
 
@@ -436,6 +437,7 @@ def _run_memento_de(
 
     def _to_csr(x):
         from scipy.sparse import csr_matrix, issparse
+
         if issparse(x):
             return x.tocsr()
         return csr_matrix(np.asarray(x))
@@ -453,7 +455,9 @@ def _run_memento_de(
             if counts.var_names.tolist() != ad_temp.var_names.tolist():
                 common = counts.var_names.intersection(ad_temp.var_names)
                 if len(common) == 0:
-                    raise ValueError("No overlapping genes between provided counts AnnData and current adata")
+                    raise ValueError(
+                        "No overlapping genes between provided counts AnnData and current adata"
+                    )
                 raw_counts = counts[:, common].X
                 ad_temp = ad_temp[:, common].copy()
         else:
@@ -468,17 +472,20 @@ def _run_memento_de(
         logger.info("Memento: using 'counts' layer.")
         raw_counts = _to_csr(raw_counts)
 
-    if raw_counts is None and hasattr(ad_temp, "raw") and ad_temp.raw is not None:
-        if ad_temp.raw.shape[1] >= ad_temp.shape[1]:
-            raw_counts = ad_temp.raw.X
-            logger.info("Memento: using counts from adata.raw.")
-            raw_counts = _to_csr(raw_counts)
+    if (
+        raw_counts is None
+        and hasattr(ad_temp, "raw")
+        and ad_temp.raw is not None
+        and ad_temp.raw.shape[1] >= ad_temp.shape[1]
+    ):
+        raw_counts = ad_temp.raw.X
+        logger.info("Memento: using counts from adata.raw.")
+        raw_counts = _to_csr(raw_counts)
 
-    if raw_counts is None:
-        if _is_integer_counts_like(ad_temp.X):
-            raw_counts = ad_temp.X
-            logger.info("Memento: using current .X (looks like raw counts).")
-            raw_counts = _to_csr(raw_counts)
+    if raw_counts is None and _is_integer_counts_like(ad_temp.X):
+        raw_counts = ad_temp.X
+        logger.info("Memento: using current .X (looks like raw counts).")
+        raw_counts = _to_csr(raw_counts)
 
     if raw_counts is None:
         logger.warning(
@@ -492,7 +499,8 @@ def _run_memento_de(
     ad_temp.X = raw_counts
 
     from scipy.sparse import issparse
-    if not (issparse(ad_temp.X) and type(ad_temp.X) == csr_matrix):
+
+    if not (issparse(ad_temp.X) and isinstance(ad_temp.X, csr_matrix)):
         ad_temp.X = csr_matrix(ad_temp.X)
 
     # Effective cpus
@@ -517,8 +525,12 @@ def _run_memento_de(
         result = pd.DataFrame(index=res_index)
 
     de_df = pd.DataFrame(index=res_index)
-    de_df["logFC"] = pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
-    pvals = pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
+    de_df["logFC"] = (
+        pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
+    )
+    pvals = (
+        pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
+    )
     de_df["p_val"] = pvals
 
     # BH adjustment (Memento may return raw p; we make p_adj consistent with other backends)

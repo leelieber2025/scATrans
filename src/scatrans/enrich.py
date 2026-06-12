@@ -108,7 +108,9 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
         for f in files_list:
             logger.info(f"   • {f}")
         if not files_list:
-            logger.info("   (no extra .gmt files found yet — add your ClusterProfiler-derived sets to src/scatrans/data/)")
+            logger.info(
+                "   (no extra .gmt files found yet — add your ClusterProfiler-derived sets to src/scatrans/data/)"
+            )
 
     return files_list
 
@@ -141,9 +143,7 @@ def _try_load_bundled_gene_set(
     return None
 
 
-def _resolve_gene_set_name(
-    requested: str, source: str, organism: str = "mouse"
-) -> str:
+def _resolve_gene_set_name(requested: str, source: str, organism: str = "mouse") -> str:
     """
     Resolve gene set name.
 
@@ -189,14 +189,23 @@ def _resolve_gene_set_name(
     # Legacy *_scATrans (and .gmt) names from older examples/docs.
     # Map them to the current organism's 2026 built-in for seamless backward compat
     # (old .gmt files are no longer shipped; the 2026 txt files are the supported bundled sets).
-    if "scATrans" in requested or "_scATrans" in requested.lower() or "_scatrans" in requested.lower():
+    if (
+        "scATrans" in requested
+        or "_scATrans" in requested.lower()
+        or "_scatrans" in requested.lower()
+    ):
         # strip extension and legacy suffix to get base
         base = requested
         for ext in (".gmt", ".txt", ".tsv"):
             if base.lower().endswith(ext):
                 base = base[: -len(ext)]
         base = base.replace("_scATrans", "").replace("_scatrans", "").strip("._ ").lower()
-        if base in ("go_biological_process", "go_bp", "go_biological_process_2023", "go_biological_process_2026"):
+        if base in (
+            "go_biological_process",
+            "go_bp",
+            "go_biological_process_2023",
+            "go_biological_process_2026",
+        ):
             return f"{prefix}_GO_Biological_Process_2026"
         if "kegg" in base:
             return f"{prefix}_KEGG_2026"
@@ -208,6 +217,7 @@ def _resolve_gene_set_name(
 
     # Final fallback: use as written (allows Enrichr historical or user .gmt)
     return requested
+
 
 ORA_COLUMNS = [
     "Term",
@@ -330,14 +340,18 @@ def _load_gene_sets(
             bundled2 = _try_load_bundled_gene_set(gene_sets_input, gene_case=gene_case)
             if bundled2 is not None:
                 if verbose:
-                    _log_info(f"Loaded bundled gene set '{gene_sets_input}' from package data (after gseapy fallback)")
+                    _log_info(
+                        f"Loaded bundled gene set '{gene_sets_input}' from package data (after gseapy fallback)"
+                    )
                 return bundled2
             raise ValueError(
                 f"Failed to load '{gene_sets_input}' via gseapy or as bundled package data: {e}\n"
                 f"Available bundled sets: {list_bundled_gene_sets()}"
             ) from e
 
-    raise ValueError("gene_sets must be dict, GMT path or gseapy library name (or a bundled set name)")
+    raise ValueError(
+        "gene_sets must be dict, GMT path or gseapy library name (or a bundled set name)"
+    )
 
 
 def _bh_p_adjust(pvalues: np.ndarray) -> np.ndarray:
@@ -362,7 +376,9 @@ def run_enrichment(
     gene_sets: Union[Mapping[str, Iterable[Any]], str],
     universe: Optional[Iterable[Any]] = None,
     background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,   # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
+    adata: Optional[
+        Any
+    ] = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
     pval_cutoff: float = 0.05,
     min_size: int = 5,
     max_size: int = 500,
@@ -456,7 +472,7 @@ def run_enrichment(
                             f"({len(preserved)} genes) as universe (from previous store_raw_counts)."
                         )
         except Exception:
-            pass   # be defensive
+            pass  # be defensive
 
     provided_is_str_all = False
     bg_set: set = set()
@@ -481,7 +497,12 @@ def run_enrichment(
     # Rich diagnostics so users understand effective N (why it may be < provided background)
     provided_size = len(bg_set) if bg_set else (len(all_gs_genes) if provided_is_str_all else 0)
     dropped_by_restrict = provided_size - len(universe) if bg_set and not force_universe else 0
-    restricted = bool(bg_set and not force_universe and restrict_background_to_gene_sets and dropped_by_restrict > 0)
+    restricted = bool(
+        bg_set
+        and not force_universe
+        and restrict_background_to_gene_sets
+        and dropped_by_restrict > 0
+    )
 
     if N == 0:
         if verbose:
@@ -497,7 +518,9 @@ def run_enrichment(
                 f"effective (after intersect): {N} (restricted={restricted}, dropped_by_no_annotation={dropped_by_restrict})"
             )
         if force_universe:
-            _log_info("  force_universe=True → using raw user background (no forced intersect with gene sets)")
+            _log_info(
+                "  force_universe=True → using raw user background (no forced intersect with gene sets)"
+            )
     mapping_rate = n / max(len(genes), 1)
     if mapping_rate < 0.2:
         _warn_user(
@@ -556,13 +579,15 @@ def run_enrichment(
         "n_input_mapped": int(n),
         "n_input_raw": int(len(genes)),
     }
-    res_df.attrs.update({
-        "method": "ora",
-        "organism": organism,
-        "gene_case": gene_case,
-        "universe_info": universe_info,
-        "clusterprofiler_aligned": True,
-    })
+    res_df.attrs.update(
+        {
+            "method": "ora",
+            "organism": organism,
+            "gene_case": gene_case,
+            "universe_info": universe_info,
+            "clusterprofiler_aligned": True,
+        }
+    )
     if return_all:
         return res_df
     sig = res_df[res_df["p.adjust"] < pval_cutoff].copy().reset_index(drop=True)
@@ -577,7 +602,7 @@ def run_kegg(
     organism: str = "mouse",
     universe: Optional[Iterable[Any]] = None,
     background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,   # forwarded to run_enrichment for smart universe default
+    adata: Optional[Any] = None,  # forwarded to run_enrichment for smart universe default
     pval_cutoff: float = 0.05,
     min_size: int = 5,
     max_size: int = 500,
@@ -614,7 +639,9 @@ def run_kegg(
     # added to data/. User only needs organism.
     # Specific historical Enrichr names (e.g. "KEGG_2021") will be resolved accordingly.
     if kegg_library is None:
-        kegg_library = "KEGG"  # resolver will turn this into the correct Hs/Mm_2026 based on organism
+        kegg_library = (
+            "KEGG"  # resolver will turn this into the correct Hs/Mm_2026 based on organism
+        )
 
     return run_enrichment(
         gene_list=gene_list,
@@ -683,7 +710,7 @@ def simplify_enrichment(
         kept_sets = []
         for idx, row in df.iterrows():
             genes_str = str(row.get(gene_col, ""))
-            current = set(g.strip() for g in re.split(r"[;,]+", genes_str) if g.strip())
+            current = {g.strip() for g in re.split(r"[;,]+", genes_str) if g.strip()}
             if not current:
                 continue
             redundant = any(

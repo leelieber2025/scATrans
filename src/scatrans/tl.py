@@ -16,16 +16,19 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import anndata as ad
 import joblib
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import scipy.sparse as sparse  # for type hints in signatures (e.g. spmatrix)
 from joblib import Parallel, delayed
 from statsmodels.stats.multitest import multipletests
 
+# qc is imported lazily inside active_score to keep startup light, but exposed at package level
+from . import qc as _qc  # for unspliced_global integration
 from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
 from ._permutation import _single_permutation_task
@@ -38,9 +41,6 @@ from ._utils import (
     comb,  # for small-n permutation space calculation
 )
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
-
-# qc is imported lazily inside active_score to keep startup light, but exposed at package level
-from . import qc as _qc  # for unspliced_global integration
 
 try:
     from . import _version
@@ -57,24 +57,24 @@ def active_score(
     groupby: str = "condition",
     target_group: str = "GA",
     reference_group: str = "Ctrl",
-    subset_col: Optional[str] = None,
-    subset_values: Optional[Union[str, List[str], Tuple[str, ...]]] = None,
+    subset_col: str | None = None,
+    subset_values: str | list[str] | tuple[str, ...] | None = None,
     weight_fc: float = 1.0,
     weight_unspliced: float = 1.0,
     weight_pval: float = 1.0,
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
     active_fdr_cutoff: float = 0.05,
-    de_method: str = "t-test_overestim_var",          # freely switchable basic option, e.g. "wilcoxon"
-    pseudobulk_de_backend: str = "pydeseq2",          # "pydeseq2" or "scanpy" when use_pseudobulk=True
+    de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
+    pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
     perm_de_backend: str = "fast",
     n_perm: int = 100,
     n_jobs: int = -1,
     de_preprocess: str = "auto",
-    gene_type_filter: Optional[str] = None,
+    gene_type_filter: str | None = None,
     use_pseudobulk: bool = False,
-    sample_col: Optional[str] = None,
+    sample_col: str | None = None,
     min_cells: int = 10,
     min_counts: int = 1000,
     pb_x_layer: str = "spliced",
@@ -115,7 +115,7 @@ def active_score(
     show_effective_gamma: bool = False,
     # Advanced convenience for users primarily interested in nascent RNA excess
     prioritize_velocity: bool = False,
-) -> Tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
+) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
     relative to a reference group, using a composite score that also incorporates
@@ -177,15 +177,21 @@ def active_score(
     if not isinstance(use_memento_de, bool):
         raise ValueError("use_memento_de must be boolean.")
     if not (0 < memento_capture_rate < 1):
-        raise ValueError("memento_capture_rate must be in (0, 1). Typical values: ~0.07 for 10x v1, ~0.15 for v2.")
+        raise ValueError(
+            "memento_capture_rate must be in (0, 1). Typical values: ~0.07 for 10x v1, ~0.15 for v2."
+        )
     if memento_num_boot < 100:
-        raise ValueError("memento_num_boot should be reasonably large (>=100) for stable estimates.")
+        raise ValueError(
+            "memento_num_boot should be reasonably large (>=100) for stable estimates."
+        )
     if not isinstance(perm_use_memento_de, bool):
         raise ValueError("perm_use_memento_de must be boolean.")
 
     # Memento requires count data; force no log-norm preprocess for the DE leg
     if use_memento_de and de_preprocess != "none":
-        logger.info("use_memento_de=True: forcing de_preprocess='none' (Memento method-of-moments works on raw counts).")
+        logger.info(
+            "use_memento_de=True: forcing de_preprocess='none' (Memento method-of-moments works on raw counts)."
+        )
         de_preprocess = "none"
 
     if not isinstance(bias_correction, (str, type(None), bool)):
@@ -265,16 +271,16 @@ def active_score(
 
     # Automatic design guidance for small-sample or replicate-structured data
     if sample_col or use_pseudobulk:
-        try:
+        from contextlib import suppress
+
+        with suppress(Exception):
             _ = diagnose_design(
                 adata_input,
                 groupby=groupby,
                 target_group=target_group,
                 reference_group=reference_group,
                 sample_col=sample_col,
-            )
-        except Exception:
-            pass  # never let diagnosis break the main analysis
+            )  # never let diagnosis break the main analysis
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
     available_layers = list(adata_input.layers.keys())
@@ -297,15 +303,18 @@ def active_score(
                 f"Available layers: {available_layers}"
             )
 
-    if spliced_layer != "spliced" or unspliced_layer != "unspliced":
-        if spliced_layer in adata_input.layers and unspliced_layer in adata_input.layers:
-            adata_input.layers["spliced"] = adata_input.layers[spliced_layer].copy()
-            adata_input.layers["unspliced"] = adata_input.layers[unspliced_layer].copy()
-            logger.info(
-                "Layer remapping applied: '%s' → 'spliced', '%s' → 'unspliced' (internal use only)",
-                spliced_layer,
-                unspliced_layer,
-            )
+    if (
+        (spliced_layer != "spliced" or unspliced_layer != "unspliced")
+        and spliced_layer in adata_input.layers
+        and unspliced_layer in adata_input.layers
+    ):
+        adata_input.layers["spliced"] = adata_input.layers[spliced_layer].copy()
+        adata_input.layers["unspliced"] = adata_input.layers[unspliced_layer].copy()
+        logger.info(
+            "Layer remapping applied: '%s' → 'spliced', '%s' → 'unspliced' (internal use only)",
+            spliced_layer,
+            unspliced_layer,
+        )
 
     if "spliced" not in adata_input.layers or "unspliced" not in adata_input.layers:
         raise ValueError("Both 'spliced' and 'unspliced' layers are required after layer handling.")
@@ -324,7 +333,9 @@ def active_score(
     # Mixed model requirements (cell-level RE; pseudobulk + count DE is separate path)
     if use_mixed_model:
         if sample_col is None:
-            raise ValueError("sample_col must be provided when use_mixed_model=True (for the random effect grouping).")
+            raise ValueError(
+                "sample_col must be provided when use_mixed_model=True (for the random effect grouping)."
+            )
         if use_pseudobulk:
             raise ValueError(
                 "use_mixed_model=True and use_pseudobulk=True are incompatible. "
@@ -412,18 +423,22 @@ def active_score(
         logger.info(
             "Memento (Cell 2024 method-of-moments) selected as main DE backend. "
             "capture_rate=%.4f, num_boot=%d. This replaces scanpy rank_genes_groups for the DE leg of active_score.",
-            memento_capture_rate, memento_num_boot
+            memento_capture_rate,
+            memento_num_boot,
         )
 
     # Auto-resolve preserved raw counts from store_raw_counts if available
     # This lets Memento "just work" on the original measured genes even after HVG + log on .X
     resolved_counts = None
-    if use_memento_de:
-        if "scatrans" in adata.uns and "raw_gene_list" in adata.uns.get("scatrans", {}):
-            if "counts" in adata.layers:
-                resolved_counts = adata.layers["counts"]
-            elif getattr(adata, "raw", None) is not None:
-                resolved_counts = adata.raw.X
+    if (
+        use_memento_de
+        and "scatrans" in adata.uns
+        and "raw_gene_list" in adata.uns.get("scatrans", {})
+    ):
+        if "counts" in adata.layers:
+            resolved_counts = adata.layers["counts"]
+        elif getattr(adata, "raw", None) is not None:
+            resolved_counts = adata.raw.X
 
     de_df = _run_de_wrapper(
         adata,
@@ -482,7 +497,7 @@ def active_score(
     r_mask = obs_labels == reference_group
 
     # ==================== VELOCITY DELTA (dual track) ====================
-    moments_info: Dict[str, Any] = {}
+    moments_info: dict[str, Any] = {}
     velocity_layer_for_perm_uns = uns_layer
     velocity_layer_for_perm_spl = spl_layer
     gamma_ref = np.full(adata.n_vars, np.nan)  # will be overwritten in all branches
@@ -500,16 +515,18 @@ def active_score(
             adata_comp.layers["spliced"] = spl_layer.copy()
 
         try:
-            delta_velocity, total_us_velocity, gamma_ref, moments_info = _compute_moments_velocity_delta(
-                adata_comp,
-                t_mask,
-                r_mask,
-                prior_weight=prior_weight,
-                n_neighbors=advanced_n_neighbors,
-                n_pcs=advanced_n_pcs,
-                use_precomputed=advanced_use_precomputed,
-                recompute_neighbors=advanced_recompute_neighbors,
-                random_state=random_seed,
+            delta_velocity, total_us_velocity, gamma_ref, moments_info = (
+                _compute_moments_velocity_delta(
+                    adata_comp,
+                    t_mask,
+                    r_mask,
+                    prior_weight=prior_weight,
+                    n_neighbors=advanced_n_neighbors,
+                    n_pcs=advanced_n_pcs,
+                    use_precomputed=advanced_use_precomputed,
+                    recompute_neighbors=advanced_recompute_neighbors,
+                    random_state=random_seed,
+                )
             )
             velocity_source = "scvelo_moments_groupwise_ratio"
             velocity_layer_for_perm_uns = adata_comp.layers["Mu"].copy()
@@ -562,11 +579,13 @@ def active_score(
 
     # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
     n_valid_bias = int(bias_info.get("n_genes_used_for_fit", 0))
-    diagnostics: Dict[str, Any] = {
+    diagnostics: dict[str, Any] = {
         "n_cells": int(adata.n_obs),
         "n_genes_input": int(adata.n_vars),
         "n_genes_with_valid_features": int(valid_feat.sum()),
-        "unspliced_global_fraction": float(unspliced_fraction) if unspliced_fraction is not None else np.nan,
+        "unspliced_global_fraction": float(unspliced_fraction)
+        if unspliced_fraction is not None
+        else np.nan,
         "bias_correction": bias_info,
         "velocity": {
             "source": velocity_source,
@@ -576,15 +595,24 @@ def active_score(
         "mixed_model": {
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
-            "n_samples": int(adata.obs[sample_col].nunique()) if (use_mixed_model and sample_col and sample_col in adata.obs.columns) else None,
+            "n_samples": int(adata.obs[sample_col].nunique())
+            if (use_mixed_model and sample_col and sample_col in adata.obs.columns)
+            else None,
             "delta_variance_available": "delta_variance" in adata.var.columns,
-            "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"])) if "delta_variance" in adata.var.columns else np.nan,
+            "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"]))
+            if "delta_variance" in adata.var.columns
+            else np.nan,
         },
     }
     if mode == "advanced" and moments_info:
         diagnostics["velocity"]["moments"] = {
             k: moments_info.get(k)
-            for k in ("n_neighbors_effective", "n_pcs_effective", "used_precomputed_moments", "neighbors_source")
+            for k in (
+                "n_neighbors_effective",
+                "n_pcs_effective",
+                "used_precomputed_moments",
+                "neighbors_source",
+            )
             if k in moments_info
         }
 
@@ -766,8 +794,12 @@ def active_score(
                 if (use_permutation and perm_use_memento_de)
                 else ""
             )
-        ) if use_permutation else None,
-        "unspliced_global_fraction": float(unspliced_fraction) if unspliced_fraction is not None else np.nan,
+        )
+        if use_permutation
+        else None,
+        "unspliced_global_fraction": float(unspliced_fraction)
+        if unspliced_fraction is not None
+        else np.nan,
     }
 
     # ==================== SIGNIFICANT GENES + RETURN ====================
@@ -841,7 +873,10 @@ def active_score(
             len(significant),
         )
         if use_permutation:
-            logger.info("Permutation used %d iterations (velocity layers fixed from original labeling).", n_perm)
+            logger.info(
+                "Permutation used %d iterations (velocity layers fixed from original labeling).",
+                n_perm,
+            )
     except Exception:
         pass  # never break user run on summary logging
 
@@ -873,12 +908,12 @@ def differential_expression(
     groupby: str = "condition",
     target_group: str = "GA",
     reference_group: str = "Ctrl",
-    subset_col: Optional[str] = None,
-    subset_values: Optional[Union[str, List[str], Tuple[str, ...]]] = None,
+    subset_col: str | None = None,
+    subset_values: str | list[str] | tuple[str, ...] | None = None,
     de_method: str = "t-test_overestim_var",
     pseudobulk_de_backend: str = "pydeseq2",
     use_pseudobulk: bool = False,
-    sample_col: Optional[str] = None,
+    sample_col: str | None = None,
     min_cells: int = 10,
     min_counts: int = 1000,
     pb_x_layer: str = "X",  # for pseudobulk, what to aggregate (usually the count matrix)
@@ -902,10 +937,10 @@ def differential_expression(
     active_fdr_cutoff: float = 0.05,
     random_seed: int = 42,
     n_jobs: int = -1,
-    gene_type_filter: Optional[str] = None,
+    gene_type_filter: str | None = None,
     # Allow providing raw counts separately when adata.X is already HVG+log (very common)
-    counts: Optional[Union[str, np.ndarray, sparse.spmatrix, "pd.DataFrame", "ad.AnnData"]] = None,
-) -> Tuple[ad.AnnData, pd.DataFrame]:
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+) -> tuple[ad.AnnData, pd.DataFrame]:
     """
     Standalone differential expression (DE) using the same flexible backends
     as scATrans (scanpy methods, PyDESeq2 pseudobulk, mixed linear models,
@@ -986,7 +1021,9 @@ def differential_expression(
 
     # Auto-resolve preserved raw counts from scatrans metadata if user called store_raw_counts early
     # This makes Memento / PyDESeq2 "just work" without user manually passing counts= or universe=
-    if counts is None and (use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")):
+    if counts is None and (
+        use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")
+    ):
         if "scatrans" in adata_input.uns and "raw_gene_list" in adata_input.uns.get("scatrans", {}):
             # Prefer the layer if present (it has the actual count matrix for those genes)
             if "counts" in adata_input.layers:
@@ -1058,15 +1095,27 @@ def differential_expression(
     adata.var["p_val"] = de_df["p_val"]
     adata.var["p_adj"] = de_df["p_adj"]
 
-    for extra in ["delta_variance", "delta_var_pval",
-                  "memento_de_se", "memento_dv_coef", "memento_dv_se", "memento_dv_pval"]:
+    for extra in [
+        "delta_variance",
+        "delta_var_pval",
+        "memento_de_se",
+        "memento_dv_coef",
+        "memento_dv_se",
+        "memento_dv_pval",
+    ]:
         if extra in de_df.columns:
             adata.var[extra] = de_df[extra]
 
     # Build clean results table (no velocity columns)
     cols = ["logFC", "p_val", "p_adj"]
-    for c in ["delta_variance", "delta_var_pval",
-              "memento_de_se", "memento_dv_coef", "memento_dv_se", "memento_dv_pval"]:
+    for c in [
+        "delta_variance",
+        "delta_var_pval",
+        "memento_de_se",
+        "memento_dv_coef",
+        "memento_dv_se",
+        "memento_dv_pval",
+    ]:
         if c in adata.var.columns:
             cols.append(c)
 
@@ -1094,7 +1143,6 @@ def differential_expression(
         # Simplified: we just expose active_score_fdr style column using the same engine.
         # For true power users the full active_score permutation is recommended.
         # Here we keep it lightweight.
-        from ._permutation import run_permutation_test as _run_perm
         # We only permute the DE statistics for this lightweight path.
         # (Implementation detail: we call the low-level task with a dummy velocity residual of 0.)
         # To keep this function short we simply compute a permutation FDR on the current p_adj
@@ -1132,7 +1180,9 @@ def differential_expression(
     return adata, results
 
 
-def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False) -> None:
+def store_raw_counts(
+    adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
+) -> None:
     """
     Store raw counts and the original spliced/unspliced (or mature/nascent) layers
     early in the analysis, right after loading and basic QC, but BEFORE HVG selection,
@@ -1175,7 +1225,9 @@ def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = False, 
     if "scatrans" not in adata.uns:
         adata.uns["scatrans"] = {}
     adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
-    logger.info("Saved the current gene list as the measured universe for enrichment (in adata.uns['scatrans']['raw_gene_list']).")
+    logger.info(
+        "Saved the current gene list as the measured universe for enrichment (in adata.uns['scatrans']['raw_gene_list'])."
+    )
 
     if save_raw:
         if getattr(adata, "raw", None) is not None and not overwrite:
@@ -1194,7 +1246,7 @@ def store_raw_counts(adata: Any, layer: str = "counts", save_raw: bool = False, 
                 logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
 
 
-def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Optional[any]:
+def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> any | None:
     """
     Restore raw counts from the stored layer (preferred) or adata.raw back into .X.
 
@@ -1249,7 +1301,7 @@ _NOT_PROVIDED = object()
 def filter_active_genes(
     results: pd.DataFrame,
     *,
-    preset: Optional[str] = None,
+    preset: str | None = None,
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
     velocity_residual_cutoff: Any = _NOT_PROVIDED,
@@ -1374,7 +1426,9 @@ def filter_active_genes(
 
     active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
     pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
-    velocity_residual_cutoff = _resolve("velocity_residual_cutoff", velocity_residual_cutoff, float("-inf"))
+    velocity_residual_cutoff = _resolve(
+        "velocity_residual_cutoff", velocity_residual_cutoff, float("-inf")
+    )
     logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
     active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
     effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
@@ -1432,9 +1486,9 @@ def diagnose_design(
     groupby: str,
     target_group: str,
     reference_group: str,
-    sample_col: Optional[str] = None,
+    sample_col: str | None = None,
     min_cells_per_sample: int = 10,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Analyze the experimental design and provide guidance on suitable analysis choices
     and expected power/limitations.
@@ -1461,7 +1515,7 @@ def diagnose_design(
     n_t = int(target_mask.sum())
     n_r = int(ref_mask.sum())
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "n_cells_target": n_t,
         "n_cells_reference": n_r,
         "n_samples_target": None,
@@ -1548,10 +1602,13 @@ def diagnose_design(
     if result["n_samples_target"] is not None:
         logger.info(
             "  Samples — target: %d | reference: %d",
-            result["n_samples_target"], result["n_samples_reference"]
+            result["n_samples_target"],
+            result["n_samples_reference"],
         )
     if result["unspliced_global_fraction"] is not None:
-        logger.info("  Global unspliced fraction: %.1f%%", result["unspliced_global_fraction"] * 100)
+        logger.info(
+            "  Global unspliced fraction: %.1f%%", result["unspliced_global_fraction"] * 100
+        )
 
     for w in result["warnings"]:
         logger.warning("  [WARNING] %s", w)

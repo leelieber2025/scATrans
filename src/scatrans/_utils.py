@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from math import comb  # re-exported for permutation use
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Iterable
 
 import anndata as ad
 import numpy as np
@@ -69,10 +69,7 @@ def _warn_if_not_integer_counts_matrix(X: Any, max_check: int = 100000) -> None:
 
 
 def _warn_if_low_counts_matrix(X: Any, max_check: int = 100000) -> None:
-    if sparse.issparse(X):
-        vals = X.data
-    else:
-        vals = np.asarray(X).ravel()
+    vals = X.data if sparse.issparse(X) else np.asarray(X).ravel()
 
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
@@ -96,8 +93,8 @@ def _safe_add_matrices(a: Any, b: Any) -> Any:
 
 
 def _normalize_velocity_layers_by_size_factor(
-    uns_layer: Any, spl_layer: Any, target_sum: Optional[float] = None
-) -> Tuple[Any, Any, np.ndarray, np.ndarray]:
+    uns_layer: Any, spl_layer: Any, target_sum: float | None = None
+) -> tuple[Any, Any, np.ndarray, np.ndarray]:
     total_layer = _safe_add_matrices(uns_layer, spl_layer)
     row_totals = np.asarray(total_layer.sum(axis=1)).ravel()
     positive = row_totals > 0
@@ -156,7 +153,7 @@ def _pseudobulk_with_layers(
     sample_col: str,
     groupby: str,
     layers: Iterable[str] = ("spliced", "unspliced"),
-    x_layer: Optional[str] = None,
+    x_layer: str | None = None,
     use_total_for_x: bool = False,
     min_cells: int = 10,
     min_counts: int = 1000,
@@ -186,7 +183,7 @@ def _pseudobulk_with_layers(
     unique_keys = pd.Index(pb_key.unique())
 
     X_rows, obs_rows = [], []
-    layer_rows: Dict[str, list] = {layer: [] for layer in layers}
+    layer_rows: dict[str, list] = {layer: [] for layer in layers}
 
     for key in unique_keys:
         mask = pb_key.values == key
@@ -247,12 +244,12 @@ def _fit_huber_bias_correction(
     total_us_for_weights: np.ndarray,
     valid_feat: np.ndarray,
     valid_expr: np.ndarray,
-    X_features: Optional[np.ndarray],
+    X_features: np.ndarray | None,
     min_fit_obs: int = 30,
     huber_epsilon: float = 1.35,
     huber_max_iter: int = 500,
     bias_correction: str = "huber_length_intron",
-) -> Tuple[np.ndarray, Dict[str, Any]]:
+) -> tuple[np.ndarray, dict[str, Any]]:
     """
     Shared Huber regression bias correction (or median fallback).
 
@@ -277,7 +274,7 @@ def _fit_huber_bias_correction(
     """
     residual = np.zeros_like(delta_velocity, dtype=float)
     method = str(bias_correction) if bias_correction is not None else "huber_length_intron"
-    bias_info: Dict[str, Any] = {
+    bias_info: dict[str, Any] = {
         "bias_corrected": False,
         "method": method,
         "n_genes_used_for_fit": 0,

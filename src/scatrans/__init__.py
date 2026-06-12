@@ -16,7 +16,14 @@ from . import pl, qc
 from .enrich import list_bundled_gene_sets, run_enrichment, run_kegg, simplify_enrichment
 from .generate_gene_features import main as generate_gene_features_main
 from .pp_bias import add_gene_features, list_available_gene_features
-from .tl import active_score, diagnose_design, differential_expression, filter_active_genes, restore_raw_counts, store_raw_counts
+from .tl import (
+    active_score,
+    diagnose_design,
+    differential_expression,
+    filter_active_genes,
+    restore_raw_counts,
+    store_raw_counts,
+)
 
 __all__ = [
     "active_score",

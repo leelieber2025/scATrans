@@ -12,7 +12,7 @@ practices (e.g., libraries such as OmicVerse and Scanpy extensions).
 
 import logging
 from contextlib import contextmanager
-from typing import Any, Iterable, List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -27,7 +27,7 @@ logger.addHandler(logging.NullHandler())
 
 def set_style(
     fontfamily="sans-serif",
-    fonts=["Arial", "Helvetica", "DejaVu Sans"],
+    fonts=None,
     linewidth=1.0,
     labelsize=11,
     titlesize=12,
@@ -65,6 +65,8 @@ def set_style(
     **kwargs
         Any additional matplotlib rcParams (will override the defaults).
     """
+    if fonts is None:
+        fonts = ["Arial", "Helvetica", "DejaVu Sans"]
     rc_updates = {
         "font.family": fontfamily,
         "font.sans-serif": fonts,
@@ -136,7 +138,9 @@ def comet_plot(
     point_scale=1.0,
     min_size=2,
     max_size=180,
-    s: Optional[float] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
+    s: Optional[
+        float
+    ] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
     alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
     figsize=(8, 6),
     dpi=300,
@@ -202,7 +206,7 @@ def comet_plot(
         logger.info(
             "Many points detected (%d). Consider s=2 or point_scale=0.1 + min_size=1 "
             "for cleaner comet plot (inspired by omicverse.pl best practices).",
-            len(plot_df)
+            len(plot_df),
         )
 
     scatter = ax.scatter(
@@ -230,7 +234,7 @@ def comet_plot(
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
             color="#111111",
-            bbox=dict(boxstyle="square,pad=0.1", fc="none", ec="none"),
+            bbox={"boxstyle": "square,pad=0.1", "fc": "none", "ec": "none"},
         )
         texts.append(txt)
 
@@ -239,7 +243,7 @@ def comet_plot(
             texts,
             x=plot_df["logFC"].values,
             y=plot_df["velocity_residual"].values,
-            arrowprops=dict(arrowstyle="-", color="#666666", lw=0.8, alpha=0.8),
+            arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
             ax=ax,
         )
 
@@ -319,7 +323,7 @@ def volcano_3d(
     if len(plot_df) > 500 and (s is None) and point_scale > 0.3:
         logger.info(
             "3D volcano: %d points. For performance and clarity try s=2 or small point_scale + min_size=1.",
-            len(plot_df)
+            len(plot_df),
         )
 
     scatter = ax.scatter(
@@ -435,25 +439,28 @@ def enrich_dotplot(
             plot_df = enrich_df.head(show_terms).copy()
         else:
             wanted = {str(x).strip().lower() for x in show_terms}
+
             def _matches(row):
                 t = str(row.get("Term", "")).strip().lower()
                 d = str(row.get("Description", "")).strip().lower()
-                for w in wanted:
-                    if w in t or w in d:
-                        return True
-                return False
+                return any(w in t or w in d for w in wanted)
+
             mask = enrich_df.apply(_matches, axis=1)
             plot_df = enrich_df[mask].copy()
             # Try to preserve caller-specified order
             if not plot_df.empty and len(show_terms) > 0:
                 order_map = {str(x).strip().lower(): i for i, x in enumerate(show_terms)}
+
                 def _order_key(row):
                     t = str(row.get("Term", "")).strip().lower()
                     d = str(row.get("Description", "")).strip().lower()
                     return min(order_map.get(t, 10**9), order_map.get(d, 10**9))
+
                 plot_df = plot_df.copy()
                 plot_df["_sel_order"] = plot_df.apply(_order_key, axis=1)
-                plot_df = plot_df.sort_values("_sel_order").drop(columns=["_sel_order"], errors="ignore")
+                plot_df = plot_df.sort_values("_sel_order").drop(
+                    columns=["_sel_order"], errors="ignore"
+                )
     else:
         plot_df = enrich_df.head(top_n).copy()
 
@@ -498,15 +505,18 @@ def enrich_dotplot(
     # and it has very low variation across terms, auto-switch to FoldEnrichment (common in real data
     # where most terms have similar gene ratios). Only applies when user did not explicitly request
     # something else like "Count".
-    if x_col == "GeneRatio" and "FoldEnrichment" in plot_df.columns:
-        if requested_x in (None, "GeneRatio", "generatio", "gene_ratio"):
-            gene_ratio_range = plot_df["GeneRatio"].max() - plot_df["GeneRatio"].min()
-            if gene_ratio_range < 0.08:
-                logger.warning(
-                    "⚠️ GeneRatio values have very low variation. Switching to 'FoldEnrichment'."
-                )
-                x_col = "FoldEnrichment"
-                x_label = "Fold Enrichment"
+    if (
+        x_col == "GeneRatio"
+        and "FoldEnrichment" in plot_df.columns
+        and requested_x in (None, "GeneRatio", "generatio", "gene_ratio")
+    ):
+        gene_ratio_range = plot_df["GeneRatio"].max() - plot_df["GeneRatio"].min()
+        if gene_ratio_range < 0.08:
+            logger.warning(
+                "⚠️ GeneRatio values have very low variation. Switching to 'FoldEnrichment'."
+            )
+            x_col = "FoldEnrichment"
+            x_label = "Fold Enrichment"
 
     if size_by in plot_df.columns:
         size_col = size_by
@@ -535,13 +545,19 @@ def enrich_dotplot(
             return np.full(len(vals), (min_s + max_s) / 2.0)
         sizes = min_s + (max_s - min_s) * (vals - vmin) / (vmax - vmin)
         if smallest_dot > 0:
-            sizes = smallest_dot + (1 - smallest_dot) * (sizes - min_s) / (max_s - min_s) * (max_s - min_s) + min_s * smallest_dot  # rough preserve
+            sizes = (
+                smallest_dot
+                + (1 - smallest_dot) * (sizes - min_s) / (max_s - min_s) * (max_s - min_s)
+                + min_s * smallest_dot
+            )  # rough preserve
             # simpler: re-map fraction
             frac = (vals - vmin) / (vmax - vmin) if vmax > vmin else 0
             sizes = min_s + (max_s - min_s) * (smallest_dot + (1 - smallest_dot) * frac)
         return np.clip(sizes, 20, 500)
 
-    sizes = _scale_sizes(plot_df[size_col], dot_max=dot_max, dot_min=dot_min, smallest_dot=smallest_dot)
+    sizes = _scale_sizes(
+        plot_df[size_col], dot_max=dot_max, dot_min=dot_min, smallest_dot=smallest_dot
+    )
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -604,7 +620,7 @@ def enrich_dotplot(
                 reps.append(size_vals.median())
             reps.append(size_vals.max())
             # remove near-duplicates
-            reps = sorted(set([round(r, 4) if size_col != "Count" else int(round(r)) for r in reps]))
+            reps = sorted({round(r, 4) if size_col != "Count" else int(round(r)) for r in reps})
             if not reps:
                 reps = [size_vals.iloc[0]]
 
@@ -613,10 +629,17 @@ def enrich_dotplot(
             for rv in reps:
                 # compute the marker size that corresponds to this data value
                 # use the same dot limits as the main plot for consistent legend sizes
-                s_for_rv = _scale_sizes(pd.Series([rv]), min_s=50, max_s=280,
-                                        dot_max=dot_max, dot_min=dot_min, smallest_dot=smallest_dot)[0]
-                h = ax.scatter([], [], s=s_for_rv, c="#555555", alpha=0.7,
-                               edgecolors="#333333", linewidths=0.5)
+                s_for_rv = _scale_sizes(
+                    pd.Series([rv]),
+                    min_s=50,
+                    max_s=280,
+                    dot_max=dot_max,
+                    dot_min=dot_min,
+                    smallest_dot=smallest_dot,
+                )[0]
+                h = ax.scatter(
+                    [], [], s=s_for_rv, c="#555555", alpha=0.7, edgecolors="#333333", linewidths=0.5
+                )
                 handles.append(h)
                 if size_col == "Count":
                     labels.append(str(int(round(rv))))
@@ -624,7 +647,8 @@ def enrich_dotplot(
                     labels.append(f"{rv:.2g}" if rv < 1 else f"{rv:.2f}")
             if handles:
                 ax.legend(
-                    handles, labels,
+                    handles,
+                    labels,
                     title=size_col,
                     loc="center left",
                     bbox_to_anchor=(1.18, 0.5),  # further right to sit after the colorbar
@@ -659,7 +683,9 @@ def volcano_plot(
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[float] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
+    s: Optional[
+        float
+    ] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
     alpha: float = 0.75,
     figsize=(8, 6),
     dpi=300,
@@ -708,7 +734,6 @@ def volcano_plot(
     plot_df["neg_log_pval"] = -np.log10(plot_df["p_adj"].astype(float) + 1e-300)
 
     # ggVolcano-style classic coloring (up/down/ns) when not using active_score
-    use_classic = (color_by != "active_score") or ("active_score" not in plot_df.columns)
     if color_by == "active_score" and "active_score" in plot_df.columns:
         color_values = plot_df["active_score"]
         cbar_label = "Active Score"
@@ -736,7 +761,7 @@ def volcano_plot(
     else:
         # variable
         size_val = plot_df.get("active_score", plot_df.get("neg_log_pval", 4))
-        raw_sizes = size_val ** 1.3 * 8 * point_scale + 3 * point_scale
+        raw_sizes = size_val**1.3 * 8 * point_scale + 3 * point_scale
         sizes = np.clip(raw_sizes, min_size, max_size)
 
     # Light diagnostic (omicverse style)
@@ -744,18 +769,18 @@ def volcano_plot(
         logger.info(
             "Large number of points (%d) in volcano. For cleaner view consider "
             "s=2 (fixed small) or point_scale<=0.15 + min_size=1.",
-            len(plot_df)
+            len(plot_df),
         )
 
-    scatter_kwargs = dict(
-        x=plot_df["logFC"],
-        y=plot_df["neg_log_pval"],
-        s=sizes,
-        alpha=alpha,
-        edgecolors="#444444",
-        linewidth=0.4,
-        zorder=3,
-    )
+    scatter_kwargs = {
+        "x": plot_df["logFC"],
+        "y": plot_df["neg_log_pval"],
+        "s": sizes,
+        "alpha": alpha,
+        "edgecolors": "#444444",
+        "linewidth": 0.4,
+        "zorder": 3,
+    }
     if colors_for_scatter is not None:
         # Classic up/down/ns: provide explicit color list (do not pass c= together with color=)
         scatter = ax.scatter(c=[colors_for_scatter[int(c)] for c in color_values], **scatter_kwargs)
@@ -793,7 +818,11 @@ def volcano_plot(
     for g in top_df.index:
         genes_to_label.add(str(g))
 
-    label_df = plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy() if genes_to_label else pd.DataFrame()
+    label_df = (
+        plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy()
+        if genes_to_label
+        else pd.DataFrame()
+    )
 
     texts = []
     for idx, row in label_df.iterrows():
@@ -804,7 +833,7 @@ def volcano_plot(
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
             color="#111111",
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.75),
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
         )
         texts.append(txt)
 
@@ -813,7 +842,7 @@ def volcano_plot(
             texts,
             x=plot_df["logFC"].values,
             y=plot_df["neg_log_pval"].values,
-            arrowprops=dict(arrowstyle="-", color="#888888", lw=0.7, alpha=0.7),
+            arrowprops={"arrowstyle": "-", "color": "#888888", "lw": 0.7, "alpha": 0.7},
             ax=ax,
         )
 
@@ -1088,7 +1117,8 @@ def velocity_phase_portraits(
     ncols = min(3, n)
     nrows = math.ceil(n / ncols)
     fig, axes = plt.subplots(
-        nrows, ncols,
+        nrows,
+        ncols,
         figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
         dpi=150,
         squeeze=False,

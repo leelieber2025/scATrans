@@ -8,16 +8,17 @@ Enhanced return: (residual, bias_info_dict) with fit diagnostics for transparenc
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Tuple
+
+from typing import Any
 
 import numpy as np
 
 from ._utils import _fit_huber_bias_correction as _raw_fit
 
-def fit_huber_bias_correction(
-    *args, **kwargs
-) -> Tuple[np.ndarray, Dict[str, Any]]:
+
+def fit_huber_bias_correction(*args, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
     """Public/internal wrapper that returns (residual, bias_info)."""
     return _raw_fit(*args, **kwargs)
+
 
 __all__ = ["fit_huber_bias_correction"]

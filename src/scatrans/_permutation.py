@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import scanpy as sc
@@ -17,11 +17,13 @@ from joblib import Parallel, delayed
 from statsmodels.stats.multitest import multipletests
 
 from ._de import _run_de_wrapper
-from ._utils import _fit_huber_bias_correction, _soft_scale
-from ._velocity import _compute_velocity_delta
 
 # local import to avoid circulars at module load
-from ._utils import _is_bias_correction_enabled  # for documentation only; actual decision is inside the fit function
+from ._utils import (
+    _fit_huber_bias_correction,
+    _soft_scale,
+)
+from ._velocity import _compute_velocity_delta
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def _single_permutation_task(
     target_group: str,
     reference_group: str,
     adata_subset: Any,
-    X_features: Optional[np.ndarray],
+    X_features: np.ndarray | None,
     valid_feat: np.ndarray,
     uns_layer: Any,
     spl_layer: Any,
@@ -102,7 +104,9 @@ def _single_permutation_task(
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _, _gamma_ref = _compute_velocity_delta(uns_layer, spl_layer, t_mask, r_mask, prior_weight)
+    delta_velocity, _, _gamma_ref = _compute_velocity_delta(
+        uns_layer, spl_layer, t_mask, r_mask, prior_weight
+    )
 
     total_us_for_filter = np.asarray(total_us_for_filter)
     valid_expr = total_us_for_filter >= min_total_counts
@@ -140,7 +144,7 @@ def run_permutation_test(
     target_group: str,
     reference_group: str,
     adata: Any,
-    X_features: Optional[np.ndarray],
+    X_features: np.ndarray | None,
     valid_feat: np.ndarray,
     velocity_layer_for_perm_uns: Any,
     velocity_layer_for_perm_spl: Any,
