@@ -288,6 +288,61 @@ simplified = scat.simplify_enrichment(
 
 `run_kegg` and `simplify_enrichment` are convenience wrappers around the core `run_enrichment` function.
 
+### run_go (GO enrichment, clusterProfiler-style)
+
+```python
+# Biological Process (defaults to the bundled Mm/Hs_GO_Biological_Process_2026)
+go_bp = scat.run_go(
+    gene_list=markers,
+    ontology="BP",          # "BP", "CC", "MF", or "ALL"
+    organism="mouse",
+    adata=adata,            # recommended for correct universe
+    return_all=True,
+)
+
+# ALL three ontologies + unified multiple-testing correction across them
+go_all = scat.run_go(
+    markers, ontology="ALL", organism="mouse",
+    return_all=True,
+    adjust_across_all=True,   # re-compute BH on all terms together (stricter)
+)
+# go_all.attrs["per_ontology_attrs"] contains full diagnostics for BP/CC/MF separately
+```
+
+`run_go` automatically resolves to the organism-specific bundled sets when possible (BP is bundled; CC/MF fall back to gseapy/Enrichr if the library is installed).
+
+### Exporting results for manuscripts / supplementary materials
+
+The new helpers make it trivial to produce clean, reproducible tables:
+
+```python
+res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)
+
+saved = scat.save_enrichment_report(
+    res,
+    prefix="cluster1_kegg",   # or "results/suppl/my_enrich" (directories created automatically)
+    save_excel=True,
+    save_csv=True,
+    save_tsv=True,            # often preferred for gene symbols + Excel locale safety
+    save_metadata=True,
+    save_term_gene_table=True,
+)
+
+# saved -> {'results_csv': ..., 'results_tsv': ..., 'term_gene_table_csv': ..., 'metadata_json': ..., 'results_xlsx': ...}
+
+# Long-format term–gene table (one row per gene; perfect for networks, follow-up stats, etc.)
+long_table = scat.expand_enrichment_genes(res)
+# If the input was from run_go(ontology="ALL"), long_table will have an "Ontology" column first.
+```
+
+`save_enrichment_report` also writes a rich `metadata.json` (and a "metadata" sheet in the xlsx) containing:
+- `analysis_info` (package, version, timestamp)
+- `gene_set_info` (requested/resolved + `requested_source` vs `actual_source`: "bundled", "gseapy", "gmt", "dict")
+- `universe_info` (effective N, dropped genes, restrict behavior, etc.)
+- Full `.attrs` from the enrichment call (including per-ontology details for GO ALL)
+
+All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`, `universe_info`, etc.) so you never lose information when a call returns no terms.
+
 ### 3.4 Visualization
 
 ```python
@@ -523,7 +578,7 @@ Full signatures and all parameters are documented in the function docstrings and
 - `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
 - `list_available_gene_features()`
 - `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — analyzes cell/sample counts and global unspliced fraction; returns warnings, recommendations, and a suggested `filter_active_genes` preset. Automatically called internally when `sample_col` or `use_pseudobulk=True` is used.
-- `run_enrichment(...)`, `run_kegg(...)`, `simplify_enrichment(...)`, `list_bundled_gene_sets()`
+- `run_enrichment(...)`, `run_kegg(...)`, `run_go(...)`, `simplify_enrichment(...)`, `save_enrichment_report(...)`, `expand_enrichment_genes(...)`, `list_bundled_gene_sets()`
 - `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
 - `scat.qc.unspliced_global(adata)`
 

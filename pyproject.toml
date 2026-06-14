@@ -65,7 +65,7 @@ scatrans = [
 
 [tool.setuptools_scm]
 write_to = "src/scatrans/_version.py"
-fallback_version = "0.7.0.dev0"
+fallback_version = "0.8.0"
 version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
