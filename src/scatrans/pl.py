@@ -2,12 +2,23 @@
 scATrans plotting module.
 
 Utilities for generating clear, publication-suitable figures for active
-transcription analysis results. The default style aims for clean vector
-output (PDF/SVG), minimal non-data ink, and readable labels suitable for
-scientific journals.
+transcription analysis results (volcano/comet, enrichment dotplots, rank plots,
+bias diagnostics, phase portraits, heatmaps, etc.). The default style aims for
+clean vector output (PDF/SVG), minimal non-data ink, and readable labels
+suitable for scientific journals.
 
-The style configuration is inspired by high-quality single-cell visualization
-practices (e.g., libraries such as OmicVerse and Scanpy extensions).
+Design and implementation details draw heavily from high-quality patterns in
+OmicVerse (https://github.com/omicverse/omicverse) and gseapy, including:
+- constrained_layout + careful bbox handling for colorbars + legends (no more
+  overlapping "two legend parts")
+- direct `s=` fixed-size controls + min/max + diagnostics for dense plots
+- gradient coloring and clean ranked barplots
+- outward spine offsets, patch legends, balanced gene labeling
+- consistent ax= embedding, return (fig, ax), and save_path behavior
+- modern adjustText usage and sensible defaults for journal figures
+
+Internal `set_style()` is called by plotting functions and can be customized
+by the user before calling scat.pl.* functions.
 """
 
 import logging
@@ -183,7 +194,7 @@ def comet_plot(
     plot_df = plot_df[plot_df["logFC"] > 0]
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
         _created_fig = True
     else:
         fig = ax.figure
@@ -259,9 +270,11 @@ def comet_plot(
     cbar.outline.set_visible(False)
 
     sns.despine(ax=ax, top=True, right=True)
+    ax.spines["left"].set_position(("outward", 6))
+    ax.spines["bottom"].set_position(("outward", 6))
 
-    if _created_fig:
-        plt.tight_layout()
+    # constrained_layout at creation + bbox_inches on save handles colorbar cleanly.
+    # (avoid tight_layout after colorbar)
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=True)
@@ -373,8 +386,8 @@ def volcano_3d(
     )
     cbar.outline.set_visible(False)
 
-    if _created_fig:
-        plt.tight_layout()
+    # 3D subplots have limited layout engine support; keep tight only for new fig
+    # (colorbar is on the figure).
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=True)
@@ -416,6 +429,11 @@ def enrich_dotplot(
         Smaller p-values are usually more interesting.
       - `dot_max`, `dot_min`, `smallest_dot`: omicverse-style controls for dot size range
         (see omicverse.pl.dotplot for the excellent reference implementation).
+
+    Legend handling (colorbar for p-value + size legend for Count/GeneRatio) uses
+    constrained_layout + careful bbox_to_anchor upper-right placement for the size legend.
+    This follows the patterns from gseapy (zqfang/gseapy plot.DotPlot) and omicverse.pl.dotplot
+    to avoid the two legend elements overlapping on the right side of the figure.
 
     `show_terms` gives clusterProfiler-like flexibility:
       - int: show top N terms (overrides top_n)
@@ -560,10 +578,10 @@ def enrich_dotplot(
     )
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-        # Leave extra space on the right for colorbar (p.adjust) + size legend (Count)
-        # This prevents overlap between the two legends (common issue when both are present).
-        fig.subplots_adjust(right=0.78)
+        # Use constrained_layout for robust automatic placement of colorbar + external size legend.
+        # This is the approach used by high-quality implementations in gseapy and omicverse
+        # and avoids the overlap issues that subplots_adjust + tight_layout combinations often cause.
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
         _created_fig = True
     else:
         fig = ax.figure
@@ -590,28 +608,26 @@ def enrich_dotplot(
     ax.yaxis.grid(True, linestyle=":", color="#EEEEEE", alpha=0.5, zorder=0)
     ax.set_axisbelow(True)
 
-    cbar = plt.colorbar(scatter, ax=ax, shrink=0.38, pad=0.08, aspect=14)
-    # Note: when we create the figure we also do fig.subplots_adjust(right=0.78)
-    # so that the colorbar (p.adjust) and the size legend (Count) have dedicated horizontal space
-    # and do not overlap. The bbox_to_anchor for the size legend is set further right (1.18)
-    # to sit beside the colorbar. This addresses the reported legend overlap.
+    # Colorbar (p.adjust or equivalent) - compact placement on the right.
+    # shrink/aspect/pad tuned following gseapy/omicverse-style dotplots for clean stacking with size legend.
+    cbar = plt.colorbar(scatter, ax=ax, shrink=0.28, aspect=12, pad=0.02)
     cbar_label = color_col
     if color_col == "Adjusted P-value":
         cbar_label = "Adjusted P-value (smaller = more sig.)"
-    cbar.set_label(cbar_label, fontsize=fontsize - 1, fontweight="bold", rotation=270, labelpad=20)
+    cbar.set_label(cbar_label, fontsize=fontsize - 1, fontweight="bold", rotation=270, labelpad=18)
     cbar.outline.set_visible(False)
 
-    # Reliable size legend (replaces the previous legend_elements + hardcoded inverse).
-    # The old inverse ` (s-30)/18 ` was tied to the broken scaling formula and
-    # often failed or showed wrong numbers. We now manually create proxy artists
-    # using the actual data values from the size_by column. This guarantees:
-    #   - dots in the plot have clearly different sizes (see _scale_sizes above)
-    #   - the legend shows the real Count / GeneRatio / ... numbers
+    # Size legend using proxy artists (keeps accurate representation of our custom _scale_sizes
+    # including dot_max / smallest_dot controls, which is more reliable than raw legend_elements).
     #
-    # Positioned further right (after the colorbar) and with subplots_adjust(right=0.78)
-    # when we create the figure, to avoid overlap with the p.adjust colorbar legend.
+    # Positioned in the upper-right (bbox_to_anchor + upper left) so it sits above / beside
+    # the colorbar rather than fighting it horizontally. This + constrained_layout eliminates
+    # the overlap between the two legend elements that was reported.
+    #
+    # References for this layout strategy:
+    # - gseapy.plot.DotPlot.scatter + add_colorbar (bbox_to_anchor for size legend at ~ (1.02, 0.9))
+    # - omicverse.pl.dotplot (clean right-side dual legend handling)
     try:
-        # Choose a few representative values (min, ~median, max of the plotted data)
         size_vals = pd.to_numeric(plot_df[size_col], errors="coerce").dropna().astype(float)
         if len(size_vals) > 0:
             reps = []
@@ -619,7 +635,6 @@ def enrich_dotplot(
             if len(size_vals) > 2:
                 reps.append(size_vals.median())
             reps.append(size_vals.max())
-            # remove near-duplicates
             reps = sorted({round(r, 4) if size_col != "Count" else int(round(r)) for r in reps})
             if not reps:
                 reps = [size_vals.iloc[0]]
@@ -627,8 +642,6 @@ def enrich_dotplot(
             handles = []
             labels = []
             for rv in reps:
-                # compute the marker size that corresponds to this data value
-                # use the same dot limits as the main plot for consistent legend sizes
                 s_for_rv = _scale_sizes(
                     pd.Series([rv]),
                     min_s=50,
@@ -650,11 +663,11 @@ def enrich_dotplot(
                     handles,
                     labels,
                     title=size_col,
-                    loc="center left",
-                    bbox_to_anchor=(1.18, 0.5),  # further right to sit after the colorbar
+                    loc="upper left",
+                    bbox_to_anchor=(1.02, 0.9),
                     frameon=False,
                     title_fontsize=fontsize - 1,
-                    labelspacing=1.2,
+                    labelspacing=1.1,
                 )
     except Exception:
         # Never let legend problems break the main plot
@@ -662,8 +675,10 @@ def enrich_dotplot(
 
     sns.despine(ax=ax, top=True, right=True, left=False, bottom=False)
 
-    if _created_fig:
-        plt.tight_layout()
+    # Do NOT call tight_layout() here. With constrained_layout + manual bbox_to_anchor legends
+    # it frequently causes the colorbar and size legend to fight / overlap.
+    # constrained_layout + bbox_inches="tight" on save (already done) + the upper-right placement
+    # is the robust combination used by the referenced gseapy / omicverse implementations.
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=True)
@@ -747,7 +762,7 @@ def volcano_plot(
         colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]  # ns, down, up
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
         _created_fig = True
     else:
         fig = ax.figure
@@ -861,9 +876,11 @@ def volcano_plot(
         ax.legend(loc="upper left", frameon=False, fontsize=fontsize - 1)
 
     sns.despine(ax=ax, top=True, right=True)
+    ax.spines["left"].set_position(("outward", 6))
+    ax.spines["bottom"].set_position(("outward", 6))
 
-    if _created_fig:
-        plt.tight_layout()
+    # Note: constrained_layout=True at creation handles colorbar placement cleanly.
+    # Avoid tight_layout after colorbar/legends.
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=True)
@@ -906,7 +923,7 @@ def bias_diagnostic_plot(
         return None, None
 
     if axes is None:
-        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi, constrained_layout=True)
         _created_fig = True
         ax1 = axes[0]
         ax2 = axes[1]
@@ -956,8 +973,7 @@ def bias_diagnostic_plot(
     if title:
         fig.suptitle(title, fontsize=fontsize + 2, fontweight="bold", y=1.02)
 
-    if _created_fig:
-        plt.tight_layout()
+    # constrained_layout handles the two-panel + suptitle cleanly.
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=True)
@@ -980,10 +996,15 @@ def enrich_barplot(enrich_df, top_n=15, title="Enrichment Barplot", save_path=No
 
 def active_score_rankplot(results_df, top_n=20, save_path=None, ax=None, **kwargs):
     """
-    Simple horizontal rank barplot of top active scores.
+    Horizontal ranked barplot of top active scores (publication-friendly).
 
-    Supports `ax` for embedding. For publication figures prefer
-    `pl.comet_plot` or `pl.volcano_plot`.
+    Improvements inspired by omicverse bulk/perturbation ranked visualizations:
+    - Gradient coloring by active_score magnitude.
+    - Clean outward-offset spines.
+    - Value annotations on bars.
+    - Good `ax=` embedding support and constrained layout.
+
+    For richer single-gene context prefer `pl.comet_plot` or `pl.volcano_plot`.
     """
     logger.info("Generating active score rank plot...")
     set_style()
@@ -996,30 +1017,52 @@ def active_score_rankplot(results_df, top_n=20, save_path=None, ax=None, **kwarg
     plot_df = plot_df.iloc[::-1]  # top at top
 
     import seaborn as sns
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as cm
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(7, max(4, 0.35 * top_n)), dpi=300)
+        fig, ax = plt.subplots(figsize=(7, max(4, 0.38 * top_n)), dpi=300, constrained_layout=True)
         _created = True
     else:
         fig = ax.figure
         _created = False
 
-    sns.barplot(
+    # Gradient coloring by score (omicverse-style ranked emphasis)
+    norm = Normalize(vmin=plot_df["active_score"].min(), vmax=plot_df["active_score"].max())
+    colors = [cm.viridis(v) for v in norm(plot_df["active_score"].values)]
+
+    bars = sns.barplot(
         data=plot_df,
         y=plot_df.index,
         x="active_score",
         ax=ax,
-        color="#2ca02c",
+        palette=colors,
+        hue=plot_df.index,
+        legend=False,
         edgecolor="#333333",
         linewidth=0.5,
     )
+
+    # Add value labels on bars (clean, small)
+    for bar, val in zip(bars.patches, plot_df["active_score"]):
+        ax.text(
+            val + 0.01 * plot_df["active_score"].max(),
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.2f}",
+            va="center",
+            ha="left",
+            fontsize=8,
+            color="#222222",
+        )
+
     ax.set_xlabel("Active Score", fontweight="bold")
     ax.set_ylabel("")
     ax.set_title("Top Active Drivers (rank)", fontweight="bold", pad=10)
-    sns.despine(ax=ax)
 
-    if _created:
-        plt.tight_layout()
+    # Outward spines (omicverse bulk style)
+    sns.despine(ax=ax, top=True, right=True)
+    ax.spines["left"].set_position(("outward", 8))
+    ax.spines["bottom"].set_position(("outward", 8))
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
@@ -1122,6 +1165,7 @@ def velocity_phase_portraits(
         figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
         dpi=150,
         squeeze=False,
+        constrained_layout=True,
     )
     axes = axes.flatten()
 
@@ -1158,7 +1202,7 @@ def velocity_phase_portraits(
     for j in range(i + 1, len(axes)):
         axes[j].axis("off")
 
-    plt.tight_layout()
+    # constrained_layout used at creation for the gene grid.
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
