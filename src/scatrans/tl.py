@@ -47,7 +47,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.7.0.dev0"
+    VERSION = "0.8.0"
 
 logger = logging.getLogger(__name__)
 
