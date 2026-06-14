@@ -960,7 +960,7 @@ def enrich_dotplot(
                         reps.append(cand)
                 if len(reps) < 3:
                     # fallback to a few nice values in range
-                    reps = sorted(set([low, mid, high]))
+                    reps = sorted({low, mid, high})
                     reps = [r for r in reps if vmin_c <= r <= vmax_c]
                 if not reps:
                     reps = [int(round(vmin_c))]
