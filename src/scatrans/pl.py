@@ -838,15 +838,26 @@ def enrich_dotplot(
     # fixed, clearly visible marker area range. This guarantees that as long
     # as the underlying size_by values are not all identical, the dots will
     # have obviously different sizes.
-    def _scale_sizes(vals, min_s=50, max_s=280, dot_max=None, dot_min=None, smallest_dot=0.0):
+    def _scale_sizes(
+        vals,
+        min_s=50,
+        max_s=280,
+        dot_max=None,
+        dot_min=None,
+        smallest_dot=0.0,
+        vmin=None,
+        vmax=None,
+    ):
         vals = pd.to_numeric(vals, errors="coerce").astype(float)
         # Apply omicverse-style dot size limits before scaling
         if dot_max is not None:
             vals = np.minimum(vals, dot_max)
         if dot_min is not None:
             vals = np.maximum(vals, dot_min)
-        vmin = vals.min()
-        vmax = vals.max()
+        if vmin is None:
+            vmin = vals.min()
+        if vmax is None:
+            vmax = vals.max()
         if pd.isna(vmin) or pd.isna(vmax) or vmax <= vmin or len(vals) == 0:
             return np.full(len(vals), (min_s + max_s) / 2.0)
         sizes = min_s + (max_s - min_s) * (vals - vmin) / (vmax - vmin)
@@ -915,20 +926,58 @@ def enrich_dotplot(
     # - gseapy.plot.DotPlot.scatter + add_colorbar (bbox_to_anchor for size legend at ~ (1.02, 0.9))
     # - omicverse.pl.dotplot (clean right-side dual legend handling)
     try:
-        size_vals = pd.to_numeric(plot_df[size_col], errors="coerce").dropna().astype(float)
-        if len(size_vals) > 0:
-            reps = []
-            reps.append(size_vals.min())
-            if len(size_vals) > 2:
-                reps.append(size_vals.median())
-            reps.append(size_vals.max())
-            reps = sorted({round(r, 4) if size_col != "Count" else int(round(r)) for r in reps})
-            if not reps:
-                reps = [size_vals.iloc[0]]
+        size_vals_raw = pd.to_numeric(plot_df[size_col], errors="coerce").dropna().astype(float)
+        if len(size_vals_raw) > 0:
+            # Compute effective range after dot_max / dot_min (for correct scaling)
+            effective = size_vals_raw.copy()
+            if dot_max is not None:
+                effective = np.minimum(effective, dot_max)
+            if dot_min is not None:
+                effective = np.maximum(effective, dot_min)
+            eff_vmin = effective.min()
+            eff_vmax = effective.max()
+
+            # Choose representative values
+            if size_col == "Count":
+                # Prefer nice round numbers (multiples of 5/10) instead of raw min/median/max
+                vmin_c = size_vals_raw.min()
+                vmax_c = size_vals_raw.max()
+                span = vmax_c - vmin_c
+                if span <= 5:
+                    step = 1
+                elif span <= 15:
+                    step = 5
+                elif span <= 50:
+                    step = 10
+                else:
+                    step = 20
+                low = max(step, int(np.ceil(vmin_c / step) * step))
+                high = int(np.floor(vmax_c / step) * step)
+                mid = int(round((low + high) / 2 / step) * step)
+                reps = []
+                for cand in [low, mid, high]:
+                    if vmin_c <= cand <= vmax_c:
+                        reps.append(cand)
+                if len(reps) < 3:
+                    # fallback to a few nice values in range
+                    reps = sorted(set([low, mid, high]))
+                    reps = [r for r in reps if vmin_c <= r <= vmax_c]
+                if not reps:
+                    reps = [int(round(vmin_c))]
+                reps = sorted(set(reps))[:3]  # at most 3
+            else:
+                # For GeneRatio etc. keep behavior similar but use actual values
+                reps = [size_vals_raw.min()]
+                if len(size_vals_raw) > 2:
+                    reps.append(size_vals_raw.median())
+                reps.append(size_vals_raw.max())
+                reps = sorted(set(reps))
 
             handles = []
             labels = []
             for rv in reps:
+                # Scale using the global effective vmin/vmax of the plotted data
+                # so that legend circle size is proportional and matches main plot dots
                 s_for_rv = _scale_sizes(
                     pd.Series([rv]),
                     min_s=50,
@@ -936,13 +985,15 @@ def enrich_dotplot(
                     dot_max=dot_max,
                     dot_min=dot_min,
                     smallest_dot=smallest_dot,
+                    vmin=eff_vmin,
+                    vmax=eff_vmax,
                 )[0]
                 h = ax.scatter(
                     [], [], s=s_for_rv, c="#555555", alpha=0.7, edgecolors="#333333", linewidths=0.5
                 )
                 handles.append(h)
                 if size_col == "Count":
-                    labels.append(str(int(round(rv))))
+                    labels.append(str(int(rv)))
                 else:
                     labels.append(f"{rv:.2g}" if rv < 1 else f"{rv:.2f}")
             if handles:
