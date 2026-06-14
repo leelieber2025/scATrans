@@ -28,14 +28,16 @@ consistent publication figures but can affect other plots in the same session.
 """
 
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib as mpl
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.colors import Normalize
 from scipy import sparse
 
 logger = logging.getLogger(__name__)
@@ -311,7 +313,10 @@ def comet_plot(
         plot_df = plot_df[plot_df["logFC"] > 0].copy()
 
     if plot_df.empty:
-        logger.warning("No genes to plot after filtering (positive_logfc_only=%s or missing data).", positive_logfc_only)
+        logger.warning(
+            "No genes to plot after filtering (positive_logfc_only=%s or missing data).",
+            positive_logfc_only,
+        )
         if ax is None:
             fig, ax = _empty_placeholder_fig("No genes to plot after filtering")
             _created_fig = True
@@ -340,8 +345,10 @@ def comet_plot(
         effective_min = min(1.0, min_size)
         sizes = np.clip(sizes, effective_min, max_size)
     else:
-        score_for_size = np.clip(pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None)
-        raw_sizes = score_for_size ** 1.6 * 35 * point_scale + 3 * point_scale
+        score_for_size = np.clip(
+            pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None
+        )
+        raw_sizes = score_for_size**1.6 * 35 * point_scale + 3 * point_scale
         sizes = np.clip(raw_sizes, min_size, max_size)
 
     # Light omicverse-style diagnostics (non-intrusive)
@@ -391,7 +398,9 @@ def comet_plot(
                 ax=ax,
             )
         else:
-            logger.warning("adjustText is not installed; gene labels may overlap. pip install adjustText")
+            logger.warning(
+                "adjustText is not installed; gene labels may overlap. pip install adjustText"
+            )
 
     ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
     ax.set_ylabel("Bias-corrected Unspliced Residual", fontsize=fontsize, fontweight="bold")
@@ -494,8 +503,10 @@ def volcano_3d(
         sizes = np.clip(sizes, effective_min, max_size)
     else:
         # clip active_score to >=0 before power to avoid NaN from negative ** exponent
-        score_for_size = np.clip(pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None)
-        raw_sizes = score_for_size ** 1.4 * 18 * point_scale + 3 * point_scale
+        score_for_size = np.clip(
+            pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None
+        )
+        raw_sizes = score_for_size**1.4 * 18 * point_scale + 3 * point_scale
         sizes = np.clip(raw_sizes, min_size, max_size)
 
     if len(plot_df) > 500 and (s is None) and point_scale > 0.3:
@@ -522,10 +533,10 @@ def volcano_3d(
         axis.line.set_color((1.0, 1.0, 1.0, 0.0))
 
     for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
-        try:
+        with suppress(
+            Exception
+        ):  # private API; future matplotlib may change this, ignore gracefully
             axis._axinfo["grid"].update({"color": "#E5E5E5", "linestyle": "-"})
-        except Exception:
-            pass  # private API; future matplotlib may change this, ignore gracefully
 
     top_genes = plot_df.nlargest(top_n, "active_score")
     # Use data range for offsets (robust to small/negative ranges)
@@ -618,6 +629,7 @@ def enrich_dotplot(
     `top_n` is still supported for the common "top N" case (when show_terms is None).
     Supports `ax` for embedding in publication multi-panel figures.
     """
+    _style_ctx = None
     if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
         logger.warning("Enrichment dataframe is empty. Nothing to plot.")
         if ax is None:
@@ -636,7 +648,9 @@ def enrich_dotplot(
     if smallest_dot < 0 or smallest_dot > 1:
         raise ValueError("smallest_dot must be between 0 and 1 (inclusive).")
     if dot_min is not None and dot_min < 0:
-        logger.warning("dot_min < 0 may produce unexpected dot sizes for non-negative metrics like Count.")
+        logger.warning(
+            "dot_min < 0 may produce unexpected dot sizes for non-negative metrics like Count."
+        )
     if dot_max is not None and dot_max < 0:
         logger.warning("dot_max < 0 may produce unexpected dot sizes.")
 
@@ -713,7 +727,9 @@ def enrich_dotplot(
         plot_df[pval_col] = pd.to_numeric(plot_df[pval_col], errors="coerce")
         invalid_p = (plot_df[pval_col] < 0) | (plot_df[pval_col] > 1)
         if invalid_p.any():
-            logger.warning("Dropping %d rows with %s outside [0, 1].", int(invalid_p.sum()), pval_col)
+            logger.warning(
+                "Dropping %d rows with %s outside [0, 1].", int(invalid_p.sum()), pval_col
+            )
             plot_df = plot_df.loc[~invalid_p].copy()
 
     count_candidates = ["Count", "Size", "leadingEdge_count"]
@@ -757,7 +773,9 @@ def enrich_dotplot(
     if size_by in plot_df.columns:
         size_col = size_by
     if size_col is None or size_col not in plot_df.columns:
-        logger.warning("No valid size column found (Count/Size/leadingEdge_count or size_by). Using constant dot size.")
+        logger.warning(
+            "No valid size column found (Count/Size/leadingEdge_count or size_by). Using constant dot size."
+        )
         plot_df["_dot_size"] = 1.0
         size_col = "_dot_size"
 
@@ -772,7 +790,9 @@ def enrich_dotplot(
         if converted.notna().any():
             plot_df[color_col] = converted
         else:
-            logger.warning("Color column %s is not numeric. Using sequential values for coloring.", color_col)
+            logger.warning(
+                "Color column %s is not numeric. Using sequential values for coloring.", color_col
+            )
             plot_df["_color_value"] = np.arange(len(plot_df), dtype=float)
             color_col = "_color_value"
 
@@ -783,7 +803,9 @@ def enrich_dotplot(
     # Force size_col to numeric + fillna + all-NaN fallback (defensive for "12" strings etc.)
     plot_df[size_col] = pd.to_numeric(plot_df[size_col], errors="coerce")
     if plot_df[size_col].isna().all():
-        logger.warning("Size column %s is non-numeric or all missing. Using constant dot size.", size_col)
+        logger.warning(
+            "Size column %s is non-numeric or all missing. Using constant dot size.", size_col
+        )
         plot_df["_dot_size"] = 1.0
         size_col = "_dot_size"
     else:
@@ -795,7 +817,9 @@ def enrich_dotplot(
         before = len(plot_df)
         plot_df = plot_df.dropna(subset=essential)
         if len(plot_df) == 0 and before > 0:
-            logger.warning("All rows dropped after requiring numeric x/size/color columns. Nothing to plot.")
+            logger.warning(
+                "All rows dropped after requiring numeric x/size/color columns. Nothing to plot."
+            )
             if ax is None:
                 fig, ax = _empty_placeholder_fig("No valid terms after filtering")
                 _created_fig = True
@@ -1056,7 +1080,10 @@ def volcano_plot(
             cbar_label = color_by
             colors_for_scatter = None
         else:
-            logger.warning("color_by=%s present but non-numeric after coercion. Falling back to significance categories.", color_by)
+            logger.warning(
+                "color_by=%s present but non-numeric after coercion. Falling back to significance categories.",
+                color_by,
+            )
             # fall through to classic significance coloring
             up_mask = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
             down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
@@ -1065,7 +1092,10 @@ def volcano_plot(
             colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]
     else:
         if color_by != "active_score":
-            logger.warning("color_by=%s not found in data. Falling back to up/down/ns significance categories.", color_by)
+            logger.warning(
+                "color_by=%s not found in data. Falling back to up/down/ns significance categories.",
+                color_by,
+            )
         up_mask = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
         down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
         color_values = np.where(up_mask, 2, np.where(down_mask, 1, 0))  # 2=up, 1=down, 0=ns
@@ -1089,7 +1119,9 @@ def volcano_plot(
         # variable
         # Defensively clip active_score (or fallback) to >=0 before exponentiation.
         if "active_score" in plot_df.columns:
-            size_val = np.clip(pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None)
+            size_val = np.clip(
+                pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None
+            )
         else:
             size_val = plot_df.get("neg_log_pval", pd.Series(4, index=plot_df.index))
         raw_sizes = size_val**1.3 * 8 * point_scale + 3 * point_scale
@@ -1178,7 +1210,9 @@ def volcano_plot(
                 ax=ax,
             )
         else:
-            logger.warning("adjustText is not installed; gene labels may overlap. pip install adjustText")
+            logger.warning(
+                "adjustText is not installed; gene labels may overlap. pip install adjustText"
+            )
 
     ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
     ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize, fontweight="bold")
@@ -1246,7 +1280,15 @@ def bias_diagnostic_plot(
         # Create a 1x2 placeholder figure to match normal return type (fig, (ax1, ax2))
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
         for a in (ax1, ax2):
-            a.text(0.5, 0.5, "Too few genes for bias diagnostic", ha="center", va="center", transform=a.transAxes, fontsize=9)
+            a.text(
+                0.5,
+                0.5,
+                "Too few genes for bias diagnostic",
+                ha="center",
+                va="center",
+                transform=a.transAxes,
+                fontsize=9,
+            )
             a.axis("off")
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
         return fig, (ax1, ax2)
@@ -1327,7 +1369,16 @@ def enrich_barplot(enrich_df, top_n=15, title="Enrichment Barplot", save_path=No
     return enrich_dotplot(enrich_df, top_n=top_n, title=title, save_path=save_path, **kwargs)
 
 
-def active_score_rankplot(results_df, top_n=20, save_path=None, ax=None, dpi=300, show: bool = True, use_style: bool = True, **kwargs):
+def active_score_rankplot(
+    results_df,
+    top_n=20,
+    save_path=None,
+    ax=None,
+    dpi=300,
+    show: bool = True,
+    use_style: bool = True,
+    **kwargs,
+):
     """
     Horizontal ranked barplot of top active scores (publication-friendly).
 
@@ -1361,10 +1412,6 @@ def active_score_rankplot(results_df, top_n=20, save_path=None, ax=None, dpi=300
 
     # Use nlargest for safety: does not assume the input df is already sorted by active_score.
     plot_df = plot_df.nlargest(top_n, "active_score").iloc[::-1]  # top at top for horizontal bar
-
-    import seaborn as sns
-    from matplotlib.colors import Normalize
-    import matplotlib.cm as cm
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(7, max(4, 0.38 * top_n)), dpi=dpi, constrained_layout=True)
@@ -1428,7 +1475,15 @@ def active_score_rankplot(results_df, top_n=20, save_path=None, ax=None, dpi=300
     return fig, ax
 
 
-def active_genes_heatmap(adata, genes=None, groupby=None, save_path=None, show: bool = True, use_style: bool = True, **kwargs):
+def active_genes_heatmap(
+    adata,
+    genes=None,
+    groupby=None,
+    save_path=None,
+    show: bool = True,
+    use_style: bool = True,
+    **kwargs,
+):
     """
     Convenience wrapper around scanpy heatmap for the active driver genes.
 
@@ -1609,7 +1664,11 @@ def velocity_phase_portraits(
             cat = pd.Categorical(adata.obs[groupby].astype(str))
             groups = list(cat.categories)
             if len(groups) > 20:
-                logger.warning("velocity_phase_portraits: %d groups for '%s'; legend will show only the first 20.", len(groups), groupby)
+                logger.warning(
+                    "velocity_phase_portraits: %d groups for '%s'; legend will show only the first 20.",
+                    len(groups),
+                    groupby,
+                )
             cmap = plt.get_cmap("tab20")
             handles = [
                 Line2D(

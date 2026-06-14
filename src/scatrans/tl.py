@@ -91,10 +91,14 @@ def _validate_de_common_options(
         raise ValueError("use_memento_de must be boolean.")
 
     if not (0 < memento_capture_rate < 1):
-        raise ValueError("memento_capture_rate must be in (0, 1). Typical values: ~0.07 for 10x v1, ~0.15 for v2.")
+        raise ValueError(
+            "memento_capture_rate must be in (0, 1). Typical values: ~0.07 for 10x v1, ~0.15 for v2."
+        )
 
     if memento_num_boot < 100:
-        raise ValueError("memento_num_boot should be reasonably large (>=100) for stable estimates.")
+        raise ValueError(
+            "memento_num_boot should be reasonably large (>=100) for stable estimates."
+        )
 
     if min_cells is not None and min_cells < 1:
         raise ValueError("min_cells must be >= 1.")
@@ -911,9 +915,12 @@ def _finalize_active_score_results(
         "gene_length",
         "intron_number",
     ]
-    if "show_effective_gamma" in extra_metadata and extra_metadata.get("show_effective_gamma"):
-        if "effective_gamma" in adata.var.columns:
-            cols.append("effective_gamma")
+    if (
+        "show_effective_gamma" in extra_metadata
+        and extra_metadata.get("show_effective_gamma")
+        and "effective_gamma" in adata.var.columns
+    ):
+        cols.append("effective_gamma")
     if use_permutation:
         cols.extend(["active_score_pval", "active_score_fdr"])
     if "delta_variance" in adata.var.columns:
@@ -934,18 +941,30 @@ def _finalize_active_score_results(
         & (adata.var["valid_expr"])
         & (adata.var["active_score"] > 0)
     )
-    if use_permutation and extra_metadata.get("use_fdr_for_significance", True):
-        if "active_score_fdr" in adata.var.columns:
-            mask = mask & (adata.var["active_score_fdr"] < extra_metadata.get("active_fdr_cutoff", 0.05))
+    if (
+        use_permutation
+        and extra_metadata.get("use_fdr_for_significance", True)
+        and "active_score_fdr" in adata.var.columns
+    ):
+        mask = mask & (
+            adata.var["active_score_fdr"] < extra_metadata.get("active_fdr_cutoff", 0.05)
+        )
 
-    if "use_delta_variance_pval" in extra_metadata and extra_metadata.get("use_delta_variance_pval"):
-        if "delta_var_pval" in adata.var.columns:
-            mask = mask & (adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05))
+    if (
+        "use_delta_variance_pval" in extra_metadata
+        and extra_metadata.get("use_delta_variance_pval")
+        and "delta_var_pval" in adata.var.columns
+    ):
+        mask = mask & (
+            adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
+        )
 
     significant = adata.var.loc[mask, cols].copy().sort_values("active_score", ascending=False)
     all_results = adata.var.loc[:, cols].copy().sort_values("active_score", ascending=False)
 
-    logger.info("Analysis completed in %s mode! Significant active genes: %d", mode, len(significant))
+    logger.info(
+        "Analysis completed in %s mode! Significant active genes: %d", mode, len(significant)
+    )
 
     # --- Rich metadata (merge to protect raw_gene_list etc.) ---
     velocity_delta_layer = (
@@ -1049,6 +1068,7 @@ def _finalize_active_score_results(
     if show_plot:
         try:
             from . import pl
+
             pl.comet_plot(
                 all_results,
                 top_n=12,
@@ -1236,7 +1256,9 @@ def differential_expression(
 
     # DE preprocess
     if use_memento_de and de_preprocess != "none":
-        logger.info("use_memento_de=True: forcing de_preprocess='none' (Memento works on raw counts).")
+        logger.info(
+            "use_memento_de=True: forcing de_preprocess='none' (Memento works on raw counts)."
+        )
         de_preprocess = "none"
 
     if de_preprocess == "normalize_log1p":
@@ -1328,39 +1350,41 @@ def differential_expression(
 
     # Metadata — merge to preserve raw_gene_list etc. from store_raw_counts()
     existing = dict(adata.uns.get("scatrans", {}))
-    existing.update({
-        "mode": "differential_expression",
-        "version": VERSION,
-        "groupby": groupby,
-        "target_group": target_group,
-        "reference_group": reference_group,
-        "use_pseudobulk": use_pseudobulk,
-        "use_mixed_model": use_mixed_model,
-        "use_memento_de": use_memento_de,
-        "memento_capture_rate": memento_capture_rate if use_memento_de else None,
-        "de_method": de_method,
-        "pseudobulk_de_backend": pseudobulk_de_backend,
-        "use_permutation": use_permutation,
-        "n_perm": n_perm if use_permutation else 0,
-        "de_preprocess": de_preprocess,
-        "strict_pydeseq2_counts": strict_pydeseq2_counts,
-        "min_cells": min_cells,
-        "min_counts": min_counts,
-        "min_total_counts": min_total_counts,
-        "sample_col": sample_col,
-        "pb_x_layer": pb_x_layer,
-        "pb_use_total_for_x": pb_use_total_for_x,
-        "use_delta_variance_pval": use_delta_variance_pval,
-        "delta_var_pval_cutoff": delta_var_pval_cutoff,
-        "mixed_model_pval": mixed_model_pval if use_mixed_model else None,
-        "memento_num_boot": memento_num_boot if use_memento_de else None,
-        "memento_n_cpus": memento_n_cpus if use_memento_de else None,
-        "perm_de_backend": perm_de_backend if use_permutation else None,
-        "active_fdr_cutoff": active_fdr_cutoff if use_permutation else None,
-        "random_seed": random_seed,
-        "n_jobs": n_jobs,
-        "gene_type_filter": gene_type_filter,
-    })
+    existing.update(
+        {
+            "mode": "differential_expression",
+            "version": VERSION,
+            "groupby": groupby,
+            "target_group": target_group,
+            "reference_group": reference_group,
+            "use_pseudobulk": use_pseudobulk,
+            "use_mixed_model": use_mixed_model,
+            "use_memento_de": use_memento_de,
+            "memento_capture_rate": memento_capture_rate if use_memento_de else None,
+            "de_method": de_method,
+            "pseudobulk_de_backend": pseudobulk_de_backend,
+            "use_permutation": use_permutation,
+            "n_perm": n_perm if use_permutation else 0,
+            "de_preprocess": de_preprocess,
+            "strict_pydeseq2_counts": strict_pydeseq2_counts,
+            "min_cells": min_cells,
+            "min_counts": min_counts,
+            "min_total_counts": min_total_counts,
+            "sample_col": sample_col,
+            "pb_x_layer": pb_x_layer,
+            "pb_use_total_for_x": pb_use_total_for_x,
+            "use_delta_variance_pval": use_delta_variance_pval,
+            "delta_var_pval_cutoff": delta_var_pval_cutoff,
+            "mixed_model_pval": mixed_model_pval if use_mixed_model else None,
+            "memento_num_boot": memento_num_boot if use_memento_de else None,
+            "memento_n_cpus": memento_n_cpus if use_memento_de else None,
+            "perm_de_backend": perm_de_backend if use_permutation else None,
+            "active_fdr_cutoff": active_fdr_cutoff if use_permutation else None,
+            "random_seed": random_seed,
+            "n_jobs": n_jobs,
+            "gene_type_filter": gene_type_filter,
+        }
+    )
     adata.uns["scatrans"] = existing
 
     logger.info("DE completed. %d genes in results table.", len(results))
@@ -1494,12 +1518,15 @@ def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False)
         )
 
     # Additional guard when restoring from adata.raw (same dimension but possibly different order/names)
-    if source == "adata.raw" and hasattr(adata.raw, "var_names"):
-        if not np.array_equal(adata.raw.var_names, adata.var_names):
-            raise ValueError(
-                "adata.raw has the same number of genes as current adata, but gene names/order differ. "
-                "Cannot restore into .X without explicit gene reindexing."
-            )
+    if (
+        source == "adata.raw"
+        and hasattr(adata.raw, "var_names")
+        and not np.array_equal(adata.raw.var_names, adata.var_names)
+    ):
+        raise ValueError(
+            "adata.raw has the same number of genes as current adata, but gene names/order differ. "
+            "Cannot restore into .X without explicit gene reindexing."
+        )
 
     if inplace:
         adata.X = raw

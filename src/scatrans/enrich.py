@@ -617,7 +617,9 @@ def run_enrichment(
     # `universe` is the preferred name; `background` kept only as deprecated alias.
     # If both are given, raise immediately to avoid silent "only universe wins" behavior.
     if universe is not None and background is not None:
-        raise ValueError("Please provide only one of `universe` or `background`, not both. Use `universe`.")
+        raise ValueError(
+            "Please provide only one of `universe` or `background`, not both. Use `universe`."
+        )
 
     # Smart default: if the user did not explicitly pass universe/background,
     # and they pass an `adata` on which `store_raw_counts` was previously called,
@@ -779,7 +781,9 @@ def run_enrichment(
 
     if not results:
         if verbose:
-            _log_info(f"Tested {len(term_to_genes)} terms; found 0 terms with overlap (after size filters)")
+            _log_info(
+                f"Tested {len(term_to_genes)} terms; found 0 terms with overlap (after size filters)"
+            )
         return _empty_ora_result(
             include_gene_list=include_gene_list,
             reason="no_term_overlap_after_filters",
@@ -822,7 +826,9 @@ def run_enrichment(
     sig = res_df[res_df["p.adjust"] < cutoff].copy().reset_index(drop=True)
     sig.attrs.update(res_df.attrs)
     if verbose:
-        _log_info(f"Tested {len(res_df)} terms; found {len(sig)} significant terms at padj < {cutoff}")
+        _log_info(
+            f"Tested {len(res_df)} terms; found {len(sig)} significant terms at padj < {cutoff}"
+        )
     return sig
 
 
@@ -986,7 +992,11 @@ def run_go(
     if ont == "ALL":
         ont_list = ["BP", "CC", "MF"]
     else:
-        if ont not in ont_map and ont not in {"GO_BIOLOGICAL_PROCESS", "GO_CELLULAR_COMPONENT", "GO_MOLECULAR_FUNCTION"}:
+        if ont not in ont_map and ont not in {
+            "GO_BIOLOGICAL_PROCESS",
+            "GO_CELLULAR_COMPONENT",
+            "GO_MOLECULAR_FUNCTION",
+        }:
             # allow passing the full Enrichr-style name directly
             gs_name = ont
         else:
@@ -1108,8 +1118,10 @@ def run_go(
         )
         combined = combined.sort_values("p.adjust").reset_index(drop=True)
         if verbose:
-            _log_info("GO ALL: re-adjusted p.adjust across BP+CC+MF (adjust_across_all=True); "
-                      "original per-ontology p.adjust saved in 'p.adjust.within_ontology'")
+            _log_info(
+                "GO ALL: re-adjusted p.adjust across BP+CC+MF (adjust_across_all=True); "
+                "original per-ontology p.adjust saved in 'p.adjust.within_ontology'"
+            )
 
     if return_all:
         if verbose:
@@ -1120,7 +1132,9 @@ def run_go(
     sig = combined[combined["p.adjust"] < eff_cut].copy().reset_index(drop=True)
     sig.attrs.update(combined.attrs)
     if verbose:
-        _log_info(f"GO ALL: tested/combined {len(combined)} terms; found {len(sig)} significant at padj < {eff_cut}")
+        _log_info(
+            f"GO ALL: tested/combined {len(combined)} terms; found {len(sig)} significant at padj < {eff_cut}"
+        )
     return sig
 
 
@@ -1215,7 +1229,9 @@ def _flatten_metadata(d: Any, prefix: str = "") -> list:
                 rows.extend(_flatten_metadata(v, key))
             elif isinstance(v, (list, tuple)):
                 try:
-                    rows.append({"key": key, "value": json.dumps(v, ensure_ascii=False, default=str)})
+                    rows.append(
+                        {"key": key, "value": json.dumps(v, ensure_ascii=False, default=str)}
+                    )
                 except Exception:
                     rows.append({"key": key, "value": str(v)})
             else:
@@ -1267,28 +1283,34 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, row in res.iterrows():
         genes_str = str(row.get("Genes", "") or "")
-        genes = [g.strip() for g in genes_str.split(";") if g and g.strip() and g.strip().lower() != "nan"]
+        genes = [
+            g.strip()
+            for g in genes_str.split(";")
+            if g and g.strip() and g.strip().lower() != "nan"
+        ]
 
         for gene in genes:
             rec = {}
             if has_ontology:
                 rec["Ontology"] = row.get("Ontology", "")
-            rec.update({
-                "Term": row.get("Term", ""),
-                "Description": row.get("Description", ""),
-                "Gene": gene,
-                "Count": row.get("Count", None),
-                "GeneRatio": row.get("GeneRatio", None),
-                "GeneRatio_str": row.get("GeneRatio_str", ""),
-                "BgRatio": row.get("BgRatio", None),
-                "BgRatio_str": row.get("BgRatio_str", ""),
-                "FoldEnrichment": row.get("FoldEnrichment", None),
-                "RichFactor": row.get("RichFactor", None),
-                "Overlap": row.get("Overlap", ""),
-                "pvalue": row.get("pvalue", None),
-                "p.adjust": row.get("p.adjust", None),
-                "TermSize": row.get("TermSize", None),
-            })
+            rec.update(
+                {
+                    "Term": row.get("Term", ""),
+                    "Description": row.get("Description", ""),
+                    "Gene": gene,
+                    "Count": row.get("Count", None),
+                    "GeneRatio": row.get("GeneRatio", None),
+                    "GeneRatio_str": row.get("GeneRatio_str", ""),
+                    "BgRatio": row.get("BgRatio", None),
+                    "BgRatio_str": row.get("BgRatio_str", ""),
+                    "FoldEnrichment": row.get("FoldEnrichment", None),
+                    "RichFactor": row.get("RichFactor", None),
+                    "Overlap": row.get("Overlap", ""),
+                    "pvalue": row.get("pvalue", None),
+                    "p.adjust": row.get("p.adjust", None),
+                    "TermSize": row.get("TermSize", None),
+                }
+            )
             rows.append(rec)
 
     df = pd.DataFrame(rows)
@@ -1393,7 +1415,13 @@ def save_enrichment_report(
         metadata_json = f"{prefix_path}_metadata.json"
         try:
             with open(metadata_json, "w", encoding="utf-8") as f:
-                json.dump(res.attrs if hasattr(res, "attrs") else {}, f, indent=2, ensure_ascii=False, default=str)
+                json.dump(
+                    res.attrs if hasattr(res, "attrs") else {},
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
             outputs["metadata_json"] = metadata_json
         except Exception as e:
             _warn_user(f"Could not write metadata JSON: {e}")

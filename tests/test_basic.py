@@ -667,7 +667,13 @@ def test_enrichment_universe_variants_and_restrict():
 
     # force_universe=True also bypasses intersect
     r4 = scat.run_enrichment(
-        genes, gene_sets, background=bg, force_universe=True, pval_cutoff=1.0, min_size=1, return_all=True
+        genes,
+        gene_sets,
+        background=bg,
+        force_universe=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
     )
     assert r4.attrs["universe_info"]["force_universe"] is True
     assert r4.attrs["universe_info"]["effective_universe_size"] == 6
@@ -691,6 +697,7 @@ def test_enrichment_empty_cases_preserve_attrs_and_reason():
 
     # Empty gene_sets dict -> warning + empty with reason
     import warnings
+
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         e2 = scat.run_enrichment(["A", "B"], {}, pval_cutoff=1.0)
@@ -698,7 +705,9 @@ def test_enrichment_empty_cases_preserve_attrs_and_reason():
         assert e2.attrs.get("reason") in ("no_gene_sets_loaded", "gene_list_empty") or len(w) > 0
 
     # No overlap case
-    e3 = scat.run_enrichment(["Z"], gs, universe=["Z"], pval_cutoff=1.0, min_size=1, return_all=True)
+    e3 = scat.run_enrichment(
+        ["Z"], gs, universe=["Z"], pval_cutoff=1.0, min_size=1, return_all=True
+    )
     assert e3.empty or len(e3) == 0  # may be dropped by overlap==0 path
     # At least we didn't crash; attrs may be on the non-empty path if any term passed size filter
 
@@ -714,7 +723,7 @@ def test_enrichment_gene_case_and_mapping_examples():
     gs = {"Housekeeping": ["ACTB", "GAPDH", "TUBB"]}
 
     # default (None) keeps case; "actb" won't match "ACTB" unless gene_case
-    r_default = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
     # with gene_case=upper they should map
     r_upper = scat.run_enrichment(
         genes, gs, gene_case="upper", pval_cutoff=1.0, min_size=1, return_all=True
@@ -739,7 +748,13 @@ def test_enrichment_include_gene_list():
     genes = ["A", "B"]
     gs = {"S1": ["A", "B", "C"]}
     r = scat.run_enrichment(
-        genes, gs, universe=["A", "B", "C"], include_gene_list=True, pval_cutoff=1.0, min_size=1, return_all=True
+        genes,
+        gs,
+        universe=["A", "B", "C"],
+        include_gene_list=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
     )
     assert "Genes_list" in r.columns
     assert isinstance(r.iloc[0]["Genes_list"], list)
@@ -772,7 +787,6 @@ def test_enrichment_organism_normalization_in_attrs():
 
 
 def test_run_go_wrapper_basic():
-    genes = ["A", "B"]
     # run_go maps ontology -> gene set name. With real bundled sets (BP) this will load locally (no net).
     # "Foo" will have no overlap with any real GO BP term -> empty result via overlap filter, with rich attrs.
     res2 = scat.run_go(["Foo"], ontology="BP", organism="mouse", pval_cutoff=1.0, min_size=5)
@@ -799,7 +813,13 @@ def test_expand_enrichment_genes_and_save(tmp_path):
     genes = ["A", "B"]
     gs = {"S1": ["A", "B", "C"], "S2": ["A"]}
     res = scat.run_enrichment(
-        genes, gs, universe=["A", "B", "C", "D"], include_gene_list=True, pval_cutoff=1.0, min_size=1, return_all=True
+        genes,
+        gs,
+        universe=["A", "B", "C", "D"],
+        include_gene_list=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
     )
     assert not res.empty
 
@@ -812,10 +832,17 @@ def test_expand_enrichment_genes_and_save(tmp_path):
     # Save with all options
     prefix = tmp_path / "test_enrich"
     saved = scat.save_enrichment_report(
-        res, prefix=str(prefix), save_excel=True, save_csv=True, save_metadata=True, save_term_gene_table=True
+        res,
+        prefix=str(prefix),
+        save_excel=True,
+        save_csv=True,
+        save_metadata=True,
+        save_term_gene_table=True,
     )
     assert "results_csv" in saved
-    assert "results_xlsx" in saved or "metadata_json" in saved  # xlsx may fail if no engine, but csv+meta should be there
+    assert (
+        "results_xlsx" in saved or "metadata_json" in saved
+    )  # xlsx may fail if no engine, but csv+meta should be there
     assert "term_gene_table_csv" in saved or "metadata_json" in saved
 
     # Check that Genes_list was stringified in the exported main table (if csv was written)
@@ -831,7 +858,9 @@ def test_save_enrichment_report_empty_still_writes(tmp_path):
     """Even empty res with attrs should be savable."""
     empty = scat.run_enrichment([], {"T": ["X"]})
     prefix = tmp_path / "empty_enrich"
-    saved = scat.save_enrichment_report(empty, prefix=str(prefix), save_excel=False, save_csv=True, save_metadata=True)
+    saved = scat.save_enrichment_report(
+        empty, prefix=str(prefix), save_excel=False, save_csv=True, save_metadata=True
+    )
     assert "results_csv" in saved
     assert "metadata_json" in saved
 
@@ -853,13 +882,25 @@ def test_run_go_adjust_across_all(tmp_path):
     # Make two "ontologies" via dicts passed indirectly is hard; use run_enrichment + post process not needed.
     # Instead run_go with a name that falls back, but to keep deterministic use high cutoff + return_all + check attr.
     res_all = scat.run_go(
-        genes, ontology="ALL", organism="mouse", pval_cutoff=1.0, min_size=1, return_all=True, adjust_across_all=True
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        adjust_across_all=True,
     )
     # May be empty (no real overlap with GO terms), but attrs should record the flag
     assert res_all.attrs.get("adjust_across_all") is True or res_all.empty
 
     res_sep = scat.run_go(
-        genes, ontology="ALL", organism="mouse", pval_cutoff=1.0, min_size=1, return_all=True, adjust_across_all=False
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        adjust_across_all=False,
     )
     assert res_sep.attrs.get("adjust_across_all") is False or res_sep.empty
 
@@ -882,7 +923,9 @@ def test_dual_cutoff_warning():
     genes = ["A", "B"]
     gs = {"S1": ["A", "B", "C"]}
     with pytest.warns(UserWarning, match="Both pval_cutoff and padj_cutoff"):
-        scat.run_enrichment(genes, gs, universe=["A", "B", "C"], pval_cutoff=0.1, padj_cutoff=0.05, min_size=1)
+        scat.run_enrichment(
+            genes, gs, universe=["A", "B", "C"], pval_cutoff=0.1, padj_cutoff=0.05, min_size=1
+        )
 
 
 def test_run_go_all_per_ontology_attrs_and_within_padj():
@@ -890,8 +933,13 @@ def test_run_go_all_per_ontology_attrs_and_within_padj():
     genes = ["A", "B"]
     # Real GO path + high min_size often yields empty result, but structure + keys must be present
     res = scat.run_go(
-        genes, ontology="ALL", organism="mouse", pval_cutoff=1.0, min_size=5,
-        return_all=True, adjust_across_all=True
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=5,
+        return_all=True,
+        adjust_across_all=True,
     )
     attrs = res.attrs
     assert attrs.get("ontology") == "ALL" or attrs.get("method") == "ora_go_all"
@@ -910,14 +958,16 @@ def test_run_go_all_per_ontology_attrs_and_within_padj():
 def test_expand_enrichment_genes_preserves_ontology():
     """Long table from GO ALL results must include and lead with Ontology column."""
     # Create a fake combined result resembling GO ALL output
-    fake = pd.DataFrame({
-        "Ontology": ["BP", "CC"],
-        "Term": ["T1", "T2"],
-        "Description": ["d1", "d2"],
-        "Count": [2, 1],
-        "Genes": ["G1;G2", "G3"],
-        "p.adjust": [0.01, 0.02],
-    })
+    fake = pd.DataFrame(
+        {
+            "Ontology": ["BP", "CC"],
+            "Term": ["T1", "T2"],
+            "Description": ["d1", "d2"],
+            "Count": [2, 1],
+            "Genes": ["G1;G2", "G3"],
+            "p.adjust": [0.01, 0.02],
+        }
+    )
     long = scat.expand_enrichment_genes(fake)
     assert "Ontology" in long.columns
     assert long.columns[0] == "Ontology"
@@ -928,6 +978,7 @@ def test_expand_enrichment_genes_preserves_ontology():
 def test_save_enrichment_report_mkdir_and_tsv(tmp_path):
     """prefix dir should be created; save_tsv produces .tsv files."""
     from pathlib import Path as _Path  # local to avoid polluting module if not wanted
+
     genes = ["A"]
     gs = {"S": ["A", "B"]}
     res = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
