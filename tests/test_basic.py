@@ -399,6 +399,76 @@ def test_cli_main_callable():
     assert callable(main)
 
 
+# --------------------------- copy_input / ensure_raw_counts ---------------------------
+
+
+def test_active_score_default_copy_preserves_input(adata_basic):
+    """active_score(copy_input=True) must not normalize/log1p the caller's AnnData."""
+    ad = adata_basic.copy()
+    X_before = np.asarray(ad.X, dtype=float).copy()
+    had_log1p = "log1p" in ad.uns
+    layer_keys = set(ad.layers.keys())
+
+    scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+    )
+
+    assert np.allclose(np.asarray(ad.X, dtype=float), X_before)
+    assert ("log1p" in ad.uns) == had_log1p
+    assert set(ad.layers.keys()) == layer_keys
+    assert "active_score" not in ad.var.columns
+
+
+def test_ensure_raw_counts_exported():
+    assert hasattr(scat, "ensure_raw_counts")
+    assert callable(scat.ensure_raw_counts)
+
+
+def test_ensure_raw_counts_recovers_from_raw():
+    """After log1p on .X, ensure_raw_counts should recover integer counts from adata.raw."""
+    np.random.seed(7)
+    n_cells, n_genes = 40, 60
+    X_raw = np.random.negative_binomial(4, 0.45, size=(n_cells, n_genes)).astype(float)
+    ad = sc.AnnData(X_raw)
+    ad.raw = ad.copy()
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+
+    scat.ensure_raw_counts(ad)
+    assert "counts" in ad.layers
+    assert ad.layers["counts"].shape[1] == ad.n_vars
+    assert "raw_gene_list" in ad.uns.get("scatrans", {})
+
+
+def test_mixed_model_on_log_data_no_double_transform(adata_mixed_small):
+    """Mixed model path should accept already log-normalized data without re-logging."""
+    ad = adata_mixed_small.copy()
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    X_logged = np.asarray(ad.X, dtype=float).copy()
+
+    _, _, allr = scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert "delta_variance" in allr.columns
+    assert np.allclose(np.asarray(ad.X, dtype=float), X_logged)
+
+
 # --------------------------- error paths ---------------------------
 
 

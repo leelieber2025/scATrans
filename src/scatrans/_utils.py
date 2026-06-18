@@ -8,12 +8,14 @@ to keep the core active_score readable and to enable reuse (esp. bias correction
 from __future__ import annotations
 
 import logging
+import warnings
 from math import comb  # re-exported for permutation use
 from typing import Any, Iterable
 
 import anndata as ad
 import numpy as np
 import pandas as pd
+import scanpy as sc
 from scipy import sparse
 from sklearn.linear_model import HuberRegressor
 
@@ -33,10 +35,16 @@ __all__ = [
     "_soft_scale",
     "_pseudobulk_with_layers",
     "_fit_huber_bias_correction",
+    "_resolve_aligned_raw_counts",
+    "_prepare_log_normalized_expression",
 ]
 
 
-def _is_integer_counts_like(X: Any, max_check: int = 100000) -> bool:
+def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6) -> bool:
+    """Return True if the matrix contains non-negative values that are integer-valued
+    (within tolerance). This is tolerant of float64 summed counts that are exactly
+    (or very nearly) integers, which commonly occurs after pseudobulk aggregation.
+    """
     if sparse.issparse(X):
         data = X.data
         if data.size == 0:
@@ -57,7 +65,9 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000) -> bool:
         rng = np.random.default_rng(0)
         vals = rng.choice(vals, size=max_check, replace=False)
 
-    return np.all(vals >= 0) and np.allclose(vals, np.round(vals))
+    # Tolerant check: allows tiny floating point noise from summation / cast
+    rounded = np.round(vals)
+    return np.all(vals >= 0) and np.allclose(vals, rounded, atol=atol, rtol=1e-5)
 
 
 def _warn_if_not_integer_counts_matrix(X: Any, max_check: int = 100000) -> None:
@@ -68,18 +78,109 @@ def _warn_if_not_integer_counts_matrix(X: Any, max_check: int = 100000) -> None:
         )
 
 
+def _resolve_aligned_raw_counts(
+    adata: ad.AnnData,
+    *,
+    layer: str = "counts",
+    require_integer: bool = True,
+) -> Any | None:
+    """Return a count matrix aligned to ``adata.n_vars``, or None if unsafe to use.
+
+    Refuses matrices whose second dimension does not match the current gene count.
+    When ``raw_gene_list`` in ``.uns`` differs in length (typical after HVG subsetting),
+    a counts layer that matches current ``var_names`` is still accepted for DE backends.
+    """
+    candidates: list[tuple[str, Any]] = []
+    if layer in adata.layers:
+        candidates.append((f"layers['{layer}']", adata.layers[layer]))
+    raw = getattr(adata, "raw", None)
+    if raw is not None and raw.shape[1] == adata.n_vars:
+        if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
+            candidates.append(("adata.raw", raw.X))
+
+    for source_name, mat in candidates:
+        n_cols = mat.shape[1] if hasattr(mat, "shape") else 0
+        if n_cols != adata.n_vars:
+            logger.warning(
+                "Counts from %s have %d columns but adata has %d genes; skipping for count-based DE.",
+                source_name,
+                n_cols,
+                adata.n_vars,
+            )
+            continue
+        if require_integer and not _is_integer_counts_like(mat):
+            logger.warning(
+                "Counts from %s do not look like raw integer counts; skipping for count-based DE.",
+                source_name,
+            )
+            continue
+
+        raw_gene_list = adata.uns.get("scatrans", {}).get("raw_gene_list")
+        if raw_gene_list is not None:
+            stored = np.asarray(raw_gene_list)
+            current = adata.var_names.to_numpy()
+            if len(stored) == adata.n_vars and not np.array_equal(stored, current):
+                logger.warning(
+                    "Counts from %s match n_vars but stored raw_gene_list order differs from "
+                    "adata.var_names. Refusing misaligned counts for count-based DE. "
+                    "Re-run store_raw_counts() on the current object.",
+                    source_name,
+                )
+                continue
+            if len(stored) != adata.n_vars:
+                logger.info(
+                    "raw_gene_list (%d genes) differs from current n_vars (%d). "
+                    "Using %s aligned to current genes for DE; enrichment universe still uses "
+                    "the preserved full raw_gene_list.",
+                    len(stored),
+                    adata.n_vars,
+                    source_name,
+                )
+        return mat
+
+    return None
+
+
+def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
+    """Dense log1p library-size normalized matrix for mixed models (no double log1p)."""
+    ad_work = ad_expr.copy()
+    if "log1p" in ad_work.uns:
+        X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
+        return np.asarray(X, dtype=float)
+
+    if _is_integer_counts_like(ad_work.X):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sc.pp.normalize_total(ad_work, target_sum=1e4)
+            sc.pp.log1p(ad_work)
+        X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
+        return np.asarray(X, dtype=float)
+
+    X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
+    X = np.asarray(X, dtype=float)
+    finite = X[np.isfinite(X)]
+    if finite.size and np.nanmax(finite) > 50:
+        logger.warning(
+            "Mixed model input is neither marked log1p nor integer counts; applying log1p."
+        )
+        return np.log1p(np.clip(X, 0, None))
+    return X
+
+
 def _warn_if_low_counts_matrix(X: Any, max_check: int = 100000) -> None:
     vals = X.data if sparse.issparse(X) else np.asarray(X).ravel()
-
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
         return
+
+    # Use rounded view for the max check (handles float64 summed pseudobulk)
+    rounded_max = np.max(np.round(vals))
 
     if vals.size > max_check:
         rng = np.random.default_rng(0)
         vals = rng.choice(vals, size=max_check, replace=False)
 
-    if vals.max() < 30:
+    if rounded_max < 30:
         logger.warning(
             "Maximum count passed to PyDESeq2 is <30. This may be valid for small datasets, "
             "but please verify that the matrix contains raw counts, not normalized/log-transformed values."
@@ -191,6 +292,10 @@ def _pseudobulk_with_layers(
         if n_cells < min_cells:
             continue
         x_sum = np.nan_to_num(np.asarray(X_source[mask].sum(axis=0)).ravel())
+        # Clean to integer-valued floats for count-like data (pseudobulk sums).
+        # Using round keeps the numeric value exact while float dtype is fine for AnnData/sparse.
+        x_sum = np.round(x_sum).astype(np.float64, copy=False)
+
         if float(x_sum.sum()) < min_counts:
             continue
 
@@ -207,22 +312,27 @@ def _pseudobulk_with_layers(
         )
         for layer in layers:
             l_sum = np.nan_to_num(np.asarray(adata.layers[layer][mask].sum(axis=0)).ravel())
+            # Velocity layers (spliced/unspliced) can stay as summed float; only round for cleanliness
+            l_sum = np.round(l_sum).astype(np.float64, copy=False)
             layer_rows[layer].append(sparse.csr_matrix(l_sum.reshape(1, -1)))
 
     if not X_rows:
         raise ValueError("No samples remained after pseudobulk filtering.")
 
-    adata_pb = ad.AnnData(
-        X=sparse.vstack(X_rows).tocsr(),
-        obs=pd.DataFrame(obs_rows),
-        var=adata.var.copy(),
-    )
-    adata_pb.obs.index = (
-        adata_pb.obs[sample_col].astype(str) + "_" + adata_pb.obs[groupby].astype(str)
-    )
-    for layer in layers:
-        adata_pb.layers[layer] = sparse.vstack(layer_rows[layer]).tocsr()
-    adata_pb.obs_names_make_unique()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)  # pandas "Transforming to str index" during AnnData/obs construction is benign
+        adata_pb = ad.AnnData(
+            X=sparse.vstack(X_rows).tocsr(),
+            obs=pd.DataFrame(obs_rows),
+            var=adata.var.copy(),
+        )
+        # Use AnnData's obs_names setter (preferred)
+        adata_pb.obs_names = (
+            adata_pb.obs[sample_col].astype(str) + "_" + adata_pb.obs[groupby].astype(str)
+        )
+        for layer in layers:
+            adata_pb.layers[layer] = sparse.vstack(layer_rows[layer]).tocsr()
+        adata_pb.obs_names_make_unique()
     return adata_pb
 
 
@@ -339,5 +449,4 @@ def _fit_huber_bias_correction(
     return residual, bias_info
 
 
-# warnings is used inside _fit_huber_bias_correction
-import warnings  # noqa: E402  (executed at import time)
+# warnings imported at top of file (used inside _fit_huber_bias_correction and pseudobulk creation)

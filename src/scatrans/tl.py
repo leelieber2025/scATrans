@@ -37,6 +37,7 @@ from ._utils import (
     _is_integer_counts_like,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
+    _resolve_aligned_raw_counts,
     _soft_scale,
     comb,  # for small-n permutation space calculation
 )
@@ -75,20 +76,8 @@ def _validate_de_common_options(
     if pseudobulk_de_backend not in {"pydeseq2", "scanpy"}:
         raise ValueError("pseudobulk_de_backend must be 'pydeseq2' or 'scanpy'.")
 
-    if not isinstance(n_jobs, int):
-        raise ValueError("n_jobs must be an integer.")
-
-    if use_permutation and (not isinstance(n_perm, int) or n_perm < 1):
-        raise ValueError("n_perm must be a positive integer when use_permutation=True.")
-
-    if not isinstance(use_mixed_model, bool):
-        raise ValueError("use_mixed_model must be boolean.")
-
     if mixed_model_pval not in ("wald", "lrt"):
         raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
-
-    if not isinstance(use_memento_de, bool):
-        raise ValueError("use_memento_de must be boolean.")
 
     if not (0 < memento_capture_rate < 1):
         raise ValueError(
@@ -206,6 +195,7 @@ def active_score(
     show_effective_gamma: bool = False,
     # Advanced convenience for users primarily interested in nascent RNA excess
     prioritize_velocity: bool = False,
+    copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
@@ -284,11 +274,6 @@ def active_score(
         min_counts=min_counts,
     )
 
-    if not isinstance(use_delta_variance_pval, bool):
-        raise ValueError("use_delta_variance_pval must be boolean.")
-    if not (0 < delta_var_pval_cutoff < 1):
-        raise ValueError("delta_var_pval_cutoff must be in (0, 1).")
-
     if not (0 < active_fdr_cutoff <= 1):
         raise ValueError("active_fdr_cutoff must be in (0, 1].")
 
@@ -329,6 +314,9 @@ def active_score(
         )
 
     logger.info("scATrans %s Analysis started. Mode: %s", VERSION, mode)
+
+    if copy_input:
+        adata_input = adata_input.copy()
 
     # ==================== SUBSET & BASIC VALIDATION ====================
     if subset_col is not None:
@@ -496,9 +484,11 @@ def active_score(
             min_counts=min_counts,
         )
         is_pseudobulk = True
-        adata.obs[groupby] = pd.Categorical(
-            adata.obs[groupby].astype(str), categories=[reference_group, target_group]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)  # pandas/ann implicit index str conversion is benign here
+            adata.obs[groupby] = pd.Categorical(
+                adata.obs[groupby].astype(str), categories=[reference_group, target_group]
+            )
 
         n_pb = adata.n_obs
         if n_pb < 5:
@@ -545,19 +535,16 @@ def active_score(
             memento_num_boot,
         )
 
-    # Auto-resolve preserved raw counts for count-based DE backends.
-    # We warn above if raw_gene_list does not align with current adata.var_names.
-    # The wrapper receives the matrix, but remains responsible for safe use/reindexing.
+    # Auto-resolve preserved raw counts for count-based DE backends (alignment-checked).
     resolved_counts = None
     needs_raw_counts = use_memento_de or (is_pseudobulk and pseudobulk_de_backend == "pydeseq2")
     if needs_raw_counts:
-        if "scatrans" in adata.uns and "raw_gene_list" in adata.uns.get("scatrans", {}):
-            if "counts" in adata.layers:
-                resolved_counts = adata.layers["counts"]
-            elif getattr(adata, "raw", None) is not None:
-                resolved_counts = adata.raw.X
-        elif "counts" in getattr(adata, "layers", {}):
-            resolved_counts = adata.layers["counts"]
+        resolved_counts = _resolve_aligned_raw_counts(adata, layer="counts", require_integer=True)
+        if resolved_counts is None and ("counts" in adata.layers or getattr(adata, "raw", None)):
+            logger.warning(
+                "Count-based DE was requested but no safely aligned raw counts were found. "
+                "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
+            )
 
     de_df = _run_de_wrapper(
         adata,
@@ -1117,6 +1104,7 @@ def differential_expression(
     gene_type_filter: str | None = None,
     # Allow providing raw counts separately when adata.X is already HVG+log (very common)
     counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+    copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame]:
     """
     Standalone differential expression (DE) using the same flexible backends
@@ -1215,29 +1203,22 @@ def differential_expression(
         min_counts=min_counts,
     )
 
-    # Auto-resolve preserved raw counts from scatrans metadata if user called store_raw_counts early
-    # This makes Memento / PyDESeq2 paths more convenient by auto-supplying preserved
-    # raw counts (when store_raw_counts was called) without the user having to pass
-    # counts= explicitly. Alignment warnings are emitted earlier if the stored gene
-    # list no longer matches the current adata.
+    if copy_input:
+        adata_input = adata_input.copy()
+
+    # Auto-resolve aligned raw counts for count-based backends (Memento / PyDESeq2).
     if counts is None and (
         use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")
     ):
-        if "scatrans" in adata_input.uns and "raw_gene_list" in adata_input.uns.get("scatrans", {}):
-            # Prefer the layer if present (it has the actual count matrix for those genes)
-            if "counts" in adata_input.layers:
-                counts = adata_input.layers["counts"]
-            elif getattr(adata_input, "raw", None) is not None:
-                counts = adata_input.raw.X
-            # else the gene list is available but matrix may have been lost; wrapper will warn
-        elif "counts" in getattr(adata_input, "layers", {}):
-            counts = adata_input.layers["counts"]
-
-    # Note on raw counts: users should call scat.store_raw_counts(adata) early.
-    # The DE backends will use layers[layer] or adata.raw when available.
+        counts = _resolve_aligned_raw_counts(adata_input, layer="counts", require_integer=True)
+        if counts is None and ("counts" in adata_input.layers or getattr(adata_input, "raw", None)):
+            logger.warning(
+                "Count-based DE was requested but no safely aligned raw counts were found. "
+                "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
+            )
 
     # --- prepare data (pseudobulk if requested) ---
-    adata = adata_input.copy()
+    adata = adata_input
 
     if use_pseudobulk:
         logger.info("Performing pseudobulk aggregation for DE...")
@@ -1250,9 +1231,11 @@ def differential_expression(
             min_cells=min_cells,
             min_counts=min_counts,
         )
-        adata.obs[groupby] = pd.Categorical(
-            adata.obs[groupby].astype(str), categories=[reference_group, target_group]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            adata.obs[groupby] = pd.Categorical(
+                adata.obs[groupby].astype(str), categories=[reference_group, target_group]
+            )
 
     # DE preprocess
     if use_memento_de and de_preprocess != "none":
@@ -1391,6 +1374,99 @@ def differential_expression(
     return adata, results
 
 
+def _record_raw_counts_metadata(
+    adata: Any, *, save_raw: bool = False, overwrite: bool = False
+) -> None:
+    """Write scatrans metadata, optional adata.raw, and raw_* velocity layers."""
+    if "scatrans" not in adata.uns:
+        adata.uns["scatrans"] = {}
+    prev_list = adata.uns["scatrans"].get("raw_gene_list")
+    n_genes = int(adata.n_vars)
+    if prev_list is not None and len(prev_list) != n_genes:
+        logger.warning(
+            "Updating raw_gene_list (%d → %d genes). If you subsetted after an earlier "
+            "store_raw_counts(), enrichment universe will reflect the current gene set only. "
+            "For the full pre-HVG universe, keep a separate full-gene AnnData or use save_raw=True "
+            "on the original object before subsetting.",
+            len(prev_list),
+            n_genes,
+        )
+    adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
+    adata.uns["scatrans"]["store_raw_counts_n_genes"] = n_genes
+    logger.info(
+        "Saved the current gene list as the measured universe for enrichment "
+        "(in adata.uns['scatrans']['raw_gene_list'])."
+    )
+
+    if save_raw:
+        if getattr(adata, "raw", None) is not None and not overwrite:
+            logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
+        else:
+            adata.raw = adata.copy()
+            logger.info("Set adata.raw to preserve full data.")
+
+    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
+        if vel_name in adata.layers:
+            raw_vel_name = f"raw_{vel_name}"
+            if raw_vel_name not in adata.layers or overwrite:
+                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
+                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
+
+
+def ensure_raw_counts(
+    adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
+) -> None:
+    """
+    Ensure raw integer counts are available in ``adata.layers[layer]``.
+
+    Convenience wrapper around :func:`store_raw_counts` that also tries to recover
+    counts from ``adata.raw`` when ``adata.X`` is already normalized or log-transformed
+    (common after HVG + ``sc.pp.log1p``).
+
+    Resolution order:
+    1. Existing ``layers[layer]`` if it already looks like integer counts
+    2. Current ``adata.X`` if integer counts-like
+    3. ``adata.raw.X`` when gene names/order match ``adata.var_names``
+
+    Always updates ``adata.uns['scatrans']['raw_gene_list']`` and velocity ``raw_*`` layers
+    via the same metadata path as :func:`store_raw_counts`.
+    """
+    if (
+        layer in adata.layers
+        and not overwrite
+        and _is_integer_counts_like(adata.layers[layer])
+        and adata.layers[layer].shape[1] == adata.n_vars
+    ):
+        _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+        logger.debug("Layer '%s' already holds aligned integer counts.", layer)
+        return
+
+    if _is_integer_counts_like(adata.X):
+        store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
+        return
+
+    raw = getattr(adata, "raw", None)
+    if raw is not None and _is_integer_counts_like(raw.X) and raw.shape[1] == adata.n_vars:
+        if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
+            adata.layers[layer] = raw.X.copy()
+            logger.info(
+                "ensure_raw_counts: recovered raw counts from adata.raw into layers['%s'].",
+                layer,
+            )
+            _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+            return
+        logger.warning(
+            "adata.raw exists but gene names/order do not match current adata.var_names. "
+            "Cannot recover counts automatically."
+        )
+
+    logger.warning(
+        "ensure_raw_counts: adata.X does not look like raw counts and adata.raw could not be used. "
+        "Falling back to store_raw_counts (may warn again)."
+    )
+    store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
+
+
 def store_raw_counts(
     adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
 ) -> None:
@@ -1436,40 +1512,22 @@ def store_raw_counts(
                 "Current adata.X does not look like raw integer counts. "
                 "store_raw_counts should be called early (after basic QC, before normalize/log1p/HVG)."
             )
-        adata.layers[layer] = adata.X.copy()
+        mat = adata.X.copy()
+        if mat.shape[1] != adata.n_vars:
+            raise ValueError(
+                f"Cannot store raw counts: matrix has {mat.shape[1]} columns "
+                f"but adata has {adata.n_vars} genes."
+            )
+        adata.layers[layer] = mat
         logger.info(f"Saved raw counts to adata.layers['{layer}'].")
 
-    # Save the gene list at this moment as the measured universe for later enrichment
-    # and count-based analyses. Unlike layers, this metadata list is kept in .uns and
-    # therefore is not automatically subsetted when adata is later subsetted to HVGs.
-    # Downstream code must still verify that any stored count matrix is aligned with
-    # the current adata.var_names before using it.
-    if "scatrans" not in adata.uns:
-        adata.uns["scatrans"] = {}
-    adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
-    logger.info(
-        "Saved the current gene list as the measured universe for enrichment (in adata.uns['scatrans']['raw_gene_list'])."
-    )
+    if layer in adata.layers and adata.layers[layer].shape[1] != adata.n_vars:
+        raise ValueError(
+            f"Layer '{layer}' has {adata.layers[layer].shape[1]} columns but adata has "
+            f"{adata.n_vars} genes. Pass overwrite=True after fixing alignment."
+        )
 
-    if save_raw:
-        if getattr(adata, "raw", None) is not None and not overwrite:
-            logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
-        else:
-            adata.raw = adata.copy()
-            logger.info("Set adata.raw to preserve full data.")
-
-    # Preserve original velocity layers (spliced/unspliced or mature/nascent)
-    # under "raw_*" names for the current gene set at the time of the call.
-    # Note: these are normal AnnData layers; if the adata is later gene-subsetted
-    # (e.g. to HVGs), the layers will be subsetted as well. They do not retain
-    # the original full-gene matrices after subsetting. Use save_raw=True or
-    # keep a separate full-gene object if full-gene recovery is required.
-    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
-        if vel_name in adata.layers:
-            raw_vel_name = f"raw_{vel_name}"
-            if raw_vel_name not in adata.layers or overwrite:
-                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
-                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
+    _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
 
 
 def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Any | None:
