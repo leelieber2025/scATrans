@@ -173,9 +173,7 @@ def _excess_delta_col(df: pd.DataFrame) -> str:
 
 
 def _excess_residual_col(df: pd.DataFrame) -> str:
-    return _resolve_results_column(
-        df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL
-    )
+    return _resolve_results_column(df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL)
 
 
 def _require_columns(df, columns, func_name="plot"):
@@ -1410,7 +1408,9 @@ def bias_diagnostic_plot(
     ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
     ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize, fontweight="bold")
+    ax2.set_ylabel(
+        "Unspliced excess residual (bias-corrected)", fontsize=fontsize, fontweight="bold"
+    )
     ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     sns.despine(ax=ax2)
 
