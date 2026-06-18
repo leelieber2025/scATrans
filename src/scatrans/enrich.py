@@ -1162,10 +1162,9 @@ def _comb_comb_comb(
     p_sum = Fraction(0)
     upper = min(intersection_size, degs_in_test)
     for desired_number_of_degs in range(degs_in_intersection, upper + 1):
-        numerator = (
-            _comb_fraction(size_test - degs_in_test, intersection_size - desired_number_of_degs)
-            * _comb_fraction(degs_in_test, desired_number_of_degs)
-        )
+        numerator = _comb_fraction(
+            size_test - degs_in_test, intersection_size - desired_number_of_degs
+        ) * _comb_fraction(degs_in_test, desired_number_of_degs)
         p_sum += numerator / denominator
     return float(p_sum)
 
@@ -1182,9 +1181,7 @@ def _resolve_gene_sets_for_simplify(
 ) -> Dict[str, set]:
     """Resolve full pathway gene memberships for PathwayDenester."""
     if gene_sets is not None:
-        term_to_genes, _, _ = _load_gene_sets(
-            gene_sets, organism=organism, verbose=verbose
-        )
+        term_to_genes, _, _ = _load_gene_sets(gene_sets, organism=organism, verbose=verbose)
         return term_to_genes
 
     attrs = getattr(enrich_df, "attrs", {}) or {}
@@ -1193,9 +1190,7 @@ def _resolve_gene_sets_for_simplify(
         candidate = gene_set_info.get(key)
         if candidate and candidate != "<dict>":
             try:
-                term_to_genes, _, _ = _load_gene_sets(
-                    candidate, organism=organism, verbose=verbose
-                )
+                term_to_genes, _, _ = _load_gene_sets(candidate, organism=organism, verbose=verbose)
                 if verbose:
                     _log_info(
                         f"PathwayDenester: loaded gene sets from enrichment attrs "
@@ -1360,9 +1355,7 @@ def _simplify_by_pathway_denester(
                 continue
             degs_in_test = len(test["degs"])
             shared_genes = test["all_genes"] & current["all_genes"]
-            degs_in_intersection_current = len(
-                current["degs"] & shared_genes
-            )
+            degs_in_intersection_current = len(current["degs"] & shared_genes)
             if degs_in_intersection_current <= to_test_threshold * min(
                 degs_in_current, degs_in_test
             ):
@@ -1553,8 +1546,7 @@ def simplify_enrichment(
     if method_norm == "pathway_denester":
         if by is None or by not in df.columns:
             raise ValueError(
-                "method='pathway_denester' requires a p-value column "
-                "(e.g. 'p.adjust' or 'pvalue')."
+                "method='pathway_denester' requires a p-value column (e.g. 'p.adjust' or 'pvalue')."
             )
         term_to_genes = _resolve_gene_sets_for_simplify(
             df, gene_sets=gene_sets, organism=organism, verbose=verbose
