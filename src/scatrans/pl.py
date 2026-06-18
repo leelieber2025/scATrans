@@ -17,14 +17,16 @@ OmicVerse (https://github.com/omicverse/omicverse) and gseapy, including:
 - consistent ax= embedding, return (fig, ax), and save_path behavior
 - modern adjustText usage and sensible defaults for journal figures
 
-Internal `set_style()` is called by plotting functions (when use_style=True, the default)
-and modifies **global** matplotlib rcParams + seaborn style. This is intentional for
-consistent publication figures but can affect other plots in the same session.
+Internal `set_style()` is called by plotting functions **only when use_style=True**.
+Default is now use_style=False to avoid surprising global rcParams changes in notebooks
+and shared environments.
 
-- To avoid side effects on a per-call basis, pass `use_style=False` to any pl.* function
-  (after you have called set_style() or style_context() yourself once).
-- For temporary scoped styling without globals, use the provided `style_context(**kwargs)`
-  context manager around your own plotting code.
+- To get the package publication style automatically, either:
+  * pass use_style=True to a plotting call, or
+  * call `scat.pl.set_style()` once yourself early in the script/notebook, or
+  * use `with scat.pl.style_context(...): ...` (recommended for scoped, no side effects).
+- All plotting functions still respect use_style= , ax=, figsize=, save_path=, show= for
+  consistency.
 """
 
 import logging
@@ -39,6 +41,14 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.colors import Normalize
 from scipy import sparse
+
+from ._utils import (
+    LEGACY_VELOCITY_DELTA_COL,
+    LEGACY_VELOCITY_RESIDUAL_COL,
+    UNSPLICED_EXCESS_DELTA_COL,
+    UNSPLICED_EXCESS_RESIDUAL_COL,
+    _resolve_results_column,
+)
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -68,8 +78,9 @@ def set_style(
     - White background, high contrast, no unnecessary grids
 
     It is recommended to call this once near the beginning of an analysis
-    script or notebook. All `scat.pl.*` plotting functions call it (when use_style=True)
-    and therefore modify global rcParams.
+    script or notebook if you want package style. Plotting functions no longer call
+    it by default (use_style=False). Pass use_style=True or use style_context()
+    to opt in per call or per block.
 
     If you want to limit the scope of style changes, either:
       * call `scat.pl.set_style()` once yourself and then pass use_style=False to individual
@@ -160,6 +171,14 @@ def style_context(**kwargs):
 # -----------------------------------------------------------------------------
 
 
+def _excess_delta_col(df: pd.DataFrame) -> str:
+    return _resolve_results_column(df, UNSPLICED_EXCESS_DELTA_COL, LEGACY_VELOCITY_DELTA_COL)
+
+
+def _excess_residual_col(df: pd.DataFrame) -> str:
+    return _resolve_results_column(df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL)
+
+
 def _require_columns(df, columns, func_name="plot"):
     """Raise clear error if required columns are missing from df."""
     if df is None:
@@ -248,7 +267,7 @@ def comet_plot(
     cmap="coolwarm",
     ax=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
     positive_logfc_only: bool = True,
 ):
     """
@@ -292,7 +311,8 @@ def comet_plot(
         _style_ctx = style_context()
         _style_ctx.__enter__()
 
-    _require_columns(df, ["logFC", "velocity_residual", "active_score"], "comet_plot")
+    residual_col = _excess_residual_col(df)
+    _require_columns(df, ["logFC", residual_col, "active_score"], "comet_plot")
 
     if top_n <= 0:
         raise ValueError("top_n must be positive.")
@@ -304,10 +324,10 @@ def comet_plot(
         raise ValueError("s must be positive.")
 
     plot_df = df.copy()
-    for c in ["logFC", "velocity_residual", "active_score"]:
+    for c in ["logFC", residual_col, "active_score"]:
         if c in plot_df.columns:
             plot_df[c] = pd.to_numeric(plot_df[c], errors="coerce")
-    plot_df = plot_df.dropna(subset=["logFC", "velocity_residual", "active_score"])
+    plot_df = plot_df.dropna(subset=["logFC", residual_col, "active_score"])
 
     if positive_logfc_only:
         plot_df = plot_df[plot_df["logFC"] > 0].copy()
@@ -361,7 +381,7 @@ def comet_plot(
 
     scatter = ax.scatter(
         x=plot_df["logFC"],
-        y=plot_df["velocity_residual"],
+        y=plot_df[residual_col],
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
@@ -379,7 +399,7 @@ def comet_plot(
     for idx, row in top_genes.iterrows():
         txt = ax.text(
             row["logFC"],
-            row["velocity_residual"],
+            row[residual_col],
             f"{idx}",
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
@@ -393,7 +413,7 @@ def comet_plot(
             adjust_text(
                 texts,
                 x=plot_df["logFC"].values,
-                y=plot_df["velocity_residual"].values,
+                y=plot_df[residual_col].values,
                 arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
                 ax=ax,
             )
@@ -440,7 +460,7 @@ def volcano_3d(
     cmap="coolwarm",
     ax=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
 ):
     """
     3D volcano-style view (logFC, -log10(p_adj), velocity residual).
@@ -458,10 +478,11 @@ def volcano_3d(
         _style_ctx = style_context()
         _style_ctx.__enter__()
 
-    _require_columns(df, ["logFC", "p_adj", "velocity_residual", "active_score"], "volcano_3d")
+    residual_col = _excess_residual_col(df)
+    _require_columns(df, ["logFC", "p_adj", residual_col, "active_score"], "volcano_3d")
 
     plot_df = df.copy()
-    for c in ["logFC", "p_adj", "velocity_residual", "active_score"]:
+    for c in ["logFC", "p_adj", residual_col, "active_score"]:
         if c in plot_df.columns:
             plot_df[c] = pd.to_numeric(plot_df[c], errors="coerce")
 
@@ -472,7 +493,7 @@ def volcano_3d(
             logger.warning("Dropping %d rows with p_adj outside [0, 1].", int(invalid_p.sum()))
             plot_df = plot_df.loc[~invalid_p].copy()
 
-    plot_df = plot_df.dropna(subset=["logFC", "p_adj", "velocity_residual", "active_score"])
+    plot_df = plot_df.dropna(subset=["logFC", "p_adj", residual_col, "active_score"])
     plot_df["neg_log_pval"] = _safe_neg_log10(plot_df["p_adj"])
     plot_df = plot_df.dropna(subset=["neg_log_pval"])
 
@@ -518,7 +539,7 @@ def volcano_3d(
     scatter = ax.scatter(
         plot_df["logFC"],
         plot_df["neg_log_pval"],
-        plot_df["velocity_residual"],
+        plot_df[residual_col],
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
@@ -542,7 +563,7 @@ def volcano_3d(
     # Use data range for offsets (robust to small/negative ranges)
     if len(plot_df) > 1:
         x_rng = plot_df["logFC"].max() - plot_df["logFC"].min()
-        z_rng = plot_df["velocity_residual"].max() - plot_df["velocity_residual"].min()
+        z_rng = plot_df[residual_col].max() - plot_df[residual_col].min()
         x_offset = (x_rng * 0.03) if x_rng > 0 else 0.1
         z_offset = (z_rng * 0.03) if z_rng > 0 else 0.15
     else:
@@ -550,7 +571,7 @@ def volcano_3d(
         z_offset = 0.15
 
     for idx, row in top_genes.iterrows():
-        px, py, pz = row["logFC"], row["neg_log_pval"], row["velocity_residual"]
+        px, py, pz = row["logFC"], row["neg_log_pval"], row[residual_col]
         tx, ty, tz = px + x_offset, py, pz + z_offset
         ax.plot([px, tx], [py, ty], [pz, tz], color="#888888", ls=":", lw=1.2, alpha=0.8)
         ax.text(
@@ -584,7 +605,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
-    show_terms: Optional[Union[int, List[str], Tuple[str, ...]]] = None,
+    show_terms: Optional[Union[int, str, List[str], Tuple[str, ...]]] = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -599,7 +620,7 @@ def enrich_dotplot(
     smallest_dot: float = 0.0,
     ax=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -622,6 +643,8 @@ def enrich_dotplot(
 
     `show_terms` gives clusterProfiler-like flexibility:
       - int: show top N terms (overrides top_n)
+      - "auto": intelligently select terms with p.adjust < 0.05 and Count >= 2 (then top_n of those,
+        sorted by significance + size). Falls back gracefully.
       - list/tuple of str: show exactly the matching terms (match on Term or Description;
         order of the list is respected when possible). This is analogous to
         `dotplot(..., showCategory = c("term1", "term2"))`.
@@ -664,8 +687,44 @@ def enrich_dotplot(
     if show_terms is not None:
         if isinstance(show_terms, int):
             plot_df = enrich_df.head(show_terms).copy()
+        elif isinstance(show_terms, str) and show_terms.lower() == "auto":
+            # Auto: prefer statistically interesting terms (p.adjust + count)
+            # Try common column names for adjusted p
+            padj_col = None
+            for cand in ("p.adjust", "Adjusted P-value", "p_adj", "padj"):
+                if cand in enrich_df.columns:
+                    padj_col = cand
+                    break
+            if padj_col is None:
+                padj_col = "p.adjust"  # will produce all-False mask if missing -> fallback
+            # Build mask: significant + has count
+            try:
+                padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(1.0)
+            except Exception:
+                padj = pd.Series(1.0, index=enrich_df.index)
+            count_col = "Count" if "Count" in enrich_df.columns else None
+            cnt = pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0) if count_col else pd.Series(0, index=enrich_df.index)
+            auto_mask = (padj < 0.05) & (cnt >= 2)
+            if auto_mask.sum() == 0:
+                # fallback to top by -log padj or head
+                if padj_col in enrich_df.columns:
+                    tmp = enrich_df.copy()
+                    tmp["_key"] = -np.log10(pd.to_numeric(tmp[padj_col], errors="coerce").fillna(1) + 1e-300)
+                    plot_df = tmp.sort_values("_key", ascending=False).head(top_n).drop(columns=["_key"], errors="ignore").copy()
+                else:
+                    plot_df = enrich_df.head(top_n).copy()
+            else:
+                cand = enrich_df[auto_mask].copy()
+                # sort by significance then count
+                if padj_col in cand.columns:
+                    cand = cand.sort_values(
+                        by=[padj_col, "Count" if "Count" in cand.columns else cand.columns[0]],
+                        ascending=[True, False]
+                    )
+                plot_df = cand.head(top_n).copy()
         else:
-            wanted = {str(x).strip().lower() for x in show_terms}
+            # list/tuple of explicit terms
+            wanted = {str(x).strip().lower() for x in (show_terms if not isinstance(show_terms, str) else [show_terms])}
 
             def _matches(row):
                 t = str(row.get("Term", "")).strip().lower()
@@ -1046,7 +1105,7 @@ def volcano_plot(
     color_by="active_score",
     ax=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
 ):
     """
     2D volcano plot with ggVolcano-inspired flexibility and style options.
@@ -1303,7 +1362,7 @@ def bias_diagnostic_plot(
     point_size=10,
     axes=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
 ):
     """
     Diagnostic plot showing the effect of gene length / intron number bias
@@ -1317,14 +1376,16 @@ def bias_diagnostic_plot(
     if use_style:
         set_style()
 
+    delta_col = _excess_delta_col(results_df)
+    residual_col = _excess_residual_col(results_df)
     _require_columns(
         results_df,
-        ["velocity_delta_raw", "velocity_residual", "gene_length", "intron_number"],
+        [delta_col, residual_col, "gene_length", "intron_number"],
         "bias_diagnostic_plot",
     )
 
     plot_df = results_df.dropna(
-        subset=["velocity_delta_raw", "velocity_residual", "gene_length", "intron_number"]
+        subset=[delta_col, residual_col, "gene_length", "intron_number"]
     ).copy()
     if len(plot_df) < 10:
         logger.warning("Too few genes with valid features for diagnostic plot.")
@@ -1359,7 +1420,7 @@ def bias_diagnostic_plot(
 
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
-    y_raw = plot_df["velocity_delta_raw"]
+    y_raw = plot_df[delta_col]
     ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c="#1f77b4", edgecolors="none")
     if show_regression:
         from scipy.stats import linregress
@@ -1378,17 +1439,19 @@ def bias_diagnostic_plot(
         except Exception:
             pass
     ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax1.set_ylabel("Velocity Delta (raw)", fontsize=fontsize, fontweight="bold")
+    ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize, fontweight="bold")
     ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     ax1.legend(frameon=False)
     sns.despine(ax=ax1)
 
     # Right: After correction
-    y_res = plot_df["velocity_residual"]
+    y_res = plot_df[residual_col]
     ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
     ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax2.set_ylabel("Velocity Residual (bias-corrected)", fontsize=fontsize, fontweight="bold")
+    ax2.set_ylabel(
+        "Unspliced excess residual (bias-corrected)", fontsize=fontsize, fontweight="bold"
+    )
     ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     sns.despine(ax=ax2)
 
@@ -1427,7 +1490,7 @@ def active_score_rankplot(
     ax=None,
     dpi=300,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
     **kwargs,
 ):
     """
@@ -1532,7 +1595,7 @@ def active_genes_heatmap(
     groupby=None,
     save_path=None,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
     **kwargs,
 ):
     """
@@ -1578,7 +1641,8 @@ def active_genes_heatmap(
         return fig, None
     except Exception as e:
         logger.warning("active_genes_heatmap could not render via scanpy: %s", e)
-        return None, None
+        fig, ax = _empty_placeholder_fig("active_genes_heatmap failed")
+        return fig, ax
 
 
 def set_nature_style(**kwargs):
@@ -1600,7 +1664,7 @@ def velocity_phase_portraits(
     save_path=None,
     dpi=300,
     show: bool = True,
-    use_style: bool = True,
+    use_style: bool = False,
     **kwargs,
 ):
     """

@@ -23,6 +23,7 @@ from statsmodels.stats.multitest import multipletests
 
 from ._utils import (
     _is_integer_counts_like,
+    _prepare_log_normalized_expression,
     _warn_if_low_counts_matrix,
 )
 
@@ -51,6 +52,13 @@ def _run_de_wrapper(
     # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
     counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
 ) -> pd.DataFrame:
+    """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
+
+    When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
+    This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
+
+    Internal function: type hints strengthened for mypy/pyright.
+    """
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
 
     When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
@@ -114,13 +122,30 @@ def _run_de_wrapper(
                 f"PyDESeq2 requires >=2 replicates per group. Found {n_t} target, {n_r} ref."
             )
 
-        is_count_like = _is_integer_counts_like(ad_temp.X)
+        # For pseudobulk the X is an aggregation (sum) of counts; values may arrive as float64
+        # but are integer-valued. Use a tolerant check + pre-coercion so users don't have to set
+        # strict_pydeseq2_counts=False for normal aggregated data.
+        if is_pseudobulk:
+            # Coerce a tolerant view for the "looks like counts" decision
+            try:
+                if sparse.issparse(ad_temp.X):
+                    X_check_arr = np.asarray(ad_temp.X.todense())
+                else:
+                    X_check_arr = np.asarray(ad_temp.X)
+                X_check_arr = np.clip(np.round(np.nan_to_num(X_check_arr)), 0, None)
+                is_count_like = _is_integer_counts_like(X_check_arr)
+            except Exception as _e:
+                logger.debug("Count-like check fallback: %s", _e)
+                is_count_like = _is_integer_counts_like(ad_temp.X)
+        else:
+            is_count_like = _is_integer_counts_like(ad_temp.X)
 
         if not is_count_like:
             msg = (
                 "Data passed to PyDESeq2 does not look like raw non-negative integer counts. "
                 "PyDESeq2 requires unnormalized integer counts in adata.X. "
-                "If you intentionally want to allow rounding, set strict_pydeseq2_counts=False."
+                "For pseudobulk data we automatically round to integer counts; "
+                "set strict_pydeseq2_counts=False to allow the (rounded) data anyway."
             )
             if strict_pydeseq2_counts:
                 raise ValueError(msg)
@@ -262,24 +287,8 @@ def _run_mixedlm_de(
     if sample_col not in ad_temp.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found in adata.obs")
 
-    # Prepare expression for LMM: always use log1p library-size normalized (LMM assumes approx Gaussian on log scale)
-    # Work on a temp copy to avoid mutating caller adata state for this auxiliary norm
-    ad_expr = ad_temp.copy()
-    # If very sparse or raw counts, normalize; safe for already-log too (will just re-log)
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            sc.pp.normalize_total(ad_expr, target_sum=1e4)
-            sc.pp.log1p(ad_expr)
-    except Exception:
-        # Fallback: manual log1p on X if pp fails (e.g. already transformed or edge data)
-        if sparse.issparse(ad_expr.X):
-            Xn = np.log1p(ad_expr.X.toarray())
-        else:
-            Xn = np.log1p(np.asarray(ad_expr.X))
-        ad_expr.X = Xn
-
-    expr_mat = ad_expr.X.toarray() if sparse.issparse(ad_expr.X) else np.asarray(ad_expr.X)
+    # Prepare expression for LMM: log1p-normalized, without double-transforming already-log data
+    expr_mat = _prepare_log_normalized_expression(ad_temp)
 
     obs = ad_temp.obs
     condition = obs[use_groupby].astype(str).values
@@ -491,7 +500,7 @@ def _run_memento_de(
         logger.warning(
             "Could not obtain raw counts for Memento. "
             "Memento works best with raw integer UMI counts. "
-            "Please call scat.pp.store_raw_counts(adata) early (before HVG + log), "
+            "Please call scat.store_raw_counts(adata) early (before HVG + log), "
             "or provide via the `counts` parameter, or ensure adata.raw / layers['counts'] has raw counts."
         )
         raw_counts = _to_csr(ad_temp.X)

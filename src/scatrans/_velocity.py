@@ -25,17 +25,37 @@ def _compute_velocity_delta(
     t_mask: np.ndarray,
     r_mask: np.ndarray,
     prior_weight: float = 5.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Classic (global ratio) velocity delta used by the heuristic track."""
+    gamma_method: str = "heuristic_shrink",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Classic (global ratio) velocity delta used by the heuristic track.
+
+    gamma_method:
+        - "heuristic_shrink": original global ratio + additive shrinkage using prior_weight
+        - "robust_median": use median reference ratio as base gamma for more stability
+          with small reference groups (still applies shrinkage form)
+        - "raw" or other: minimal/no shrinkage (per-gene raw ratio)
+    """
     U_t = _get_group_mean(uns_layer, t_mask)
     S_t = _get_group_mean(spl_layer, t_mask)
     U_r = _get_group_mean(uns_layer, r_mask)
     S_r = _get_group_mean(spl_layer, r_mask)
 
-    global_gamma = (np.sum(U_r) + 1e-8) / (np.sum(S_r) + 1e-8)
-    beta = prior_weight
-    alpha = global_gamma * beta
-    gamma_ref = (U_r + alpha) / (S_r + beta)
+    eps = 1e-8
+    if gamma_method == "robust_median":
+        raw_ratios = (U_r + eps) / (S_r + eps)
+        base_gamma = np.median(raw_ratios) if raw_ratios.size > 0 else (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
+        beta = prior_weight
+        alpha = base_gamma * beta
+        gamma_ref = (U_r + alpha) / (S_r + beta)
+    elif gamma_method in ("heuristic_shrink", None, ""):
+        global_gamma = (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
+        beta = prior_weight
+        alpha = global_gamma * beta
+        gamma_ref = (U_r + alpha) / (S_r + beta)
+    else:
+        # raw or fallback
+        gamma_ref = (U_r + eps) / (S_r + eps)
+
     delta_velocity = U_t - (gamma_ref * S_t)
 
     total_uns = np.asarray(uns_layer.sum(axis=0)).ravel()
@@ -49,13 +69,17 @@ def _compute_moments_velocity_delta(
     t_mask: np.ndarray,
     r_mask: np.ndarray,
     prior_weight: float = 5.0,
+    gamma_method: str = "heuristic_shrink",
     n_neighbors: int = 30,
     n_pcs: int = 30,
     use_precomputed: bool = False,
     recompute_neighbors: bool = True,
     random_state: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Advanced track: use scVelo moments (Mu/Ms) for local smoothing before delta."""
+    """Advanced track: use scVelo moments (Mu/Ms) for local smoothing before delta.
+
+    Supports gamma_method for reference gamma estimation robustness.
+    """
     try:
         import scvelo as scv
     except ImportError as e:
@@ -132,6 +156,7 @@ def _compute_moments_velocity_delta(
         t_mask,
         r_mask,
         prior_weight,
+        gamma_method=gamma_method,
     )
 
     info.update(

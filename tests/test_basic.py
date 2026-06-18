@@ -89,7 +89,8 @@ def test_heuristic_basic(adata_basic):
         use_permutation=False,
     )
     assert "active_score" in res.var.columns
-    assert "velocity_residual" in res.var.columns
+    assert "unspliced_excess_residual" in res.var.columns
+    assert "velocity_residual" in res.var.columns  # legacy alias
     assert "logFC" in res.var.columns
     assert len(all_res) == adata_basic.n_vars
     assert "scatrans" in res.uns
@@ -113,6 +114,8 @@ def test_heuristic_with_and_without_permutation(adata_basic, use_perm):
     if use_perm:
         assert "active_score_pval" in res.var.columns or len(sig) == 0
         assert "active_score_fdr" in res.var.columns or len(sig) == 0
+        assert "unspliced_excess_pval" in res.var.columns or len(sig) == 0
+        assert "unspliced_excess_fdr" in res.var.columns or len(sig) == 0
 
 
 def test_advanced_runs_or_skips(adata_basic):
@@ -189,6 +192,34 @@ def test_simplify_enrichment():
     )
     simp = scat.simplify_enrichment(df, similarity_cutoff=0.1, min_count=1)
     assert len(simp) <= len(df)
+
+
+def test_simplify_enrichment_pathway_denester():
+    gene_sets = {
+        "TERM_PARENT": ["g1", "g2", "g3", "g4", "g5"],
+        "TERM_CHILD": ["g1", "g2", "g3"],
+    }
+    df = pd.DataFrame(
+        {
+            "Term": ["TERM_PARENT", "TERM_CHILD"],
+            "Description": ["Parent pathway", "Child pathway"],
+            "p.adjust": [0.001, 0.01],
+            "pvalue": [1e-5, 1e-3],
+            "Genes": ["g1;g2;g3", "g1;g2;g3"],
+            "Count": [3, 3],
+            "TermSize": [5, 3],
+        }
+    )
+    simp = scat.simplify_enrichment(
+        df,
+        method="pathway_denester",
+        gene_sets=gene_sets,
+        min_count=1,
+        pval_threshold=0.05,
+    )
+    assert len(simp) <= len(df)
+    assert "Denester_filter" not in simp.columns or (simp["Denester_filter"] == "keep").all()
+    assert simp.attrs.get("simplify_method") == "pathway_denester"
 
 
 def test_run_enrichment_universe_and_new_output():
@@ -371,6 +402,76 @@ def test_cli_main_callable():
     assert callable(main)
 
 
+# --------------------------- copy_input / ensure_raw_counts ---------------------------
+
+
+def test_active_score_default_copy_preserves_input(adata_basic):
+    """active_score(copy_input=True) must not normalize/log1p the caller's AnnData."""
+    ad = adata_basic.copy()
+    X_before = np.asarray(ad.X, dtype=float).copy()
+    had_log1p = "log1p" in ad.uns
+    layer_keys = set(ad.layers.keys())
+
+    scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+    )
+
+    assert np.allclose(np.asarray(ad.X, dtype=float), X_before)
+    assert ("log1p" in ad.uns) == had_log1p
+    assert set(ad.layers.keys()) == layer_keys
+    assert "active_score" not in ad.var.columns
+
+
+def test_ensure_raw_counts_exported():
+    assert hasattr(scat, "ensure_raw_counts")
+    assert callable(scat.ensure_raw_counts)
+
+
+def test_ensure_raw_counts_recovers_from_raw():
+    """After log1p on .X, ensure_raw_counts should recover integer counts from adata.raw."""
+    np.random.seed(7)
+    n_cells, n_genes = 40, 60
+    X_raw = np.random.negative_binomial(4, 0.45, size=(n_cells, n_genes)).astype(float)
+    ad = sc.AnnData(X_raw)
+    ad.raw = ad.copy()
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+
+    scat.ensure_raw_counts(ad)
+    assert "counts" in ad.layers
+    assert ad.layers["counts"].shape[1] == ad.n_vars
+    assert "raw_gene_list" in ad.uns.get("scatrans", {})
+
+
+def test_mixed_model_on_log_data_no_double_transform(adata_mixed_small):
+    """Mixed model path should accept already log-normalized data without re-logging."""
+    ad = adata_mixed_small.copy()
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    X_logged = np.asarray(ad.X, dtype=float).copy()
+
+    _, _, allr = scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        use_mixed_model=True,
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert "delta_variance" in allr.columns
+    assert np.allclose(np.asarray(ad.X, dtype=float), X_logged)
+
+
 # --------------------------- error paths ---------------------------
 
 
@@ -488,6 +589,38 @@ def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
 # --------------------------- filter_active_genes helper ---------------------------
 
 
+def test_significant_requires_permutation_fdr(adata_basic):
+    """Without permutation the built-in significant list is empty; with perm it can be non-empty."""
+    _, sig_no_perm, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+    )
+    assert len(sig_no_perm) == 0
+    assert "unspliced_excess_fdr" not in allr.columns
+
+    _, sig_perm, allr_perm = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=True,
+        n_perm=30,
+        random_seed=1,
+        n_jobs=1,
+    )
+    assert "unspliced_excess_fdr" in allr_perm.columns
+    if len(sig_perm) > 0:
+        assert (sig_perm["unspliced_excess_residual"] > 0).all()
+        assert (sig_perm["unspliced_excess_fdr"] < 0.05).all()
+
+
 def test_filter_active_genes_basic(adata_mixed_small):
     """filter_active_genes should work, be robust to missing columns, and respect thresholds."""
     # Run without permutation (no fdr columns)
@@ -508,9 +641,9 @@ def test_filter_active_genes_basic(adata_mixed_small):
         allr,
         active_score_cutoff=30,
         pval_cutoff=0.1,
-        velocity_residual_cutoff=0.5,
+        unspliced_excess_residual_cutoff=0.5,
         logfc_cutoff=0.1,
-        active_score_fdr_cutoff=0.25,  # ignored because column missing
+        unspliced_excess_fdr_cutoff=0.25,  # ignored because column missing
         effective_gamma_min=0.01,
         effective_gamma_max=None,
     )
@@ -534,13 +667,12 @@ def test_filter_active_genes_basic(adata_mixed_small):
     filt2 = scat.filter_active_genes(
         allr_perm,
         active_score_cutoff=20,
-        active_score_fdr_cutoff=0.5,  # permissive
+        unspliced_excess_fdr_cutoff=0.5,  # permissive
         effective_gamma_min=0.0,
     )
-    assert "active_score_fdr" in allr_perm.columns
-    # The helper should have respected the fdr column when present
+    assert "unspliced_excess_fdr" in allr_perm.columns
     if len(filt2) > 0:
-        assert (filt2["active_score_fdr"] < 0.5).all()
+        assert (filt2["unspliced_excess_fdr"] < 0.5).all()
 
 
 def test_filter_active_genes_with_mixed(adata_mixed_small):

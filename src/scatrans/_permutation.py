@@ -50,6 +50,7 @@ def _single_permutation_task(
     pb_backend: str,
     de_method: str,
     prior_weight: float,
+    gamma_method: str,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
     bias_correction: str = "huber_length_intron",
@@ -58,8 +59,10 @@ def _single_permutation_task(
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
-) -> np.ndarray:
-    """One permutation replicate. Returns the active score vector for that shuffle.
+) -> tuple[np.ndarray, np.ndarray]:
+    """One permutation replicate.
+
+    Returns (active_score_vector, unspliced_excess_residual_vector) for that shuffle.
 
     bias_correction is forwarded to the shared bias correction routine so that
     permutation scores are computed under the same correction setting the user chose
@@ -105,7 +108,7 @@ def _single_permutation_task(
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
     delta_velocity, _, _gamma_ref = _compute_velocity_delta(
-        uns_layer, spl_layer, t_mask, r_mask, prior_weight
+        uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
     )
 
     total_us_for_filter = np.asarray(total_us_for_filter)
@@ -132,7 +135,8 @@ def _single_permutation_task(
     s3 = _soft_scale(-np.log10(perm_de_df["p_adj"].values + 1e-300), lambda_pval)
 
     total_w = weight_fc + weight_unspliced + weight_pval
-    return (weight_fc * s1 + weight_unspliced * s2 + weight_pval * s3) / total_w * 100.0
+    perm_score = (weight_fc * s1 + weight_unspliced * s2 + weight_pval * s3) / total_w * 100.0
+    return perm_score, residual
 
 
 def run_permutation_test(
@@ -160,9 +164,11 @@ def run_permutation_test(
     perm_pb_backend: str,
     perm_de_method: str,
     prior_weight: float,
+    gamma_method: str,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
     real_score: np.ndarray,
+    real_residual: np.ndarray,
     bias_correction: str = "huber_length_intron",
     # Memento forwarding for advanced consistent permutation
     use_memento_de: bool = False,
@@ -170,9 +176,13 @@ def run_permutation_test(
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
 ) -> tuple:
-    """Run the full parallel permutation and return (pvals, fdr, use_fdr_for_significance, reason_if_disabled).
+    """Run parallel permutation and return score/residual p-values and FDR arrays.
 
-    bias_correction is passed through so permutations match the user's chosen setting.
+    Returns
+    -------
+    active_score_pval, active_score_fdr,
+    unspliced_excess_pval, unspliced_excess_fdr,
+    use_fdr_for_significance, disabled_reason
     """
     logger.info("Running parallel permutation testing (%d iterations)...", n_perm)
 
@@ -201,6 +211,7 @@ def run_permutation_test(
                 perm_pb_backend,
                 perm_de_method,
                 prior_weight,
+                gamma_method,
                 de_preprocess,
                 strict_pydeseq2_counts,
                 bias_correction=bias_correction,
@@ -212,18 +223,37 @@ def run_permutation_test(
             for i in range(n_perm)
         )
 
-    perm_scores_matrix = np.vstack(perm_results)
-    exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-    pvals = (1.0 + exceed_count) / (n_perm + 1.0)
+    perm_scores_matrix = np.vstack([r[0] for r in perm_results])
+    perm_residual_matrix = np.vstack([r[1] for r in perm_results])
 
-    fdr = np.ones(adata.n_vars)
+    exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
+    active_score_pval = (1.0 + exceed_count) / (n_perm + 1.0)
+
+    # One-sided test for positive unspliced excess (matches active-gene direction filter).
+    exceed_res = np.sum(
+        perm_residual_matrix >= np.asarray(real_residual, dtype=float).reshape(1, -1), axis=0
+    )
+    unspliced_excess_pval = (1.0 + exceed_res) / (n_perm + 1.0)
+
+    active_score_fdr = np.ones(adata.n_vars)
+    unspliced_excess_fdr = np.ones(adata.n_vars)
     valid_expr = adata.var.get("valid_expr", np.ones(adata.n_vars, dtype=bool))
     if valid_expr.sum() > 0:
-        fdr[valid_expr] = multipletests(pvals[valid_expr], method="fdr_bh")[1]
+        active_score_fdr[valid_expr] = multipletests(
+            active_score_pval[valid_expr], method="fdr_bh"
+        )[1]
+        unspliced_excess_fdr[valid_expr] = multipletests(
+            unspliced_excess_pval[valid_expr], method="fdr_bh"
+        )[1]
 
     use_fdr = True
     disabled_reason = None
 
-    # The caller (active_score) still computes current_max_perm in the same way.
-    # We only return the arrays; the small-n decision stays in the orchestrator for clarity.
-    return pvals, fdr, use_fdr, disabled_reason
+    return (
+        active_score_pval,
+        active_score_fdr,
+        unspliced_excess_pval,
+        unspliced_excess_fdr,
+        use_fdr,
+        disabled_reason,
+    )

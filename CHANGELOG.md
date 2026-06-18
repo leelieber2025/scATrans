@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README and docstrings extensively updated with manuscript-export examples, `run_go`, provenance details, and `adjust_across_all` guidance.
 - Full test coverage for new paths (per-ontology attrs, within_ontology p.adjust, save+tsv+dir creation, expand with Ontology, dual-cutoff warning, etc.). All tests pass.
 
+## [0.9.0] - 2026-06-18
+
+### Added
+- **Independent permutation statistics for unspliced excess**: `unspliced_excess_pval` and `unspliced_excess_fdr` (one-sided test on bias-corrected `unspliced_excess_residual`). Computed alongside existing `active_score_pval` / `active_score_fdr` when `use_permutation=True`.
+- New parameter `unspliced_excess_fdr_cutoff` (default 0.05) for the built-in `significant` gene list and `filter_active_genes`.
+- `filter_active_genes` parameters `unspliced_excess_residual_cutoff` and `unspliced_excess_fdr_cutoff`; heuristic/pseudobulk presets updated accordingly.
+- `adata.uns["scatrans"]["significant_criteria"]` metadata documenting the built-in significance conjunction.
+
+### Changed
+- **Terminology**: primary result columns renamed from velocity to unspliced/nascent excess:
+  - `unspliced_excess_delta` (was `velocity_delta_raw`)
+  - `unspliced_excess_residual` (was `velocity_residual`)
+  - Legacy `velocity_*` columns remain in `adata.var` as deprecated aliases.
+- **Built-in `significant` gene list** now requires:
+  - `logFC > logfc_cutoff`, `p_adj < pval_cutoff`, `unspliced_excess_residual > 0`, `unspliced_excess_fdr < unspliced_excess_fdr_cutoff`
+  - `active_score` is no longer used for significance (ranking/visualization only).
+  - Without `use_permutation=True`, the built-in `significant` list is empty (logged warning).
+- Plotting functions accept primary or legacy column names; axis labels updated.
+- README rewritten for the new significance model and column names.
+
+### Deprecated
+- `active_fdr_cutoff` (no longer used for built-in significance; use `unspliced_excess_fdr_cutoff`).
+- `velocity_residual_cutoff` in `filter_active_genes` (use `unspliced_excess_residual_cutoff`).
+
 ## [Unreleased]
 
 ### Added

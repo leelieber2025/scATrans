@@ -33,11 +33,18 @@ from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
 from ._permutation import _single_permutation_task
 from ._utils import (
+    LEGACY_VELOCITY_RESIDUAL_COL,
+    UNSPLICED_EXCESS_DELTA_COL,
+    UNSPLICED_EXCESS_FDR_COL,
+    UNSPLICED_EXCESS_PVAL_COL,
+    UNSPLICED_EXCESS_RESIDUAL_COL,
     _get_exponential_scale_lambda,
     _is_integer_counts_like,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
+    _resolve_aligned_raw_counts,
     _soft_scale,
+    _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
@@ -47,7 +54,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.8.0"
+    VERSION = "0.9.0"
 
 logger = logging.getLogger(__name__)
 
@@ -75,20 +82,8 @@ def _validate_de_common_options(
     if pseudobulk_de_backend not in {"pydeseq2", "scanpy"}:
         raise ValueError("pseudobulk_de_backend must be 'pydeseq2' or 'scanpy'.")
 
-    if not isinstance(n_jobs, int):
-        raise ValueError("n_jobs must be an integer.")
-
-    if use_permutation and (not isinstance(n_perm, int) or n_perm < 1):
-        raise ValueError("n_perm must be a positive integer when use_permutation=True.")
-
-    if not isinstance(use_mixed_model, bool):
-        raise ValueError("use_mixed_model must be boolean.")
-
     if mixed_model_pval not in ("wald", "lrt"):
         raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
-
-    if not isinstance(use_memento_de, bool):
-        raise ValueError("use_memento_de must be boolean.")
 
     if not (0 < memento_capture_rate < 1):
         raise ValueError(
@@ -155,7 +150,8 @@ def active_score(
     weight_pval: float = 1.0,
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
-    active_fdr_cutoff: float = 0.05,
+    active_fdr_cutoff: float = 0.05,  # deprecated: not used for built-in significant list
+    unspliced_excess_fdr_cutoff: float = 0.05,
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
@@ -204,8 +200,14 @@ def active_score(
     bias_correction: str = "huber_length_intron",
     # Opt-in transparency for per-gene reference gamma (keeps default output clean)
     show_effective_gamma: bool = False,
+    # Gamma estimation method for reference group unspliced/spliced ratio.
+    # "heuristic_shrink": classic global-ratio + prior_weight shrinkage (default, prior_weight=5.0)
+    # "robust_median": use median ratio from reference for better stability with small reference groups
+    # "raw": minimal shrinkage (use observed ratios directly)
+    gamma_method: str = "heuristic_shrink",
     # Advanced convenience for users primarily interested in nascent RNA excess
     prioritize_velocity: bool = False,
+    copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
@@ -214,15 +216,19 @@ def active_score(
 
     The function computes:
     - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
-    - A velocity delta = U_target − (gamma_ref × S_target), where gamma_ref is a
-      shrunk U/S ratio estimated in the reference group.
+    - An unspliced (nascent) excess delta = U_target − (gamma_ref × S_target), where
+      gamma_ref is a shrunk U/S ratio estimated in the reference group.
     - (by default) A Huber regression correction of the delta on log(gene length) and
-      log(intron number); the residuals become velocity_residual.
+      log(intron number); the residuals become ``unspliced_excess_residual``.
+    - When ``use_permutation=True``, independent one-sided permutation p-values and
+      BH-FDR are computed for the bias-corrected unspliced excess residual
+      (``unspliced_excess_pval``, ``unspliced_excess_fdr``).
     - A soft-scaled, weighted combination of the three signals, scaled to 0–100.
 
     Several extensions are available as explicit options (see the README section
     "Optional advanced features"):
     - show_effective_gamma
+    - gamma_method="robust_median" (improved stability for small reference groups)
     - bias_correction="none"
     - use_mixed_model
     - use_permutation
@@ -242,6 +248,9 @@ def active_score(
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
         raise ValueError("mode must be either 'heuristic' or 'advanced'")
+
+    if gamma_method not in {"heuristic_shrink", "robust_median", "raw"}:
+        raise ValueError("gamma_method must be one of {'heuristic_shrink', 'robust_median', 'raw'}.")
 
     if not isinstance(advanced_fallback, bool):
         raise ValueError("advanced_fallback must be boolean.")
@@ -284,13 +293,18 @@ def active_score(
         min_counts=min_counts,
     )
 
-    if not isinstance(use_delta_variance_pval, bool):
-        raise ValueError("use_delta_variance_pval must be boolean.")
-    if not (0 < delta_var_pval_cutoff < 1):
-        raise ValueError("delta_var_pval_cutoff must be in (0, 1).")
-
     if not (0 < active_fdr_cutoff <= 1):
         raise ValueError("active_fdr_cutoff must be in (0, 1].")
+    if not (0 < unspliced_excess_fdr_cutoff <= 1):
+        raise ValueError("unspliced_excess_fdr_cutoff must be in (0, 1].")
+    if active_fdr_cutoff != 0.05:
+        warnings.warn(
+            "active_fdr_cutoff is deprecated and no longer used for the built-in "
+            "'significant' gene list. Use unspliced_excess_fdr_cutoff instead "
+            "(tests unspliced_excess_fdr from permutation).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     if min_total_counts < 0:
         raise ValueError("min_total_counts must be non-negative.")
@@ -305,7 +319,7 @@ def active_score(
         weight_pval = 0.5
         logger.info(
             "prioritize_velocity=True (advanced option): emphasizing the nascent RNA excess / "
-            "velocity_residual component in the active_score. "
+            "unspliced_excess_residual component in the active_score. "
             "This is intended for users whose primary interest is condition-wise differences "
             "in unspliced abundance after reference correction."
         )
@@ -329,6 +343,9 @@ def active_score(
         )
 
     logger.info("scATrans %s Analysis started. Mode: %s", VERSION, mode)
+
+    if copy_input:
+        adata_input = adata_input.copy()
 
     # ==================== SUBSET & BASIC VALIDATION ====================
     if subset_col is not None:
@@ -496,9 +513,13 @@ def active_score(
             min_counts=min_counts,
         )
         is_pseudobulk = True
-        adata.obs[groupby] = pd.Categorical(
-            adata.obs[groupby].astype(str), categories=[reference_group, target_group]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter(
+                "ignore", category=UserWarning
+            )  # pandas/ann implicit index str conversion is benign here
+            adata.obs[groupby] = pd.Categorical(
+                adata.obs[groupby].astype(str), categories=[reference_group, target_group]
+            )
 
         n_pb = adata.n_obs
         if n_pb < 5:
@@ -545,19 +566,16 @@ def active_score(
             memento_num_boot,
         )
 
-    # Auto-resolve preserved raw counts for count-based DE backends.
-    # We warn above if raw_gene_list does not align with current adata.var_names.
-    # The wrapper receives the matrix, but remains responsible for safe use/reindexing.
+    # Auto-resolve preserved raw counts for count-based DE backends (alignment-checked).
     resolved_counts = None
     needs_raw_counts = use_memento_de or (is_pseudobulk and pseudobulk_de_backend == "pydeseq2")
     if needs_raw_counts:
-        if "scatrans" in adata.uns and "raw_gene_list" in adata.uns.get("scatrans", {}):
-            if "counts" in adata.layers:
-                resolved_counts = adata.layers["counts"]
-            elif getattr(adata, "raw", None) is not None:
-                resolved_counts = adata.raw.X
-        elif "counts" in getattr(adata, "layers", {}):
-            resolved_counts = adata.layers["counts"]
+        resolved_counts = _resolve_aligned_raw_counts(adata, layer="counts", require_integer=True)
+        if resolved_counts is None and ("counts" in adata.layers or getattr(adata, "raw", None)):
+            logger.warning(
+                "Count-based DE was requested but no safely aligned raw counts were found. "
+                "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
+            )
 
     de_df = _run_de_wrapper(
         adata,
@@ -623,7 +641,7 @@ def active_score(
 
     if mode == "heuristic":
         delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
-            uns_layer, spl_layer, t_mask, r_mask, prior_weight
+            uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
         )
         velocity_source = "heuristic_global_ratio"
 
@@ -640,6 +658,7 @@ def active_score(
                     t_mask,
                     r_mask,
                     prior_weight=prior_weight,
+                    gamma_method=gamma_method,
                     n_neighbors=advanced_n_neighbors,
                     n_pcs=advanced_n_pcs,
                     use_precomputed=advanced_use_precomputed,
@@ -655,7 +674,7 @@ def active_score(
             if advanced_fallback:
                 logger.warning("Advanced mode failed: %s. Falling back to heuristic.", e)
                 delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
-                    uns_layer, spl_layer, t_mask, r_mask, prior_weight
+                    uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
                 )
                 velocity_source = "heuristic_fallback_from_advanced"
                 moments_info = {"advanced_failed": True, "failure_reason": str(e)}
@@ -682,8 +701,7 @@ def active_score(
         bias_correction=bias_correction,
     )
 
-    adata.var["velocity_delta_raw"] = delta_velocity
-    adata.var["velocity_residual"] = residual
+    _write_unspliced_excess_columns(adata.var, delta=delta_velocity, residual=residual)
     adata.var["total_us_counts"] = total_us_raw
     adata.var["total_us_counts_raw"] = total_us_raw
     adata.var["total_us_counts_velocity_layer"] = total_us_velocity
@@ -698,6 +716,21 @@ def active_score(
 
     # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
     # (bias fit info is now recorded in diagnostics and passed to the finalizer)
+    # Compute simple shrinkage strength summary (fraction of prior influence per gene on average)
+    # Approximate: higher value => stronger shrinkage toward reference prior
+    try:
+        # S_r not directly available here; use summary from effective_gamma + prior
+        # Record key params + stats on realized gamma_ref for user inspection of stability
+        gamma_stats = {
+            "median": float(np.nanmedian(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+            "mean": float(np.nanmean(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+            "min": float(np.nanmin(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+            "max": float(np.nanmax(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+            "n_finite": int(np.isfinite(gamma_ref).sum()),
+        }
+    except Exception:
+        gamma_stats = {"median": np.nan, "mean": np.nan, "min": np.nan, "max": np.nan}
+
     diagnostics: dict[str, Any] = {
         "n_cells": int(adata.n_obs),
         "n_genes_input": int(adata.n_vars),
@@ -710,6 +743,14 @@ def active_score(
             "source": velocity_source,
             "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
             "effective_gamma_exposed": bool(show_effective_gamma),
+            "gamma_method": gamma_method,
+            "prior_weight": float(prior_weight),
+            "effective_gamma_stats": gamma_stats,
+            "shrinkage_note": (
+                "per-gene shrinkage applied using prior_weight (higher = stronger pull toward reference ratio)"
+                if gamma_method in ("heuristic_shrink", "robust_median")
+                else "minimal/no shrinkage"
+            ),
         },
         "mixed_model": {
             "used": bool(use_mixed_model),
@@ -813,6 +854,7 @@ def active_score(
                     perm_pb_backend,
                     perm_de_method,
                     prior_weight,
+                    gamma_method,
                     de_preprocess,
                     strict_pydeseq2_counts,
                     bias_correction=bias_correction,
@@ -824,15 +866,25 @@ def active_score(
                 for i in range(n_perm)
             )
 
-        perm_scores_matrix = np.vstack(perm_results)
+        perm_scores_matrix = np.vstack([r[0] for r in perm_results])
+        perm_residual_matrix = np.vstack([r[1] for r in perm_results])
+
         exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-        pvals = (1.0 + exceed_count) / (n_perm + 1.0)
-        adata.var["active_score_pval"] = pvals
+        adata.var["active_score_pval"] = (1.0 + exceed_count) / (n_perm + 1.0)
+
+        exceed_res = np.sum(
+            perm_residual_matrix >= np.asarray(residual, dtype=float).reshape(1, -1), axis=0
+        )
+        adata.var[UNSPLICED_EXCESS_PVAL_COL] = (1.0 + exceed_res) / (n_perm + 1.0)
 
         adata.var["active_score_fdr"] = np.ones(adata.n_vars)
+        adata.var[UNSPLICED_EXCESS_FDR_COL] = np.ones(adata.n_vars)
         if valid_expr.sum() > 0:
             adata.var.loc[valid_expr, "active_score_fdr"] = multipletests(
-                pvals[valid_expr], method="fdr_bh"
+                adata.var["active_score_pval"].values[valid_expr], method="fdr_bh"
+            )[1]
+            adata.var.loc[valid_expr, UNSPLICED_EXCESS_FDR_COL] = multipletests(
+                adata.var[UNSPLICED_EXCESS_PVAL_COL].values[valid_expr], method="fdr_bh"
             )[1]
 
         if current_max_perm is not None and current_max_perm < 100:
@@ -860,6 +912,7 @@ def active_score(
         pval_cutoff=pval_cutoff,
         logfc_cutoff=logfc_cutoff,
         active_fdr_cutoff=active_fdr_cutoff,
+        unspliced_excess_fdr_cutoff=unspliced_excess_fdr_cutoff,
         use_fdr_for_significance=use_fdr_for_significance,
         use_delta_variance_pval=use_delta_variance_pval,
         delta_var_pval_cutoff=delta_var_pval_cutoff,
@@ -870,6 +923,7 @@ def active_score(
         perm_use_memento_de=perm_use_memento_de if use_permutation else None,
         memento_capture_rate=memento_capture_rate if use_memento_de else None,
         prior_weight=prior_weight,
+        gamma_method=gamma_method,
         min_total_counts=min_total_counts,
         random_seed=random_seed,
         use_mixed_model=use_mixed_model,
@@ -900,11 +954,11 @@ def _finalize_active_score_results(
     emit run summary, optionally plot, and return.
     This is extracted to keep active_score() focused on orchestration.
     """
-    # Build result columns. By default we keep the output focused on the basic pipeline.
+    # Build result columns. Primary unspliced-excess names; legacy velocity_* remain in adata.var.
     cols = [
         "active_score",
-        "velocity_delta_raw",
-        "velocity_residual",
+        UNSPLICED_EXCESS_DELTA_COL,
+        UNSPLICED_EXCESS_RESIDUAL_COL,
         "logFC",
         "p_val",
         "p_adj",
@@ -922,7 +976,14 @@ def _finalize_active_score_results(
     ):
         cols.append("effective_gamma")
     if use_permutation:
-        cols.extend(["active_score_pval", "active_score_fdr"])
+        cols.extend(
+            [
+                "active_score_pval",
+                "active_score_fdr",
+                UNSPLICED_EXCESS_PVAL_COL,
+                UNSPLICED_EXCESS_FDR_COL,
+            ]
+        )
     if "delta_variance" in adata.var.columns:
         cols.append("delta_variance")
     if "delta_var_pval" in adata.var.columns:
@@ -932,23 +993,38 @@ def _finalize_active_score_results(
             cols.append(mc)
     cols = [c for c in cols if c in adata.var.columns]
 
-    # (Re-apply significant mask for the final tables — caller may have passed pre-filtered or not)
-    # We re-compute here for cleanliness; in practice caller usually passes the already-filtered significant.
-    mask = (
-        (adata.var["p_adj"] < extra_metadata.get("pval_cutoff", 0.05))
-        & (adata.var["logFC"] > extra_metadata.get("logfc_cutoff", 0.5))
-        & (adata.var["velocity_residual"] > 0)
-        & (adata.var["valid_expr"])
-        & (adata.var["active_score"] > 0)
+    # Built-in significant list: DE significance + positive unspliced excess + permutation FDR.
+    # active_score is for ranking/visualization only (heuristic, not a p-value).
+    residual_col = (
+        UNSPLICED_EXCESS_RESIDUAL_COL
+        if UNSPLICED_EXCESS_RESIDUAL_COL in adata.var.columns
+        else LEGACY_VELOCITY_RESIDUAL_COL
     )
-    if (
-        use_permutation
-        and extra_metadata.get("use_fdr_for_significance", True)
-        and "active_score_fdr" in adata.var.columns
-    ):
-        mask = mask & (
-            adata.var["active_score_fdr"] < extra_metadata.get("active_fdr_cutoff", 0.05)
+    ue_fdr_cutoff = extra_metadata.get("unspliced_excess_fdr_cutoff", 0.05)
+
+    if use_permutation and UNSPLICED_EXCESS_FDR_COL in adata.var.columns:
+        mask = (
+            (adata.var["p_adj"] < extra_metadata.get("pval_cutoff", 0.05))
+            & (adata.var["logFC"] > extra_metadata.get("logfc_cutoff", 0.5))
+            & (adata.var[residual_col] > 0)
+            & (adata.var["valid_expr"])
         )
+        if extra_metadata.get("use_fdr_for_significance", True):
+            mask = mask & (adata.var[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff)
+        else:
+            logger.warning(
+                "Permutation space is very small; unspliced_excess_fdr was not applied "
+                "to the built-in significant list."
+            )
+    else:
+        mask = pd.Series(False, index=adata.var.index)
+        if not use_permutation:
+            logger.warning(
+                "Built-in 'significant' list requires use_permutation=True "
+                "(unspliced_excess_fdr_cutoff=%.3f). Returning empty significant; "
+                "inspect all_results and use filter_active_genes for custom thresholds.",
+                ue_fdr_cutoff,
+            )
 
     if (
         "use_delta_variance_pval" in extra_metadata
@@ -995,7 +1071,19 @@ def _finalize_active_score_results(
         "pval_cutoff": extra_metadata.get("pval_cutoff"),
         "logfc_cutoff": extra_metadata.get("logfc_cutoff"),
         "active_fdr_cutoff": extra_metadata.get("active_fdr_cutoff"),
+        "unspliced_excess_fdr_cutoff": extra_metadata.get("unspliced_excess_fdr_cutoff"),
         "use_fdr_for_significance": extra_metadata.get("use_fdr_for_significance"),
+        "significant_criteria": {
+            "logFC": f"> {extra_metadata.get('logfc_cutoff')}",
+            "p_adj": f"< {extra_metadata.get('pval_cutoff')}",
+            "unspliced_excess_residual": "> 0",
+            "unspliced_excess_fdr": (
+                f"< {ue_fdr_cutoff} (requires use_permutation=True)"
+                if use_permutation
+                else "not evaluated (use_permutation=False)"
+            ),
+            "active_score": "ranking only (not used for significance)",
+        },
         "use_delta_variance_pval": extra_metadata.get("use_delta_variance_pval"),
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
         "de_method": extra_metadata.get("de_method"),
@@ -1005,6 +1093,7 @@ def _finalize_active_score_results(
         "perm_use_memento_de": extra_metadata.get("perm_use_memento_de"),
         "memento_capture_rate": extra_metadata.get("memento_capture_rate"),
         "prior_weight": extra_metadata.get("prior_weight"),
+        "gamma_method": extra_metadata.get("gamma_method", "heuristic_shrink"),
         "min_total_counts": extra_metadata.get("min_total_counts"),
         "random_seed": extra_metadata.get("random_seed"),
         "use_mixed_model": extra_metadata.get("use_mixed_model"),
@@ -1019,8 +1108,9 @@ def _finalize_active_score_results(
 
     if use_permutation:
         note = (
-            "For efficiency, velocity layers and effective_gamma are fixed from the original data. "
-            "Group labels are shuffled to recompute the composite active_score."
+            "For efficiency, unspliced/spliced layers and reference gamma are fixed from the "
+            "original data. Group labels are shuffled to recompute DE, unspliced excess residual, "
+            "composite active_score, and unspliced_excess permutation p-values."
         )
         if extra_metadata.get("use_memento_de") and not extra_metadata.get("perm_use_memento_de"):
             note += (
@@ -1117,6 +1207,7 @@ def differential_expression(
     gene_type_filter: str | None = None,
     # Allow providing raw counts separately when adata.X is already HVG+log (very common)
     counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+    copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame]:
     """
     Standalone differential expression (DE) using the same flexible backends
@@ -1215,29 +1306,22 @@ def differential_expression(
         min_counts=min_counts,
     )
 
-    # Auto-resolve preserved raw counts from scatrans metadata if user called store_raw_counts early
-    # This makes Memento / PyDESeq2 paths more convenient by auto-supplying preserved
-    # raw counts (when store_raw_counts was called) without the user having to pass
-    # counts= explicitly. Alignment warnings are emitted earlier if the stored gene
-    # list no longer matches the current adata.
+    if copy_input:
+        adata_input = adata_input.copy()
+
+    # Auto-resolve aligned raw counts for count-based backends (Memento / PyDESeq2).
     if counts is None and (
         use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")
     ):
-        if "scatrans" in adata_input.uns and "raw_gene_list" in adata_input.uns.get("scatrans", {}):
-            # Prefer the layer if present (it has the actual count matrix for those genes)
-            if "counts" in adata_input.layers:
-                counts = adata_input.layers["counts"]
-            elif getattr(adata_input, "raw", None) is not None:
-                counts = adata_input.raw.X
-            # else the gene list is available but matrix may have been lost; wrapper will warn
-        elif "counts" in getattr(adata_input, "layers", {}):
-            counts = adata_input.layers["counts"]
-
-    # Note on raw counts: users should call scat.store_raw_counts(adata) early.
-    # The DE backends will use layers[layer] or adata.raw when available.
+        counts = _resolve_aligned_raw_counts(adata_input, layer="counts", require_integer=True)
+        if counts is None and ("counts" in adata_input.layers or getattr(adata_input, "raw", None)):
+            logger.warning(
+                "Count-based DE was requested but no safely aligned raw counts were found. "
+                "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
+            )
 
     # --- prepare data (pseudobulk if requested) ---
-    adata = adata_input.copy()
+    adata = adata_input
 
     if use_pseudobulk:
         logger.info("Performing pseudobulk aggregation for DE...")
@@ -1250,9 +1334,11 @@ def differential_expression(
             min_cells=min_cells,
             min_counts=min_counts,
         )
-        adata.obs[groupby] = pd.Categorical(
-            adata.obs[groupby].astype(str), categories=[reference_group, target_group]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            adata.obs[groupby] = pd.Categorical(
+                adata.obs[groupby].astype(str), categories=[reference_group, target_group]
+            )
 
     # DE preprocess
     if use_memento_de and de_preprocess != "none":
@@ -1391,6 +1477,99 @@ def differential_expression(
     return adata, results
 
 
+def _record_raw_counts_metadata(
+    adata: Any, *, save_raw: bool = False, overwrite: bool = False
+) -> None:
+    """Write scatrans metadata, optional adata.raw, and raw_* velocity layers."""
+    if "scatrans" not in adata.uns:
+        adata.uns["scatrans"] = {}
+    prev_list = adata.uns["scatrans"].get("raw_gene_list")
+    n_genes = int(adata.n_vars)
+    if prev_list is not None and len(prev_list) != n_genes:
+        logger.warning(
+            "Updating raw_gene_list (%d → %d genes). If you subsetted after an earlier "
+            "store_raw_counts(), enrichment universe will reflect the current gene set only. "
+            "For the full pre-HVG universe, keep a separate full-gene AnnData or use save_raw=True "
+            "on the original object before subsetting.",
+            len(prev_list),
+            n_genes,
+        )
+    adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
+    adata.uns["scatrans"]["store_raw_counts_n_genes"] = n_genes
+    logger.info(
+        "Saved the current gene list as the measured universe for enrichment "
+        "(in adata.uns['scatrans']['raw_gene_list'])."
+    )
+
+    if save_raw:
+        if getattr(adata, "raw", None) is not None and not overwrite:
+            logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
+        else:
+            adata.raw = adata.copy()
+            logger.info("Set adata.raw to preserve full data.")
+
+    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
+        if vel_name in adata.layers:
+            raw_vel_name = f"raw_{vel_name}"
+            if raw_vel_name not in adata.layers or overwrite:
+                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
+                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
+
+
+def ensure_raw_counts(
+    adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
+) -> None:
+    """
+    Ensure raw integer counts are available in ``adata.layers[layer]``.
+
+    Convenience wrapper around :func:`store_raw_counts` that also tries to recover
+    counts from ``adata.raw`` when ``adata.X`` is already normalized or log-transformed
+    (common after HVG + ``sc.pp.log1p``).
+
+    Resolution order:
+    1. Existing ``layers[layer]`` if it already looks like integer counts
+    2. Current ``adata.X`` if integer counts-like
+    3. ``adata.raw.X`` when gene names/order match ``adata.var_names``
+
+    Always updates ``adata.uns['scatrans']['raw_gene_list']`` and velocity ``raw_*`` layers
+    via the same metadata path as :func:`store_raw_counts`.
+    """
+    if (
+        layer in adata.layers
+        and not overwrite
+        and _is_integer_counts_like(adata.layers[layer])
+        and adata.layers[layer].shape[1] == adata.n_vars
+    ):
+        _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+        logger.debug("Layer '%s' already holds aligned integer counts.", layer)
+        return
+
+    if _is_integer_counts_like(adata.X):
+        store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
+        return
+
+    raw = getattr(adata, "raw", None)
+    if raw is not None and _is_integer_counts_like(raw.X) and raw.shape[1] == adata.n_vars:
+        if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
+            adata.layers[layer] = raw.X.copy()
+            logger.info(
+                "ensure_raw_counts: recovered raw counts from adata.raw into layers['%s'].",
+                layer,
+            )
+            _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+            return
+        logger.warning(
+            "adata.raw exists but gene names/order do not match current adata.var_names. "
+            "Cannot recover counts automatically."
+        )
+
+    logger.warning(
+        "ensure_raw_counts: adata.X does not look like raw counts and adata.raw could not be used. "
+        "Falling back to store_raw_counts (may warn again)."
+    )
+    store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
+
+
 def store_raw_counts(
     adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
 ) -> None:
@@ -1436,40 +1615,22 @@ def store_raw_counts(
                 "Current adata.X does not look like raw integer counts. "
                 "store_raw_counts should be called early (after basic QC, before normalize/log1p/HVG)."
             )
-        adata.layers[layer] = adata.X.copy()
+        mat = adata.X.copy()
+        if mat.shape[1] != adata.n_vars:
+            raise ValueError(
+                f"Cannot store raw counts: matrix has {mat.shape[1]} columns "
+                f"but adata has {adata.n_vars} genes."
+            )
+        adata.layers[layer] = mat
         logger.info(f"Saved raw counts to adata.layers['{layer}'].")
 
-    # Save the gene list at this moment as the measured universe for later enrichment
-    # and count-based analyses. Unlike layers, this metadata list is kept in .uns and
-    # therefore is not automatically subsetted when adata is later subsetted to HVGs.
-    # Downstream code must still verify that any stored count matrix is aligned with
-    # the current adata.var_names before using it.
-    if "scatrans" not in adata.uns:
-        adata.uns["scatrans"] = {}
-    adata.uns["scatrans"]["raw_gene_list"] = list(adata.var_names)
-    logger.info(
-        "Saved the current gene list as the measured universe for enrichment (in adata.uns['scatrans']['raw_gene_list'])."
-    )
+    if layer in adata.layers and adata.layers[layer].shape[1] != adata.n_vars:
+        raise ValueError(
+            f"Layer '{layer}' has {adata.layers[layer].shape[1]} columns but adata has "
+            f"{adata.n_vars} genes. Pass overwrite=True after fixing alignment."
+        )
 
-    if save_raw:
-        if getattr(adata, "raw", None) is not None and not overwrite:
-            logger.debug("adata.raw already exists; skipping (pass overwrite=True to replace).")
-        else:
-            adata.raw = adata.copy()
-            logger.info("Set adata.raw to preserve full data.")
-
-    # Preserve original velocity layers (spliced/unspliced or mature/nascent)
-    # under "raw_*" names for the current gene set at the time of the call.
-    # Note: these are normal AnnData layers; if the adata is later gene-subsetted
-    # (e.g. to HVGs), the layers will be subsetted as well. They do not retain
-    # the original full-gene matrices after subsetting. Use save_raw=True or
-    # keep a separate full-gene object if full-gene recovery is required.
-    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
-        if vel_name in adata.layers:
-            raw_vel_name = f"raw_{vel_name}"
-            if raw_vel_name not in adata.layers or overwrite:
-                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
-                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
+    _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
 
 
 def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Any | None:
@@ -1549,16 +1710,20 @@ def filter_active_genes(
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
     velocity_residual_cutoff: Any = _NOT_PROVIDED,
+    unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
     active_score_fdr_cutoff: Any = _NOT_PROVIDED,
+    unspliced_excess_fdr_cutoff: Any = _NOT_PROVIDED,
     effective_gamma_min: Any = _NOT_PROVIDED,
     effective_gamma_max: Any = _NOT_PROVIDED,
     delta_variance_min: Any = _NOT_PROVIDED,
-) -> pd.DataFrame:
+    return_mask: bool = False,
+    inplace: bool = False,
+) -> pd.DataFrame | pd.Series:
     """Apply custom post-filtering to a results DataFrame (from `active_score` or `differential_expression`).
 
     This helper works for both:
-    - Full `active_score` output (has `active_score` + velocity_residual).
+    - Full `active_score` output (has `active_score` + unspliced_excess_residual).
     - Pure DE results from `differential_expression` (only logFC / p_adj + optional memento columns).
 
     It standardizes the common workflow:
@@ -1569,16 +1734,16 @@ def filter_active_genes(
     for different analysis modes:
 
     - preset="heuristic": stricter defaults suitable for typical single-cell data with default weights
-      (active_score >= 55, velocity_residual > 1.0, etc.).
+      (active_score >= 55, unspliced_excess_residual > 1.0, etc.).
     - preset="pseudobulk": more lenient defaults that account for the much smaller
-      magnitude of velocity_residual and active_score after sample-level aggregation
-      (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
+      magnitude of unspliced_excess_residual and active_score after sample-level aggregation
+      (active_score >= 5, unspliced_excess_residual > 0.05, logFC > 0.2, etc.).
     - preset=None (or "permissive"/"none"): apply only explicitly provided cutoffs; this is the most
       permissive / backward-compatible mode and returns nearly the full table (subject to any
       user-supplied thresholds).
 
     Presets are oriented toward target-group "activated" / upregulated signals (positive
-    logFC + positive velocity_residual). For pure two-sided DE gene selection from
+    logFC + positive unspliced_excess_residual). For pure two-sided DE gene selection from
     differential_expression() results, use preset=None and supply your own logfc_cutoff
     (e.g. a negative value or use abs() filtering yourself after the call).
 
@@ -1589,6 +1754,13 @@ def filter_active_genes(
 
     Only filters corresponding to columns present in the DataFrame are applied.
     This is safe whether or not `use_permutation=True` or `use_mixed_model=True` was used.
+
+    New options for power users:
+    - return_mask=True: return the boolean mask (pd.Series) instead of the filtered DataFrame.
+      Useful to combine with other logic or apply yourself.
+    - inplace=True: mutate the input `results` DataFrame in-place (keeps only passing rows
+      and re-sorts). Returns the (mutated) DataFrame. Use with caution; the input reference
+      will be modified. Ignored when return_mask=True.
 
     Parameters
     ----------
@@ -1606,11 +1778,16 @@ def filter_active_genes(
         of the internal significant mask in active_score() and common user expectations
         (FDR control when available).
     velocity_residual_cutoff : float
-        Minimum bias-corrected velocity residual.
+        Deprecated alias for ``unspliced_excess_residual_cutoff``.
+    unspliced_excess_residual_cutoff : float
+        Minimum bias-corrected unspliced (nascent) excess residual.
     logfc_cutoff : float
         Minimum log fold change.
     active_score_fdr_cutoff : float or None
-        If the column exists (use_permutation=True), max permutation FDR on active_score.
+        If the column exists, max permutation FDR on the composite active_score (ranking aid).
+    unspliced_excess_fdr_cutoff : float or None
+        If the column exists (use_permutation=True), max permutation FDR on
+        ``unspliced_excess_residual`` (recommended for final gene lists).
     effective_gamma_min : float
         Minimum reference-group effective gamma. See README section on effective_gamma.
     effective_gamma_max : float or None
@@ -1635,8 +1812,10 @@ def filter_active_genes(
                 "active_score_cutoff": 55.0,
                 "pval_cutoff": 0.05,
                 "velocity_residual_cutoff": 1.0,
+                "unspliced_excess_residual_cutoff": 1.0,
                 "logfc_cutoff": 0.35,
                 "active_score_fdr_cutoff": 0.25,
+                "unspliced_excess_fdr_cutoff": 0.05,
                 "effective_gamma_min": 0.05,
                 "effective_gamma_max": 1.0,
                 "delta_variance_min": None,
@@ -1646,8 +1825,10 @@ def filter_active_genes(
                 "active_score_cutoff": 5.0,
                 "pval_cutoff": 0.05,
                 "velocity_residual_cutoff": 0.05,
+                "unspliced_excess_residual_cutoff": 0.05,
                 "logfc_cutoff": 0.2,
                 "active_score_fdr_cutoff": 0.25,
+                "unspliced_excess_fdr_cutoff": 0.05,
                 "effective_gamma_min": 0.05,
                 "effective_gamma_max": 1.0,
                 "delta_variance_min": None,
@@ -1657,8 +1838,10 @@ def filter_active_genes(
                 "active_score_cutoff": 0.0,
                 "pval_cutoff": 1.0,
                 "velocity_residual_cutoff": float("-inf"),
+                "unspliced_excess_residual_cutoff": float("-inf"),
                 "logfc_cutoff": float("-inf"),
                 "active_score_fdr_cutoff": 1.0,
+                "unspliced_excess_fdr_cutoff": 1.0,
                 "effective_gamma_min": float("-inf"),
                 "effective_gamma_max": None,
                 "delta_variance_min": None,
@@ -1679,11 +1862,29 @@ def filter_active_genes(
 
     active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
     pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
+    if (
+        velocity_residual_cutoff is not _NOT_PROVIDED
+        and unspliced_excess_residual_cutoff is _NOT_PROVIDED
+    ):
+        unspliced_excess_residual_cutoff = velocity_residual_cutoff
+        warnings.warn(
+            "velocity_residual_cutoff is deprecated; use unspliced_excess_residual_cutoff.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     velocity_residual_cutoff = _resolve(
         "velocity_residual_cutoff", velocity_residual_cutoff, float("-inf")
     )
+    unspliced_excess_residual_cutoff = _resolve(
+        "unspliced_excess_residual_cutoff",
+        unspliced_excess_residual_cutoff,
+        velocity_residual_cutoff,
+    )
     logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
     active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
+    unspliced_excess_fdr_cutoff = _resolve(
+        "unspliced_excess_fdr_cutoff", unspliced_excess_fdr_cutoff, 1.0
+    )
     effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
     effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
     delta_variance_min = _resolve("delta_variance_min", delta_variance_min, None)
@@ -1700,14 +1901,23 @@ def filter_active_genes(
         mask &= df["p_adj"] < pval_cutoff
     elif "p_val" in df.columns:
         mask &= df["p_val"] < pval_cutoff
-    if "velocity_residual" in df.columns:
-        mask &= df["velocity_residual"] > velocity_residual_cutoff
+    residual_col = (
+        UNSPLICED_EXCESS_RESIDUAL_COL
+        if UNSPLICED_EXCESS_RESIDUAL_COL in df.columns
+        else LEGACY_VELOCITY_RESIDUAL_COL
+    )
+    if residual_col in df.columns:
+        mask &= df[residual_col] > unspliced_excess_residual_cutoff
     if "logFC" in df.columns:
         mask &= df["logFC"] > logfc_cutoff
 
-    # Permutation FDR
+    # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
         mask &= df["active_score_fdr"] < active_score_fdr_cutoff
+
+    # Permutation FDR on unspliced excess residual (recommended significance filter)
+    if unspliced_excess_fdr_cutoff is not None and UNSPLICED_EXCESS_FDR_COL in df.columns:
+        mask &= df[UNSPLICED_EXCESS_FDR_COL] < unspliced_excess_fdr_cutoff
 
     # effective_gamma
     if "effective_gamma" in df.columns:
@@ -1736,6 +1946,27 @@ def filter_active_genes(
         filtered = filtered.sort_values(sort_cols, ascending=ascending)
     else:
         filtered = filtered.sort_values(filtered.columns[0])
+
+    if return_mask:
+        return mask
+
+    if inplace:
+        # Mutate caller's DataFrame: drop non-matching rows, keep sorted order
+        to_drop = results.index.difference(filtered.index)
+        if len(to_drop) > 0:
+            results.drop(index=to_drop, inplace=True)
+        # Re-apply the sort in place on the surviving rows
+        if "active_score" in results.columns:
+            results.sort_values("active_score", ascending=False, inplace=True)
+        elif "p_adj" in results.columns:
+            sort_cols = ["p_adj"]
+            ascending = [True]
+            if "logFC" in results.columns:
+                sort_cols.append("logFC")
+                ascending.append(False)
+            results.sort_values(sort_cols, ascending=ascending, inplace=True)
+        return results
+
     return filtered
 
 
