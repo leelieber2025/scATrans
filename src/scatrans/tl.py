@@ -33,7 +33,6 @@ from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
 from ._permutation import _single_permutation_task
 from ._utils import (
-    LEGACY_VELOCITY_DELTA_COL,
     LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
     UNSPLICED_EXCESS_FDR_COL,
