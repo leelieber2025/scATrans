@@ -485,7 +485,9 @@ def active_score(
         )
         is_pseudobulk = True
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=UserWarning)  # pandas/ann implicit index str conversion is benign here
+            warnings.simplefilter(
+                "ignore", category=UserWarning
+            )  # pandas/ann implicit index str conversion is benign here
             adata.obs[groupby] = pd.Categorical(
                 adata.obs[groupby].astype(str), categories=[reference_group, target_group]
             )

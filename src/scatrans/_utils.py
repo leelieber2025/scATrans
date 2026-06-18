@@ -324,7 +324,9 @@ def _pseudobulk_with_layers(
         raise ValueError("No samples remained after pseudobulk filtering.")
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=UserWarning)  # pandas "Transforming to str index" during AnnData/obs construction is benign
+        warnings.simplefilter(
+            "ignore", category=UserWarning
+        )  # pandas "Transforming to str index" during AnnData/obs construction is benign
         adata_pb = ad.AnnData(
             X=sparse.vstack(X_rows).tocsr(),
             obs=pd.DataFrame(obs_rows),
