@@ -94,9 +94,13 @@ def _resolve_aligned_raw_counts(
     if layer in adata.layers:
         candidates.append((f"layers['{layer}']", adata.layers[layer]))
     raw = getattr(adata, "raw", None)
-    if raw is not None and raw.shape[1] == adata.n_vars:
-        if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
-            candidates.append(("adata.raw", raw.X))
+    if (
+        raw is not None
+        and raw.shape[1] == adata.n_vars
+        and hasattr(raw, "var_names")
+        and np.array_equal(raw.var_names, adata.var_names)
+    ):
+        candidates.append(("adata.raw", raw.X))
 
     for source_name, mat in candidates:
         n_cols = mat.shape[1] if hasattr(mat, "shape") else 0
