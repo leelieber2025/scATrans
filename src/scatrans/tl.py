@@ -250,7 +250,9 @@ def active_score(
         raise ValueError("mode must be either 'heuristic' or 'advanced'")
 
     if gamma_method not in {"heuristic_shrink", "robust_median", "raw"}:
-        raise ValueError("gamma_method must be one of {'heuristic_shrink', 'robust_median', 'raw'}.")
+        raise ValueError(
+            "gamma_method must be one of {'heuristic_shrink', 'robust_median', 'raw'}."
+        )
 
     if not isinstance(advanced_fallback, bool):
         raise ValueError("advanced_fallback must be boolean.")

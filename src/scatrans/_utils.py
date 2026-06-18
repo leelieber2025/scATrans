@@ -488,7 +488,9 @@ def _fit_huber_bias_correction(
                 bias_info["intercept"] = float(model.intercept_)
         except Exception as e:
             logger.warning("Bias correction failed. Falling back to median. Reason: %s", e)
-            bias_info["fallback_reason"] = f"huber_regression_failed: {type(e).__name__}: {str(e)[:200]}"
+            bias_info["fallback_reason"] = (
+                f"huber_regression_failed: {type(e).__name__}: {str(e)[:200]}"
+            )
 
     if not regression_succeeded and valid_expr.sum() > 0:
         residual[valid_expr] = delta_velocity[valid_expr] - np.nanmedian(delta_velocity[valid_expr])

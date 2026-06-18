@@ -43,7 +43,11 @@ def _compute_velocity_delta(
     eps = 1e-8
     if gamma_method == "robust_median":
         raw_ratios = (U_r + eps) / (S_r + eps)
-        base_gamma = np.median(raw_ratios) if raw_ratios.size > 0 else (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
+        base_gamma = (
+            np.median(raw_ratios)
+            if raw_ratios.size > 0
+            else (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
+        )
         beta = prior_weight
         alpha = base_gamma * beta
         gamma_ref = (U_r + alpha) / (S_r + beta)

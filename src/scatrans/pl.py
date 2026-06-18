@@ -703,14 +703,25 @@ def enrich_dotplot(
             except Exception:
                 padj = pd.Series(1.0, index=enrich_df.index)
             count_col = "Count" if "Count" in enrich_df.columns else None
-            cnt = pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0) if count_col else pd.Series(0, index=enrich_df.index)
+            cnt = (
+                pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0)
+                if count_col
+                else pd.Series(0, index=enrich_df.index)
+            )
             auto_mask = (padj < 0.05) & (cnt >= 2)
             if auto_mask.sum() == 0:
                 # fallback to top by -log padj or head
                 if padj_col in enrich_df.columns:
                     tmp = enrich_df.copy()
-                    tmp["_key"] = -np.log10(pd.to_numeric(tmp[padj_col], errors="coerce").fillna(1) + 1e-300)
-                    plot_df = tmp.sort_values("_key", ascending=False).head(top_n).drop(columns=["_key"], errors="ignore").copy()
+                    tmp["_key"] = -np.log10(
+                        pd.to_numeric(tmp[padj_col], errors="coerce").fillna(1) + 1e-300
+                    )
+                    plot_df = (
+                        tmp.sort_values("_key", ascending=False)
+                        .head(top_n)
+                        .drop(columns=["_key"], errors="ignore")
+                        .copy()
+                    )
                 else:
                     plot_df = enrich_df.head(top_n).copy()
             else:
@@ -719,12 +730,15 @@ def enrich_dotplot(
                 if padj_col in cand.columns:
                     cand = cand.sort_values(
                         by=[padj_col, "Count" if "Count" in cand.columns else cand.columns[0]],
-                        ascending=[True, False]
+                        ascending=[True, False],
                     )
                 plot_df = cand.head(top_n).copy()
         else:
             # list/tuple of explicit terms
-            wanted = {str(x).strip().lower() for x in (show_terms if not isinstance(show_terms, str) else [show_terms])}
+            wanted = {
+                str(x).strip().lower()
+                for x in (show_terms if not isinstance(show_terms, str) else [show_terms])
+            }
 
             def _matches(row):
                 t = str(row.get("Term", "")).strip().lower()
