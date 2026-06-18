@@ -13,7 +13,15 @@ Other internal modules are not part of the stable public surface.
 """
 
 from . import pl, qc
-from .enrich import list_bundled_gene_sets, run_enrichment, run_kegg, simplify_enrichment
+from .enrich import (
+    expand_enrichment_genes,
+    list_bundled_gene_sets,
+    run_enrichment,
+    run_go,
+    run_kegg,
+    save_enrichment_report,
+    simplify_enrichment,
+)
 from .generate_gene_features import main as generate_gene_features_main
 from .pp_bias import add_gene_features, list_available_gene_features
 from .tl import (
@@ -36,7 +44,10 @@ __all__ = [
     "list_available_gene_features",
     "run_enrichment",
     "run_kegg",
+    "run_go",
     "simplify_enrichment",
+    "save_enrichment_report",
+    "expand_enrichment_genes",
     "list_bundled_gene_sets",
     "pl",
     "qc",
@@ -48,7 +59,7 @@ __all__ = [
 try:
     from ._version import version as __version__
 except ImportError:
-    __version__ = "0.7.0.dev0"
+    __version__ = "0.8.0"
 
 # Optional: prevent some internal modules from appearing too prominently
 # in casual inspection while still allowing advanced users to do

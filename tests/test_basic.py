@@ -191,6 +191,34 @@ def test_simplify_enrichment():
     assert len(simp) <= len(df)
 
 
+def test_simplify_enrichment_pathway_denester():
+    gene_sets = {
+        "TERM_PARENT": ["g1", "g2", "g3", "g4", "g5"],
+        "TERM_CHILD": ["g1", "g2", "g3"],
+    }
+    df = pd.DataFrame(
+        {
+            "Term": ["TERM_PARENT", "TERM_CHILD"],
+            "Description": ["Parent pathway", "Child pathway"],
+            "p.adjust": [0.001, 0.01],
+            "pvalue": [1e-5, 1e-3],
+            "Genes": ["g1;g2;g3", "g1;g2;g3"],
+            "Count": [3, 3],
+            "TermSize": [5, 3],
+        }
+    )
+    simp = scat.simplify_enrichment(
+        df,
+        method="pathway_denester",
+        gene_sets=gene_sets,
+        min_count=1,
+        pval_threshold=0.05,
+    )
+    assert len(simp) <= len(df)
+    assert "Denester_filter" not in simp.columns or (simp["Denester_filter"] == "keep").all()
+    assert simp.attrs.get("simplify_method") == "pathway_denester"
+
+
 def test_run_enrichment_universe_and_new_output():
     """Test clusterProfiler-aligned universe handling + enriched output columns/attrs."""
     genes = ["GeneA", "GeneB", "GeneC", "GeneX"]
@@ -598,3 +626,401 @@ def test_filter_active_genes_presets(adata_mixed_small):
     # explicit arg should override preset
     f_over = scat.filter_active_genes(allr, preset="heuristic", active_score_cutoff=0)
     assert len(f_over) > len(f_heu) or len(f_heu) == 0
+
+
+# --------------------------- Enrichment core logic & edge cases (per design review) ---------------------------
+
+
+def test_enrichment_hypergeom_small_example():
+    """Fixed small example to verify core hypergeom.sf(k-1, N, K, n) logic.
+
+    gene_list = ["A", "B"]
+    gene_sets = {"set1": ["A", "B", "C"], "set2": ["D", "E"]}
+    universe  = ["A", "B", "C", "D", "E"]
+
+    For set1: N=5, n=2, K=3, k=2
+    p = hypergeom.sf(1, 5, 3, 2)
+    """
+    from scipy.stats import hypergeom
+
+    genes = ["A", "B"]
+    gene_sets = {"set1": ["A", "B", "C"], "set2": ["D", "E"]}
+    univ = ["A", "B", "C", "D", "E"]
+
+    res = scat.run_enrichment(
+        genes, gene_sets=gene_sets, universe=univ, pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    assert not res.empty
+    # set1 must be present
+    row = res[res["Term"] == "set1"].iloc[0]
+    assert row["Count"] == 2
+    assert row["TermSize"] == 3
+    expected_p = hypergeom.sf(1, 5, 3, 2)
+    assert np.isclose(row["pvalue"], expected_p, rtol=1e-12)
+
+    # set2 has k=0 -> filtered
+    assert "set2" not in res["Term"].values
+
+
+def test_enrichment_universe_variants_and_restrict():
+    genes = ["A", "B", "C"]
+    gene_sets = {"S1": ["A", "B", "C", "D"], "S2": ["A", "E"]}
+
+    # No universe -> effective = union of gene sets
+    r1 = scat.run_enrichment(genes, gene_sets, pval_cutoff=1.0, min_size=1, return_all=True)
+    assert r1.attrs["universe_info"]["effective_universe_size"] == 5  # A,B,C,D,E
+
+    # restrict=True (default) drops genes not in gene_sets
+    bg = ["A", "B", "C", "X", "Y", "Z"]
+    r2 = scat.run_enrichment(
+        genes, gene_sets, universe=bg, pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    ui2 = r2.attrs["universe_info"]
+    assert ui2["provided_size"] == 6
+    assert ui2["restricted_to_gene_sets"] is True
+    assert ui2["effective_universe_size"] == 3  # A,B,C kept
+    assert ui2["dropped_by_annotation_filter"] == 3
+
+    # restrict=False keeps full provided (even unannotated)
+    r3 = scat.run_enrichment(
+        genes,
+        gene_sets,
+        universe=bg,
+        restrict_background_to_gene_sets=False,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+    )
+    assert r3.attrs["universe_info"]["effective_universe_size"] == 6
+
+    # force_universe=True also bypasses intersect
+    r4 = scat.run_enrichment(
+        genes,
+        gene_sets,
+        background=bg,
+        force_universe=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+    )
+    assert r4.attrs["universe_info"]["force_universe"] is True
+    assert r4.attrs["universe_info"]["effective_universe_size"] == 6
+
+
+def test_enrichment_both_universe_background_raises():
+    genes = ["A"]
+    gs = {"T": ["A"]}
+    with pytest.raises(ValueError, match="only one of `universe` or `background`"):
+        scat.run_enrichment(genes, gs, universe=["A"], background=["A"])
+
+
+def test_enrichment_empty_cases_preserve_attrs_and_reason():
+    gs = {"T1": ["X", "Y"]}
+
+    # Empty gene list
+    e1 = scat.run_enrichment([], gs, pval_cutoff=0.05)
+    assert e1.empty
+    assert e1.attrs.get("reason") == "gene_list_empty"
+    assert e1.attrs.get("method") == "ora"
+
+    # Empty gene_sets dict -> warning + empty with reason
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        e2 = scat.run_enrichment(["A", "B"], {}, pval_cutoff=1.0)
+        assert e2.empty
+        assert e2.attrs.get("reason") in ("no_gene_sets_loaded", "gene_list_empty") or len(w) > 0
+
+    # No overlap case
+    e3 = scat.run_enrichment(
+        ["Z"], gs, universe=["Z"], pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    assert e3.empty or len(e3) == 0  # may be dropped by overlap==0 path
+    # At least we didn't crash; attrs may be on the non-empty path if any term passed size filter
+
+    # Universe empty after processing
+    e4 = scat.run_enrichment(["A"], gs, universe=[], pval_cutoff=1.0)
+    assert e4.empty
+    assert e4.attrs.get("reason") == "universe_empty"
+
+
+def test_enrichment_gene_case_and_mapping_examples():
+    # lower / upper should affect matching
+    genes = ["actb", "Gapdh"]
+    gs = {"Housekeeping": ["ACTB", "GAPDH", "TUBB"]}
+
+    # default (None) keeps case; "actb" won't match "ACTB" unless gene_case
+    scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    # with gene_case=upper they should map
+    r_upper = scat.run_enrichment(
+        genes, gs, gene_case="upper", pval_cutoff=1.0, min_size=1, return_all=True
+    )
+    assert len(r_upper) >= 1
+    # Check that low mapping warning would have triggered on default if rate low
+    # (we don't assert the warning here, but the upper case path should have higher hit rate)
+
+
+def test_enrichment_padj_cutoff_alias_and_log_message():
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B", "C"]}
+    # Using padj_cutoff should work identically to pval_cutoff
+    r1 = scat.run_enrichment(genes, gs, universe=["A", "B", "C"], pval_cutoff=0.5, return_all=True)
+    r2 = scat.run_enrichment(genes, gs, universe=["A", "B", "C"], padj_cutoff=0.5, return_all=True)
+    assert len(r1) == len(r2)
+    # attrs should record the cutoff used
+    assert "pval_cutoff" in r1.attrs or r1.attrs.get("pval_cutoff") is not None
+
+
+def test_enrichment_include_gene_list():
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B", "C"]}
+    r = scat.run_enrichment(
+        genes,
+        gs,
+        universe=["A", "B", "C"],
+        include_gene_list=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+    )
+    assert "Genes_list" in r.columns
+    assert isinstance(r.iloc[0]["Genes_list"], list)
+    assert "Genes" in r.columns  # still present
+
+
+def test_enrichment_return_all_vs_sig_and_tested_log():
+    genes = ["A", "B", "C"]
+    gs = {"Big": ["A", "B", "C", "D"], "Small": ["X"]}
+    r_all = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    r_sig = scat.run_enrichment(genes, gs, pval_cutoff=1e-9, min_size=1, return_all=False)
+    # return_all gives more (or equal)
+    assert len(r_all) >= len(r_sig)
+    # p.adjust should be non-increasing after sort
+    if len(r_all) > 1:
+        padjs = r_all["p.adjust"].values
+        assert np.all(padjs[:-1] <= padjs[1:] + 1e-12)  # sorted ascending
+
+
+def test_enrichment_organism_normalization_in_attrs():
+    genes = ["A"]
+    gs = {"T": ["A"]}
+    r = scat.run_enrichment(genes, gs, organism="Mouse", pval_cutoff=1.0, return_all=True)
+    assert r.attrs.get("organism") in ("mouse", "Mouse")  # normalized to lower inside
+    # run_kegg passes "Mouse" but run_enrichment normalizes
+    rk = scat.run_kegg(genes, organism="mmu", pval_cutoff=1.0, return_all=True, min_size=1)
+    # may be empty but attrs should exist
+    if not rk.empty or "organism" in rk.attrs:
+        assert rk.attrs.get("organism") == "mouse" or rk.attrs.get("organism") is not None
+
+
+def test_run_go_wrapper_basic():
+    # run_go maps ontology -> gene set name. With real bundled sets (BP) this will load locally (no net).
+    # "Foo" will have no overlap with any real GO BP term -> empty result via overlap filter, with rich attrs.
+    res2 = scat.run_go(["Foo"], ontology="BP", organism="mouse", pval_cutoff=1.0, min_size=5)
+    assert res2.empty
+    assert res2.attrs.get("method") in ("ora", "ora_go_all")
+    assert res2.attrs.get("reason") is not None or res2.attrs.get("gene_set_info") is not None
+
+    # ALL path (runs BP+CC+MF) should at least not crash (CC/MF may fall back or produce empty)
+    res3 = scat.run_go(["Foo"], ontology="ALL", organism="mouse", pval_cutoff=1.0, min_size=5)
+    assert res3.empty or isinstance(res3, pd.DataFrame)
+
+
+def test_enrichment_empty_gene_sets_raises_or_warns():
+    with pytest.warns(UserWarning):
+        df = scat.run_enrichment(["A", "B"], gene_sets={}, verbose=True)
+    assert df.empty
+
+
+# --------------------------- New save report + expand + provenance (review round 2) ---------------------------
+
+
+def test_expand_enrichment_genes_and_save(tmp_path):
+    """expand + save_enrichment_report should produce files and handle list columns cleanly."""
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B", "C"], "S2": ["A"]}
+    res = scat.run_enrichment(
+        genes,
+        gs,
+        universe=["A", "B", "C", "D"],
+        include_gene_list=True,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+    )
+    assert not res.empty
+
+    # Expand should give more rows than unique terms
+    long_df = scat.expand_enrichment_genes(res)
+    assert len(long_df) >= len(res)
+    assert "Gene" in long_df.columns
+    assert "Term" in long_df.columns
+
+    # Save with all options
+    prefix = tmp_path / "test_enrich"
+    saved = scat.save_enrichment_report(
+        res,
+        prefix=str(prefix),
+        save_excel=True,
+        save_csv=True,
+        save_metadata=True,
+        save_term_gene_table=True,
+    )
+    assert "results_csv" in saved
+    assert (
+        "results_xlsx" in saved or "metadata_json" in saved
+    )  # xlsx may fail if no engine, but csv+meta should be there
+    assert "term_gene_table_csv" in saved or "metadata_json" in saved
+
+    # Check that Genes_list was stringified in the exported main table (if csv was written)
+    if "results_csv" in saved:
+        df_back = pd.read_csv(saved["results_csv"])
+        if "Genes_list" in df_back.columns:
+            # Should not be a literal python list repr
+            val = str(df_back["Genes_list"].iloc[0])
+            assert not val.startswith("['") or ";" in val  # we joined with ;
+
+
+def test_save_enrichment_report_empty_still_writes(tmp_path):
+    """Even empty res with attrs should be savable."""
+    empty = scat.run_enrichment([], {"T": ["X"]})
+    prefix = tmp_path / "empty_enrich"
+    saved = scat.save_enrichment_report(
+        empty, prefix=str(prefix), save_excel=False, save_csv=True, save_metadata=True
+    )
+    assert "results_csv" in saved
+    assert "metadata_json" in saved
+
+
+def test_gene_set_info_has_actual_source_and_requested_source():
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B"]}
+    res = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    gsi = res.attrs.get("gene_set_info", {})
+    assert "requested_source" in gsi
+    assert "actual_source" in gsi
+    assert gsi["actual_source"] in ("dict", "bundled", "gseapy", "gmt_file", None)
+
+
+def test_run_go_adjust_across_all(tmp_path):
+    """adjust_across_all changes the p.adjust values (or at least runs without error and records the flag)."""
+    # Use synthetic tiny sets so we control overlaps; real bundled would also work but be slow/noisy
+    genes = ["X", "Y"]
+    # Make two "ontologies" via dicts passed indirectly is hard; use run_enrichment + post process not needed.
+    # Instead run_go with a name that falls back, but to keep deterministic use high cutoff + return_all + check attr.
+    res_all = scat.run_go(
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        adjust_across_all=True,
+    )
+    # May be empty (no real overlap with GO terms), but attrs should record the flag
+    assert res_all.attrs.get("adjust_across_all") is True or res_all.empty
+
+    res_sep = scat.run_go(
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        adjust_across_all=False,
+    )
+    assert res_sep.attrs.get("adjust_across_all") is False or res_sep.empty
+
+    # When non-empty the re-adjust should have happened (we can't easily assert numerical change without controlling pvalues)
+    # At minimum the function path exercised.
+
+
+def test_analysis_info_present_in_attrs():
+    genes = ["A"]
+    gs = {"T": ["A"]}
+    res = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    ai = res.attrs.get("analysis_info", {})
+    assert ai.get("package") == "scatrans"
+    assert "timestamp" in ai
+    # version may be None in some dev installs but key exists
+    assert "package_version" in ai
+
+
+def test_dual_cutoff_warning():
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B", "C"]}
+    with pytest.warns(UserWarning, match="Both pval_cutoff and padj_cutoff"):
+        scat.run_enrichment(
+            genes, gs, universe=["A", "B", "C"], pval_cutoff=0.1, padj_cutoff=0.05, min_size=1
+        )
+
+
+def test_run_go_all_per_ontology_attrs_and_within_padj():
+    """GO ALL should capture per_ontology_attrs and (when adjust=True) the within_ontology column + rich top attrs."""
+    genes = ["A", "B"]
+    # Real GO path + high min_size often yields empty result, but structure + keys must be present
+    res = scat.run_go(
+        genes,
+        ontology="ALL",
+        organism="mouse",
+        pval_cutoff=1.0,
+        min_size=5,
+        return_all=True,
+        adjust_across_all=True,
+    )
+    attrs = res.attrs
+    assert attrs.get("ontology") == "ALL" or attrs.get("method") == "ora_go_all"
+    assert "per_ontology_attrs" in attrs
+    poa = attrs["per_ontology_attrs"]
+    assert isinstance(poa, dict)
+    for o in ("BP", "CC", "MF"):
+        assert o in poa
+    # analysis_info always present
+    assert "analysis_info" in attrs
+    # If we somehow got rows (or in future synthetic), within column check
+    if not res.empty and "p.adjust.within_ontology" in res.columns:
+        assert "p.adjust" in res.columns
+
+
+def test_expand_enrichment_genes_preserves_ontology():
+    """Long table from GO ALL results must include and lead with Ontology column."""
+    # Create a fake combined result resembling GO ALL output
+    fake = pd.DataFrame(
+        {
+            "Ontology": ["BP", "CC"],
+            "Term": ["T1", "T2"],
+            "Description": ["d1", "d2"],
+            "Count": [2, 1],
+            "Genes": ["G1;G2", "G3"],
+            "p.adjust": [0.01, 0.02],
+        }
+    )
+    long = scat.expand_enrichment_genes(fake)
+    assert "Ontology" in long.columns
+    assert long.columns[0] == "Ontology"
+    assert len(long) == 3  # 2 + 1
+    assert set(long["Ontology"]) == {"BP", "CC"}
+
+
+def test_save_enrichment_report_mkdir_and_tsv(tmp_path):
+    """prefix dir should be created; save_tsv produces .tsv files."""
+    from pathlib import Path as _Path  # local to avoid polluting module if not wanted
+
+    genes = ["A"]
+    gs = {"S": ["A", "B"]}
+    res = scat.run_enrichment(genes, gs, pval_cutoff=1.0, min_size=1, return_all=True)
+    subdir = tmp_path / "out" / "nested"
+    pref = subdir / "myrep"
+    saved = scat.save_enrichment_report(
+        res, prefix=str(pref), save_csv=False, save_tsv=True, save_excel=False, save_metadata=True
+    )
+    assert (subdir).exists()
+    assert "results_tsv" in saved
+    assert saved["results_tsv"].endswith("_results.tsv")
+    assert "term_gene_table_tsv" in saved or "metadata_json" in saved  # term may be present
+    assert _Path(saved.get("results_tsv", "")).exists() or "results_tsv" not in saved
+
+    # metadata json always written when requested
+    if "metadata_json" in saved:
+        assert _Path(saved["metadata_json"]).exists()

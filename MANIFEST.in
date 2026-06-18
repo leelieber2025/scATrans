@@ -1,0 +1,15 @@
+# Control what goes into the source distribution (sdist).
+# The wheel only contains the runtime package (src/scatrans + data).
+
+# Standard important files
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+
+# Include the GitHub Actions workflows (requested)
+include .github/workflows/ci.yml
+include .github/workflows/publish.yml
+
+# If more workflows are added in the future, this will catch them:
+include .github/workflows/*.yml

@@ -19,8 +19,9 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# --- importlib.resources compatibility (py>=3.9 stdlib, else backport) ---
-if sys.version_info >= (3, 9):
+# --- importlib.resources compatibility (py>=3.10 stdlib, else backport)
+# Using the backport on 3.9 avoids spec.origin=None issues in some install scenarios (editable/wheel in CI).
+if sys.version_info >= (3, 10):
     from importlib.resources import as_file, files
 else:
     from importlib_resources import as_file, files

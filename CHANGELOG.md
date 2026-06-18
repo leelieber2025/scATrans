@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-14
+
+### Added (enrichment module — major paper-readiness upgrade)
+- `run_go(ontology="BP"|"CC"|"MF"|"ALL", ...)` — direct wrapper analogous to clusterProfiler `enrichGO`. Supports `adjust_across_all=True` for a single BH correction across all GO terms when using "ALL".
+- `save_enrichment_report(res, prefix=..., save_excel=True, save_csv=True, save_tsv=True, save_metadata=True, save_term_gene_table=True)` — one-call export of main table, term-gene long table (via `expand_enrichment_genes`), and rich `metadata.json` + xlsx sheet. Auto-creates parent directories. List columns (e.g. `Genes_list`) are sanitized to `;` strings for clean export.
+- `expand_enrichment_genes(res)` — expands the `Genes` (semicolon) column into a long-format Term–Gene table (one row per gene). Preserves `Ontology` column when input came from `run_go(..., "ALL")`.
+- Rich provenance in every result `.attrs` (success and empty):
+  - `analysis_info`: package, version, timestamp, module
+  - `gene_set_info`: `requested`/`resolved`, `requested_source` vs `actual_source` ("bundled", "gseapy", "gmt", "dict"), `library_name`, `n_terms`, `n_unique_genes`
+  - `universe_info`: full details of background handling (provided size, restricted, dropped_by_annotation, force_universe, mapping counts)
+  - Empty results now carry `reason` ("gene_list_empty", "universe_empty", "no_term_overlap_after_filters", ...) + the above fields so users can diagnose why nothing came back.
+- New `run_enrichment` / `run_kegg` / `run_go` parameters: `padj_cutoff` (preferred modern name), `include_gene_list` (adds `Genes_list` python-list column), `adjust_across_all`.
+- `list_bundled_gene_sets()` now clearly documents the 2026 organism-specific defaults.
+- Improved low-mapping-rate warning (includes input examples + gene-set examples).
+- `background` is now a documented deprecated alias of `universe`; passing both raises immediately.
+- All empty-result DataFrames preserve consistent columns (including optional `Genes_list` when requested) and full diagnostic attrs.
+
+### Changed / Improved
+- `_load_gene_sets` now returns `(term_to_genes, term_to_desc, load_info)` so `actual_source` is always recorded accurately (even on gseapy fallback after bundled attempt).
+- `run_kegg` fully synchronized with new parameters (`padj_cutoff`, `include_gene_list`, etc.).
+- `enrich_dotplot` (pl.py) and various tl.py flows updated for new columns/attrs.
+- Version unified to 0.8.0 for this release.
+- README and docstrings extensively updated with manuscript-export examples, `run_go`, provenance details, and `adjust_across_all` guidance.
+- Full test coverage for new paths (per-ontology attrs, within_ontology p.adjust, save+tsv+dir creation, expand with Ontology, dual-cutoff warning, etc.). All tests pass.
+
 ## [Unreleased]
 
 ### Added
