@@ -23,8 +23,51 @@ logger = logging.getLogger(__name__)
 
 
 # Re-export for modules that need it without importing math directly
+# Primary result column names (public API); legacy velocity_* aliases are kept in sync.
+UNSPLICED_EXCESS_DELTA_COL = "unspliced_excess_delta"
+UNSPLICED_EXCESS_RESIDUAL_COL = "unspliced_excess_residual"
+UNSPLICED_EXCESS_PVAL_COL = "unspliced_excess_pval"
+UNSPLICED_EXCESS_FDR_COL = "unspliced_excess_fdr"
+LEGACY_VELOCITY_DELTA_COL = "velocity_delta_raw"
+LEGACY_VELOCITY_RESIDUAL_COL = "velocity_residual"
+
+
+def _resolve_results_column(
+    df: pd.DataFrame, primary: str, legacy: str, *, required: bool = True
+) -> str:
+    """Return *primary* if present, else *legacy*; raise if neither and required."""
+    if primary in df.columns:
+        return primary
+    if legacy in df.columns:
+        return legacy
+    if required:
+        raise KeyError(f"Expected column '{primary}' (or legacy '{legacy}') in results DataFrame.")
+    return primary
+
+
+def _write_unspliced_excess_columns(
+    var_df: pd.DataFrame,
+    *,
+    delta: np.ndarray,
+    residual: np.ndarray,
+) -> None:
+    """Write primary unspliced-excess columns and deprecated velocity aliases."""
+    var_df[UNSPLICED_EXCESS_DELTA_COL] = delta
+    var_df[UNSPLICED_EXCESS_RESIDUAL_COL] = residual
+    var_df[LEGACY_VELOCITY_DELTA_COL] = delta
+    var_df[LEGACY_VELOCITY_RESIDUAL_COL] = residual
+
+
 __all__ = [
     "comb",
+    "UNSPLICED_EXCESS_DELTA_COL",
+    "UNSPLICED_EXCESS_RESIDUAL_COL",
+    "UNSPLICED_EXCESS_PVAL_COL",
+    "UNSPLICED_EXCESS_FDR_COL",
+    "LEGACY_VELOCITY_DELTA_COL",
+    "LEGACY_VELOCITY_RESIDUAL_COL",
+    "_resolve_results_column",
+    "_write_unspliced_excess_columns",
     "_is_integer_counts_like",
     "_warn_if_not_integer_counts_matrix",
     "_warn_if_low_counts_matrix",

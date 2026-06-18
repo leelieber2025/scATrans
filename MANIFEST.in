@@ -13,3 +13,12 @@ include .github/workflows/publish.yml
 
 # If more workflows are added in the future, this will catch them:
 include .github/workflows/*.yml
+
+# Never ship generated metadata directories inside the sdist
+recursive-exclude src/scatrans.egg-info *
+prune build
+prune dist
+global-exclude *.pyc
+global-exclude __pycache__/*
+global-exclude *.egg-info
+global-exclude *.egg-info/*

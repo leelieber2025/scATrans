@@ -40,6 +40,14 @@ import seaborn as sns
 from matplotlib.colors import Normalize
 from scipy import sparse
 
+from ._utils import (
+    LEGACY_VELOCITY_DELTA_COL,
+    LEGACY_VELOCITY_RESIDUAL_COL,
+    UNSPLICED_EXCESS_DELTA_COL,
+    UNSPLICED_EXCESS_RESIDUAL_COL,
+    _resolve_results_column,
+)
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -158,6 +166,16 @@ def style_context(**kwargs):
 # -----------------------------------------------------------------------------
 # Internal helpers for robust plotting (column validation, safe math, parsing)
 # -----------------------------------------------------------------------------
+
+
+def _excess_delta_col(df: pd.DataFrame) -> str:
+    return _resolve_results_column(df, UNSPLICED_EXCESS_DELTA_COL, LEGACY_VELOCITY_DELTA_COL)
+
+
+def _excess_residual_col(df: pd.DataFrame) -> str:
+    return _resolve_results_column(
+        df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL
+    )
 
 
 def _require_columns(df, columns, func_name="plot"):
@@ -292,7 +310,8 @@ def comet_plot(
         _style_ctx = style_context()
         _style_ctx.__enter__()
 
-    _require_columns(df, ["logFC", "velocity_residual", "active_score"], "comet_plot")
+    residual_col = _excess_residual_col(df)
+    _require_columns(df, ["logFC", residual_col, "active_score"], "comet_plot")
 
     if top_n <= 0:
         raise ValueError("top_n must be positive.")
@@ -304,10 +323,10 @@ def comet_plot(
         raise ValueError("s must be positive.")
 
     plot_df = df.copy()
-    for c in ["logFC", "velocity_residual", "active_score"]:
+    for c in ["logFC", residual_col, "active_score"]:
         if c in plot_df.columns:
             plot_df[c] = pd.to_numeric(plot_df[c], errors="coerce")
-    plot_df = plot_df.dropna(subset=["logFC", "velocity_residual", "active_score"])
+    plot_df = plot_df.dropna(subset=["logFC", residual_col, "active_score"])
 
     if positive_logfc_only:
         plot_df = plot_df[plot_df["logFC"] > 0].copy()
@@ -361,7 +380,7 @@ def comet_plot(
 
     scatter = ax.scatter(
         x=plot_df["logFC"],
-        y=plot_df["velocity_residual"],
+        y=plot_df[residual_col],
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
@@ -379,7 +398,7 @@ def comet_plot(
     for idx, row in top_genes.iterrows():
         txt = ax.text(
             row["logFC"],
-            row["velocity_residual"],
+            row[residual_col],
             f"{idx}",
             fontsize=max(8, fontsize - 2),
             fontweight="bold",
@@ -393,7 +412,7 @@ def comet_plot(
             adjust_text(
                 texts,
                 x=plot_df["logFC"].values,
-                y=plot_df["velocity_residual"].values,
+                y=plot_df[residual_col].values,
                 arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
                 ax=ax,
             )
@@ -458,10 +477,11 @@ def volcano_3d(
         _style_ctx = style_context()
         _style_ctx.__enter__()
 
-    _require_columns(df, ["logFC", "p_adj", "velocity_residual", "active_score"], "volcano_3d")
+    residual_col = _excess_residual_col(df)
+    _require_columns(df, ["logFC", "p_adj", residual_col, "active_score"], "volcano_3d")
 
     plot_df = df.copy()
-    for c in ["logFC", "p_adj", "velocity_residual", "active_score"]:
+    for c in ["logFC", "p_adj", residual_col, "active_score"]:
         if c in plot_df.columns:
             plot_df[c] = pd.to_numeric(plot_df[c], errors="coerce")
 
@@ -472,7 +492,7 @@ def volcano_3d(
             logger.warning("Dropping %d rows with p_adj outside [0, 1].", int(invalid_p.sum()))
             plot_df = plot_df.loc[~invalid_p].copy()
 
-    plot_df = plot_df.dropna(subset=["logFC", "p_adj", "velocity_residual", "active_score"])
+    plot_df = plot_df.dropna(subset=["logFC", "p_adj", residual_col, "active_score"])
     plot_df["neg_log_pval"] = _safe_neg_log10(plot_df["p_adj"])
     plot_df = plot_df.dropna(subset=["neg_log_pval"])
 
@@ -518,7 +538,7 @@ def volcano_3d(
     scatter = ax.scatter(
         plot_df["logFC"],
         plot_df["neg_log_pval"],
-        plot_df["velocity_residual"],
+        plot_df[residual_col],
         c=plot_df["active_score"],
         s=sizes,
         cmap=cmap,
@@ -542,7 +562,7 @@ def volcano_3d(
     # Use data range for offsets (robust to small/negative ranges)
     if len(plot_df) > 1:
         x_rng = plot_df["logFC"].max() - plot_df["logFC"].min()
-        z_rng = plot_df["velocity_residual"].max() - plot_df["velocity_residual"].min()
+        z_rng = plot_df[residual_col].max() - plot_df[residual_col].min()
         x_offset = (x_rng * 0.03) if x_rng > 0 else 0.1
         z_offset = (z_rng * 0.03) if z_rng > 0 else 0.15
     else:
@@ -550,7 +570,7 @@ def volcano_3d(
         z_offset = 0.15
 
     for idx, row in top_genes.iterrows():
-        px, py, pz = row["logFC"], row["neg_log_pval"], row["velocity_residual"]
+        px, py, pz = row["logFC"], row["neg_log_pval"], row[residual_col]
         tx, ty, tz = px + x_offset, py, pz + z_offset
         ax.plot([px, tx], [py, ty], [pz, tz], color="#888888", ls=":", lw=1.2, alpha=0.8)
         ax.text(
@@ -1317,14 +1337,16 @@ def bias_diagnostic_plot(
     if use_style:
         set_style()
 
+    delta_col = _excess_delta_col(results_df)
+    residual_col = _excess_residual_col(results_df)
     _require_columns(
         results_df,
-        ["velocity_delta_raw", "velocity_residual", "gene_length", "intron_number"],
+        [delta_col, residual_col, "gene_length", "intron_number"],
         "bias_diagnostic_plot",
     )
 
     plot_df = results_df.dropna(
-        subset=["velocity_delta_raw", "velocity_residual", "gene_length", "intron_number"]
+        subset=[delta_col, residual_col, "gene_length", "intron_number"]
     ).copy()
     if len(plot_df) < 10:
         logger.warning("Too few genes with valid features for diagnostic plot.")
@@ -1359,7 +1381,7 @@ def bias_diagnostic_plot(
 
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
-    y_raw = plot_df["velocity_delta_raw"]
+    y_raw = plot_df[delta_col]
     ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c="#1f77b4", edgecolors="none")
     if show_regression:
         from scipy.stats import linregress
@@ -1378,17 +1400,17 @@ def bias_diagnostic_plot(
         except Exception:
             pass
     ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax1.set_ylabel("Velocity Delta (raw)", fontsize=fontsize, fontweight="bold")
+    ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize, fontweight="bold")
     ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     ax1.legend(frameon=False)
     sns.despine(ax=ax1)
 
     # Right: After correction
-    y_res = plot_df["velocity_residual"]
+    y_res = plot_df[residual_col]
     ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
     ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax2.set_ylabel("Velocity Residual (bias-corrected)", fontsize=fontsize, fontweight="bold")
+    ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize, fontweight="bold")
     ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     sns.despine(ax=ax2)
 

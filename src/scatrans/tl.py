@@ -33,12 +33,19 @@ from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
 from ._permutation import _single_permutation_task
 from ._utils import (
+    LEGACY_VELOCITY_DELTA_COL,
+    LEGACY_VELOCITY_RESIDUAL_COL,
+    UNSPLICED_EXCESS_DELTA_COL,
+    UNSPLICED_EXCESS_FDR_COL,
+    UNSPLICED_EXCESS_PVAL_COL,
+    UNSPLICED_EXCESS_RESIDUAL_COL,
     _get_exponential_scale_lambda,
     _is_integer_counts_like,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
     _resolve_aligned_raw_counts,
     _soft_scale,
+    _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
@@ -48,7 +55,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.8.0"
+    VERSION = "0.9.0"
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +151,8 @@ def active_score(
     weight_pval: float = 1.0,
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
-    active_fdr_cutoff: float = 0.05,
+    active_fdr_cutoff: float = 0.05,  # deprecated: not used for built-in significant list
+    unspliced_excess_fdr_cutoff: float = 0.05,
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
@@ -204,10 +212,13 @@ def active_score(
 
     The function computes:
     - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
-    - A velocity delta = U_target − (gamma_ref × S_target), where gamma_ref is a
-      shrunk U/S ratio estimated in the reference group.
+    - An unspliced (nascent) excess delta = U_target − (gamma_ref × S_target), where
+      gamma_ref is a shrunk U/S ratio estimated in the reference group.
     - (by default) A Huber regression correction of the delta on log(gene length) and
-      log(intron number); the residuals become velocity_residual.
+      log(intron number); the residuals become ``unspliced_excess_residual``.
+    - When ``use_permutation=True``, independent one-sided permutation p-values and
+      BH-FDR are computed for the bias-corrected unspliced excess residual
+      (``unspliced_excess_pval``, ``unspliced_excess_fdr``).
     - A soft-scaled, weighted combination of the three signals, scaled to 0–100.
 
     Several extensions are available as explicit options (see the README section
@@ -276,6 +287,16 @@ def active_score(
 
     if not (0 < active_fdr_cutoff <= 1):
         raise ValueError("active_fdr_cutoff must be in (0, 1].")
+    if not (0 < unspliced_excess_fdr_cutoff <= 1):
+        raise ValueError("unspliced_excess_fdr_cutoff must be in (0, 1].")
+    if active_fdr_cutoff != 0.05:
+        warnings.warn(
+            "active_fdr_cutoff is deprecated and no longer used for the built-in "
+            "'significant' gene list. Use unspliced_excess_fdr_cutoff instead "
+            "(tests unspliced_excess_fdr from permutation).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     if min_total_counts < 0:
         raise ValueError("min_total_counts must be non-negative.")
@@ -290,7 +311,7 @@ def active_score(
         weight_pval = 0.5
         logger.info(
             "prioritize_velocity=True (advanced option): emphasizing the nascent RNA excess / "
-            "velocity_residual component in the active_score. "
+            "unspliced_excess_residual component in the active_score. "
             "This is intended for users whose primary interest is condition-wise differences "
             "in unspliced abundance after reference correction."
         )
@@ -671,8 +692,7 @@ def active_score(
         bias_correction=bias_correction,
     )
 
-    adata.var["velocity_delta_raw"] = delta_velocity
-    adata.var["velocity_residual"] = residual
+    _write_unspliced_excess_columns(adata.var, delta=delta_velocity, residual=residual)
     adata.var["total_us_counts"] = total_us_raw
     adata.var["total_us_counts_raw"] = total_us_raw
     adata.var["total_us_counts_velocity_layer"] = total_us_velocity
@@ -813,15 +833,25 @@ def active_score(
                 for i in range(n_perm)
             )
 
-        perm_scores_matrix = np.vstack(perm_results)
+        perm_scores_matrix = np.vstack([r[0] for r in perm_results])
+        perm_residual_matrix = np.vstack([r[1] for r in perm_results])
+
         exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-        pvals = (1.0 + exceed_count) / (n_perm + 1.0)
-        adata.var["active_score_pval"] = pvals
+        adata.var["active_score_pval"] = (1.0 + exceed_count) / (n_perm + 1.0)
+
+        exceed_res = np.sum(
+            perm_residual_matrix >= np.asarray(residual, dtype=float).reshape(1, -1), axis=0
+        )
+        adata.var[UNSPLICED_EXCESS_PVAL_COL] = (1.0 + exceed_res) / (n_perm + 1.0)
 
         adata.var["active_score_fdr"] = np.ones(adata.n_vars)
+        adata.var[UNSPLICED_EXCESS_FDR_COL] = np.ones(adata.n_vars)
         if valid_expr.sum() > 0:
             adata.var.loc[valid_expr, "active_score_fdr"] = multipletests(
-                pvals[valid_expr], method="fdr_bh"
+                adata.var["active_score_pval"].values[valid_expr], method="fdr_bh"
+            )[1]
+            adata.var.loc[valid_expr, UNSPLICED_EXCESS_FDR_COL] = multipletests(
+                adata.var[UNSPLICED_EXCESS_PVAL_COL].values[valid_expr], method="fdr_bh"
             )[1]
 
         if current_max_perm is not None and current_max_perm < 100:
@@ -849,6 +879,7 @@ def active_score(
         pval_cutoff=pval_cutoff,
         logfc_cutoff=logfc_cutoff,
         active_fdr_cutoff=active_fdr_cutoff,
+        unspliced_excess_fdr_cutoff=unspliced_excess_fdr_cutoff,
         use_fdr_for_significance=use_fdr_for_significance,
         use_delta_variance_pval=use_delta_variance_pval,
         delta_var_pval_cutoff=delta_var_pval_cutoff,
@@ -889,11 +920,11 @@ def _finalize_active_score_results(
     emit run summary, optionally plot, and return.
     This is extracted to keep active_score() focused on orchestration.
     """
-    # Build result columns. By default we keep the output focused on the basic pipeline.
+    # Build result columns. Primary unspliced-excess names; legacy velocity_* remain in adata.var.
     cols = [
         "active_score",
-        "velocity_delta_raw",
-        "velocity_residual",
+        UNSPLICED_EXCESS_DELTA_COL,
+        UNSPLICED_EXCESS_RESIDUAL_COL,
         "logFC",
         "p_val",
         "p_adj",
@@ -911,7 +942,14 @@ def _finalize_active_score_results(
     ):
         cols.append("effective_gamma")
     if use_permutation:
-        cols.extend(["active_score_pval", "active_score_fdr"])
+        cols.extend(
+            [
+                "active_score_pval",
+                "active_score_fdr",
+                UNSPLICED_EXCESS_PVAL_COL,
+                UNSPLICED_EXCESS_FDR_COL,
+            ]
+        )
     if "delta_variance" in adata.var.columns:
         cols.append("delta_variance")
     if "delta_var_pval" in adata.var.columns:
@@ -921,23 +959,38 @@ def _finalize_active_score_results(
             cols.append(mc)
     cols = [c for c in cols if c in adata.var.columns]
 
-    # (Re-apply significant mask for the final tables — caller may have passed pre-filtered or not)
-    # We re-compute here for cleanliness; in practice caller usually passes the already-filtered significant.
-    mask = (
-        (adata.var["p_adj"] < extra_metadata.get("pval_cutoff", 0.05))
-        & (adata.var["logFC"] > extra_metadata.get("logfc_cutoff", 0.5))
-        & (adata.var["velocity_residual"] > 0)
-        & (adata.var["valid_expr"])
-        & (adata.var["active_score"] > 0)
+    # Built-in significant list: DE significance + positive unspliced excess + permutation FDR.
+    # active_score is for ranking/visualization only (heuristic, not a p-value).
+    residual_col = (
+        UNSPLICED_EXCESS_RESIDUAL_COL
+        if UNSPLICED_EXCESS_RESIDUAL_COL in adata.var.columns
+        else LEGACY_VELOCITY_RESIDUAL_COL
     )
-    if (
-        use_permutation
-        and extra_metadata.get("use_fdr_for_significance", True)
-        and "active_score_fdr" in adata.var.columns
-    ):
-        mask = mask & (
-            adata.var["active_score_fdr"] < extra_metadata.get("active_fdr_cutoff", 0.05)
+    ue_fdr_cutoff = extra_metadata.get("unspliced_excess_fdr_cutoff", 0.05)
+
+    if use_permutation and UNSPLICED_EXCESS_FDR_COL in adata.var.columns:
+        mask = (
+            (adata.var["p_adj"] < extra_metadata.get("pval_cutoff", 0.05))
+            & (adata.var["logFC"] > extra_metadata.get("logfc_cutoff", 0.5))
+            & (adata.var[residual_col] > 0)
+            & (adata.var["valid_expr"])
         )
+        if extra_metadata.get("use_fdr_for_significance", True):
+            mask = mask & (adata.var[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff)
+        else:
+            logger.warning(
+                "Permutation space is very small; unspliced_excess_fdr was not applied "
+                "to the built-in significant list."
+            )
+    else:
+        mask = pd.Series(False, index=adata.var.index)
+        if not use_permutation:
+            logger.warning(
+                "Built-in 'significant' list requires use_permutation=True "
+                "(unspliced_excess_fdr_cutoff=%.3f). Returning empty significant; "
+                "inspect all_results and use filter_active_genes for custom thresholds.",
+                ue_fdr_cutoff,
+            )
 
     if (
         "use_delta_variance_pval" in extra_metadata
@@ -984,7 +1037,19 @@ def _finalize_active_score_results(
         "pval_cutoff": extra_metadata.get("pval_cutoff"),
         "logfc_cutoff": extra_metadata.get("logfc_cutoff"),
         "active_fdr_cutoff": extra_metadata.get("active_fdr_cutoff"),
+        "unspliced_excess_fdr_cutoff": extra_metadata.get("unspliced_excess_fdr_cutoff"),
         "use_fdr_for_significance": extra_metadata.get("use_fdr_for_significance"),
+        "significant_criteria": {
+            "logFC": f"> {extra_metadata.get('logfc_cutoff')}",
+            "p_adj": f"< {extra_metadata.get('pval_cutoff')}",
+            "unspliced_excess_residual": "> 0",
+            "unspliced_excess_fdr": (
+                f"< {ue_fdr_cutoff} (requires use_permutation=True)"
+                if use_permutation
+                else "not evaluated (use_permutation=False)"
+            ),
+            "active_score": "ranking only (not used for significance)",
+        },
         "use_delta_variance_pval": extra_metadata.get("use_delta_variance_pval"),
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
         "de_method": extra_metadata.get("de_method"),
@@ -1008,8 +1073,9 @@ def _finalize_active_score_results(
 
     if use_permutation:
         note = (
-            "For efficiency, velocity layers and effective_gamma are fixed from the original data. "
-            "Group labels are shuffled to recompute the composite active_score."
+            "For efficiency, unspliced/spliced layers and reference gamma are fixed from the "
+            "original data. Group labels are shuffled to recompute DE, unspliced excess residual, "
+            "composite active_score, and unspliced_excess permutation p-values."
         )
         if extra_metadata.get("use_memento_de") and not extra_metadata.get("perm_use_memento_de"):
             note += (
@@ -1609,8 +1675,10 @@ def filter_active_genes(
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
     velocity_residual_cutoff: Any = _NOT_PROVIDED,
+    unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
     active_score_fdr_cutoff: Any = _NOT_PROVIDED,
+    unspliced_excess_fdr_cutoff: Any = _NOT_PROVIDED,
     effective_gamma_min: Any = _NOT_PROVIDED,
     effective_gamma_max: Any = _NOT_PROVIDED,
     delta_variance_min: Any = _NOT_PROVIDED,
@@ -1618,7 +1686,7 @@ def filter_active_genes(
     """Apply custom post-filtering to a results DataFrame (from `active_score` or `differential_expression`).
 
     This helper works for both:
-    - Full `active_score` output (has `active_score` + velocity_residual).
+    - Full `active_score` output (has `active_score` + unspliced_excess_residual).
     - Pure DE results from `differential_expression` (only logFC / p_adj + optional memento columns).
 
     It standardizes the common workflow:
@@ -1629,16 +1697,16 @@ def filter_active_genes(
     for different analysis modes:
 
     - preset="heuristic": stricter defaults suitable for typical single-cell data with default weights
-      (active_score >= 55, velocity_residual > 1.0, etc.).
+      (active_score >= 55, unspliced_excess_residual > 1.0, etc.).
     - preset="pseudobulk": more lenient defaults that account for the much smaller
-      magnitude of velocity_residual and active_score after sample-level aggregation
-      (active_score >= 5, velocity_residual > 0.05, logFC > 0.2, etc.).
+      magnitude of unspliced_excess_residual and active_score after sample-level aggregation
+      (active_score >= 5, unspliced_excess_residual > 0.05, logFC > 0.2, etc.).
     - preset=None (or "permissive"/"none"): apply only explicitly provided cutoffs; this is the most
       permissive / backward-compatible mode and returns nearly the full table (subject to any
       user-supplied thresholds).
 
     Presets are oriented toward target-group "activated" / upregulated signals (positive
-    logFC + positive velocity_residual). For pure two-sided DE gene selection from
+    logFC + positive unspliced_excess_residual). For pure two-sided DE gene selection from
     differential_expression() results, use preset=None and supply your own logfc_cutoff
     (e.g. a negative value or use abs() filtering yourself after the call).
 
@@ -1666,11 +1734,16 @@ def filter_active_genes(
         of the internal significant mask in active_score() and common user expectations
         (FDR control when available).
     velocity_residual_cutoff : float
-        Minimum bias-corrected velocity residual.
+        Deprecated alias for ``unspliced_excess_residual_cutoff``.
+    unspliced_excess_residual_cutoff : float
+        Minimum bias-corrected unspliced (nascent) excess residual.
     logfc_cutoff : float
         Minimum log fold change.
     active_score_fdr_cutoff : float or None
-        If the column exists (use_permutation=True), max permutation FDR on active_score.
+        If the column exists, max permutation FDR on the composite active_score (ranking aid).
+    unspliced_excess_fdr_cutoff : float or None
+        If the column exists (use_permutation=True), max permutation FDR on
+        ``unspliced_excess_residual`` (recommended for final gene lists).
     effective_gamma_min : float
         Minimum reference-group effective gamma. See README section on effective_gamma.
     effective_gamma_max : float or None
@@ -1695,8 +1768,10 @@ def filter_active_genes(
                 "active_score_cutoff": 55.0,
                 "pval_cutoff": 0.05,
                 "velocity_residual_cutoff": 1.0,
+                "unspliced_excess_residual_cutoff": 1.0,
                 "logfc_cutoff": 0.35,
                 "active_score_fdr_cutoff": 0.25,
+                "unspliced_excess_fdr_cutoff": 0.05,
                 "effective_gamma_min": 0.05,
                 "effective_gamma_max": 1.0,
                 "delta_variance_min": None,
@@ -1706,8 +1781,10 @@ def filter_active_genes(
                 "active_score_cutoff": 5.0,
                 "pval_cutoff": 0.05,
                 "velocity_residual_cutoff": 0.05,
+                "unspliced_excess_residual_cutoff": 0.05,
                 "logfc_cutoff": 0.2,
                 "active_score_fdr_cutoff": 0.25,
+                "unspliced_excess_fdr_cutoff": 0.05,
                 "effective_gamma_min": 0.05,
                 "effective_gamma_max": 1.0,
                 "delta_variance_min": None,
@@ -1717,8 +1794,10 @@ def filter_active_genes(
                 "active_score_cutoff": 0.0,
                 "pval_cutoff": 1.0,
                 "velocity_residual_cutoff": float("-inf"),
+                "unspliced_excess_residual_cutoff": float("-inf"),
                 "logfc_cutoff": float("-inf"),
                 "active_score_fdr_cutoff": 1.0,
+                "unspliced_excess_fdr_cutoff": 1.0,
                 "effective_gamma_min": float("-inf"),
                 "effective_gamma_max": None,
                 "delta_variance_min": None,
@@ -1739,11 +1818,29 @@ def filter_active_genes(
 
     active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
     pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
+    if (
+        velocity_residual_cutoff is not _NOT_PROVIDED
+        and unspliced_excess_residual_cutoff is _NOT_PROVIDED
+    ):
+        unspliced_excess_residual_cutoff = velocity_residual_cutoff
+        warnings.warn(
+            "velocity_residual_cutoff is deprecated; use unspliced_excess_residual_cutoff.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     velocity_residual_cutoff = _resolve(
         "velocity_residual_cutoff", velocity_residual_cutoff, float("-inf")
     )
+    unspliced_excess_residual_cutoff = _resolve(
+        "unspliced_excess_residual_cutoff",
+        unspliced_excess_residual_cutoff,
+        velocity_residual_cutoff,
+    )
     logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
     active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
+    unspliced_excess_fdr_cutoff = _resolve(
+        "unspliced_excess_fdr_cutoff", unspliced_excess_fdr_cutoff, 1.0
+    )
     effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
     effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
     delta_variance_min = _resolve("delta_variance_min", delta_variance_min, None)
@@ -1760,14 +1857,23 @@ def filter_active_genes(
         mask &= df["p_adj"] < pval_cutoff
     elif "p_val" in df.columns:
         mask &= df["p_val"] < pval_cutoff
-    if "velocity_residual" in df.columns:
-        mask &= df["velocity_residual"] > velocity_residual_cutoff
+    residual_col = (
+        UNSPLICED_EXCESS_RESIDUAL_COL
+        if UNSPLICED_EXCESS_RESIDUAL_COL in df.columns
+        else LEGACY_VELOCITY_RESIDUAL_COL
+    )
+    if residual_col in df.columns:
+        mask &= df[residual_col] > unspliced_excess_residual_cutoff
     if "logFC" in df.columns:
         mask &= df["logFC"] > logfc_cutoff
 
-    # Permutation FDR
+    # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
         mask &= df["active_score_fdr"] < active_score_fdr_cutoff
+
+    # Permutation FDR on unspliced excess residual (recommended significance filter)
+    if unspliced_excess_fdr_cutoff is not None and UNSPLICED_EXCESS_FDR_COL in df.columns:
+        mask &= df[UNSPLICED_EXCESS_FDR_COL] < unspliced_excess_fdr_cutoff
 
     # effective_gamma
     if "effective_gamma" in df.columns:

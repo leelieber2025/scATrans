@@ -1,11 +1,11 @@
 Metadata-Version: 2.4
 Name: scatrans
-Version: 0.8.0
+Version: 0.9.0
 Summary: Single-cell Active Transcription Analysis
 Author: scATrans Developers
 License: MIT
 Project-URL: Homepage, https://github.com/scATrans/scatrans
-Keywords: single-cell,RNA-seq,velocity,active transcription,bioinformatics
+Keywords: single-cell,RNA-seq,unspliced,nascent RNA,active transcription,bioinformatics
 Classifier: Development Status :: 4 - Beta
 Classifier: Intended Audience :: Science/Research
 Classifier: License :: OSI Approved :: MIT License
@@ -115,7 +115,7 @@ adata_res, significant, all_results = scat.active_score(
 print(all_results.head())
 ```
 
-Default parameters require no choices for bias correction, effective gamma, or mixed models. Pseudobulk mode and DE method (`de_method`) are configurable options. The built-in `significant` list is strict and often small or empty; use the full ranked table in `all_results`.
+Default parameters require no choices for bias correction, effective gamma, or mixed models. Pseudobulk mode and DE method (`de_method`) are configurable options. The built-in `significant` list requires `use_permutation=True` (for `unspliced_excess_fdr`) and is often small or empty; use the full ranked table in `all_results`.
 
 ### Preserving raw counts and layers
 
@@ -211,7 +211,8 @@ The internal `significant` list is strict. Most users filter the full table retu
 candidates = scat.filter_active_genes(
     all_results,
     active_score_cutoff=30,
-    velocity_residual_cutoff=0.5,
+    unspliced_excess_residual_cutoff=0.5,
+    unspliced_excess_fdr_cutoff=0.05,
     logfc_cutoff=0.3,
     pval_cutoff=0.05,
 )
@@ -221,7 +222,7 @@ candidates = scat.filter_active_genes(all_results, preset="heuristic")
 # or preset="pseudobulk" after aggregation, or preset="permissive"
 ```
 
-The helper safely ignores filters for columns that do not exist (e.g. `active_score_fdr` when you did not use `use_permutation`).
+The helper safely ignores filters for columns that do not exist (e.g. `unspliced_excess_fdr` when you did not use `use_permutation`). Legacy column names `velocity_residual` / `velocity_delta_raw` remain in `adata.var` as aliases.
 
 ### 3.3 Functional enrichment
 
@@ -533,7 +534,31 @@ This function looks for common gene list columns (`Genes`, `Lead_genes`, etc.) a
 
 ## Result Interpretation
 
-The internal significance mask applies a strict conjunction of thresholds. On real data it often returns zero or few genes. Use the full table in `all_results`, which is sorted by `active_score` descending and retains every gene that passed initial expression filters.
+### Column naming (v0.9+)
+
+Primary result columns use **unspliced / nascent excess** terminology (not RNA velocity):
+
+| Primary column | Legacy alias (deprecated) | Meaning |
+|----------------|---------------------------|---------|
+| `unspliced_excess_delta` | `velocity_delta_raw` | Raw U − γ_ref·S in target group |
+| `unspliced_excess_residual` | `velocity_residual` | Bias-corrected excess residual |
+| `unspliced_excess_pval` | — | One-sided permutation p-value on residual |
+| `unspliced_excess_fdr` | — | BH-FDR on `unspliced_excess_pval` |
+
+`active_score` (0–100) is a **heuristic ranking score** for visualization and sorting. It is not a probability.
+
+### Built-in `significant` gene list
+
+When `use_permutation=True`, the internal mask requires **all** of:
+
+- `logFC > logfc_cutoff` (default 0.5)
+- `p_adj < pval_cutoff` (default 0.05)
+- `unspliced_excess_residual > 0`
+- `unspliced_excess_fdr < unspliced_excess_fdr_cutoff` (default 0.05)
+
+Without `use_permutation=True`, the built-in `significant` list is **empty** (FDR on unspliced excess cannot be computed). Use `all_results` + `filter_active_genes` for custom thresholds.
+
+On real data the built-in list often returns zero or few genes. Use the full table in `all_results`, sorted by `active_score` descending.
 
 After each run inspect the diagnostics:
 
@@ -544,7 +569,7 @@ print(meta["diagnostics"]["bias_correction"])
 print(meta.get("permutation_approximation_note"))
 ```
 
-Global unspliced fractions above ~50% frequently indicate technical issues. Bias-correction diagnostics report the number of genes used and any fallback behavior. The permutation note records that velocity layers and the reference gamma were fixed for speed.
+Global unspliced fractions above ~50% frequently indicate technical issues. Bias-correction diagnostics report the number of genes used and any fallback behavior. The permutation note records that unspliced/spliced layers and the reference gamma were fixed for speed while labels were shuffled.
 
 ---
 
@@ -564,11 +589,27 @@ Inspect the corresponding diagnostics after enabling any advanced option.
 
 ### use_permutation=True
 
-Adds `active_score_pval` and `active_score_fdr` columns. The permutation shuffles only group labels; velocity layers and the reference gamma are computed once on the original data for speed. This approximation is documented in `permutation_approximation_note`.
+**Required for the built-in `significant` list** (via `unspliced_excess_fdr`).
+
+Adds:
+
+- `unspliced_excess_pval` / `unspliced_excess_fdr` — permutation significance on the bias-corrected unspliced excess residual (one-sided, positive direction). **Use these for active-gene calls.**
+- `active_score_pval` / `active_score_fdr` — permutation on the composite heuristic score (ranking aid only).
+
+The permutation shuffles only group labels; unspliced/spliced layers and the reference gamma are fixed from the original labeling for speed. This approximation is documented in `permutation_approximation_note`.
+
+```python
+adata_res, significant, all_results = scat.active_score(
+    adata,
+    use_permutation=True,
+    n_perm=500,
+    unspliced_excess_fdr_cutoff=0.05,
+)
+```
 
 ### bias_correction
 
-By default the package applies a Huber regression of the raw velocity delta on log(gene length) and log(intron number) and uses the residuals as `velocity_residual`. This step can be disabled by setting `bias_correction="none"`, in which case the raw (reference-gamma corrected) delta is used directly.
+By default the package applies a Huber regression of the raw unspliced excess delta on log(gene length) and log(intron number) and uses the residuals as `unspliced_excess_residual`. This step can be disabled by setting `bias_correction="none"`, in which case the raw (reference-gamma corrected) delta is used directly.
 
 The correction is intended to reduce technical contributions from gene length and intron number to the unspliced excess term. Whether length or intron number carry biological signal of interest in a given dataset is a scientific judgment that the user must make; the correction is therefore optional. The `bias_diagnostic_plot` function can be used to inspect the relationship before and after correction.
 
@@ -595,7 +636,7 @@ Requires `sample_col` (the column identifying biological replicates/individuals)
 - `delta_variance` is always available in `all_results` when the flag is on; you can use it post-hoc as an additional filter.
 - Use `use_delta_variance_pval=True` only if you want the LRT p-value to participate in the built-in `significant` mask.
 
-**Practical note on small numbers of samples:** With very few biological replicates, pseudobulk aggregation can drive most `velocity_residual` values close to zero. In such regimes the cell-level mixed-model path (`use_mixed_model=True`, `use_pseudobulk=False`) often preserves more of the velocity signal while still respecting sample structure.
+**Practical note on small numbers of samples:** With very few biological replicates, pseudobulk aggregation can drive most `unspliced_excess_residual` values close to zero. In such regimes the cell-level mixed-model path (`use_mixed_model=True`, `use_pseudobulk=False`) often preserves more of the nascent-excess signal while still respecting sample structure.
 
 The mixed-model settings and median `delta_variance` are recorded in diagnostics.
 
@@ -611,7 +652,7 @@ Recommended only when you have a reasonable number of cells and want noise reduc
 
 The unspliced excess term is a group-contrast proxy derived from a reference-group gamma calculation. It is not a full stochastic or dynamical model.
 
-Interpretation is simplest for clear binary contrasts. Within-group heterogeneity reduces observed signal. The permutation approximation (used when `use_permutation=True`) fixes velocity layers and the reference gamma on the original labels; the note is recorded in the results. Global unspliced fractions above ~50% are flagged as potential technical artifacts. Bias-correction quality depends on the number of genes with length and intron annotations. With few biological replicates, power for the velocity term and permutation-based FDR is limited. Mixed-model statistics tend to be conservative when between-sample variation is large.
+Interpretation is simplest for clear binary contrasts. Within-group heterogeneity reduces observed signal. The permutation approximation (used when `use_permutation=True`) fixes unspliced/spliced layers and the reference gamma on the original labels; the note is recorded in the results. Global unspliced fractions above ~50% are flagged as potential technical artifacts. Bias-correction quality depends on the number of genes with length and intron annotations. With few biological replicates, power for the unspliced excess term and permutation-based FDR is limited. Mixed-model statistics tend to be conservative when between-sample variation is large.
 
 Always examine diagnostics, score distributions, and (when available) the original spliced/unspliced counts before biological interpretation.
 
@@ -643,7 +684,7 @@ These are the common "free switches" for the basic pipeline (including pseudobul
 
 ### Opt-in advanced / exploration parameters (see "Optional Advanced Features")
 
-- `use_permutation`, `n_perm`, `active_fdr_cutoff`
+- `use_permutation`, `n_perm`, `unspliced_excess_fdr_cutoff` (and deprecated `active_fdr_cutoff`)
 - `bias_correction` ("huber_length_intron" or "none")
 - `show_effective_gamma`
 - `use_mixed_model`, `use_delta_variance_pval`, `mixed_model_pval`
@@ -693,7 +734,7 @@ All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel 
 ### Main Plotting Functions
 
 - `scat.pl.comet_plot(results_df, top_n=12, point_scale=1.0, min_size=2, max_size=180, s=None, ...)`  
-  Recommended: log fold change vs. bias-corrected unspliced residual (velocity_residual), sized and colored by active_score.
+  Recommended: log fold change vs. bias-corrected unspliced excess residual (`unspliced_excess_residual`), sized and colored by `active_score`.
   - `s=3` (or 1-5): force **fixed** small point size for everything (direct, simple control).
   - `point_scale=0.2` + `min_size=1`: for variable sizing, make tiniest background points truly small.
 
@@ -720,7 +761,7 @@ All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel 
   Also available as `enrich_barplot`.
 
 - `scat.pl.volcano_3d(results_df, ...)`  
-  3D volcano (logFC × -log10(p) × velocity_residual).
+  3D volcano (logFC × -log10(p) × unspliced_excess_residual).
 
 - `scat.pl.active_score_rankplot(results_df, top_n=20, ...)`  
   Simple horizontal barplot of top active scores.
