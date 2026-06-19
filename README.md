@@ -30,6 +30,30 @@ cd scatrans
 pip install -e ".[dev]"
 ```
 
+**Note on version when installing from git:**
+
+The package uses `setuptools_scm` to determine the version from git tags. If you see `0.8.0.devN` after `pip install @git+...`, it means the repository you are installing from has its latest tag at 0.8.x.
+
+To get version 0.9.0:
+
+- Tag the repository first (recommended):
+  ```bash
+  git tag 0.9.0
+  git push origin 0.9.0
+  ```
+  Then reinstall.
+
+- Or force it for this install:
+  ```bash
+  SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 pip install -U "scatrans[memento]@git+https://..."
+  ```
+
+After install, verify with:
+```python
+import scatrans as scat
+print(scat.__version__)  # should be 0.9.0
+```
+
 **Logging.** The package logs under the name `scatrans`. You can control verbosity with:
 
 ```python
@@ -207,6 +231,29 @@ enrich_res = scat.run_enrichment(
 #   - "neg_log10_padj" column
 #   - res.attrs["universe_info"] with effective_universe_size, dropped_by_annotation_filter, etc.
 ```
+
+**run_gsea** (pre-ranked GSEA for ranked gene lists):
+
+```python
+# ranked list from active_score / differential_expression results
+ranked = all_results["logFC"].sort_values(ascending=False)
+
+gsea_res = scat.run_gsea(
+    ranked_genes=ranked,
+    gene_sets="GO_Biological_Process",
+    organism="mouse",
+    nperm=1000,
+)
+print(gsea_res.head())
+
+scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")
+
+# gseaplot (uses the exact curve stored by run_gsea)
+term = gsea_res.iloc[0]["Term"]
+scat.pl.gseaplot(ranked, gsea_res, term=term)
+```
+
+Requires `pip install "scatrans[gsea]"`.
 
 **run_kegg** (convenience wrapper for KEGG pathways):
 
@@ -427,10 +474,6 @@ A dictionary containing:
 
 `diagnose_design` is automatically called inside `active_score(...)` whenever you pass `sample_col` or set `use_pseudobulk=True`. You will see its output in the log.
 
-### run_kegg and simplify_enrichment
-
-These are convenience functions built on top of `run_enrichment`.
-
 **run_kegg** – Run KEGG pathway enrichment directly:
 
 ```python
@@ -449,11 +492,12 @@ kegg_res = scat.run_kegg(
 
 ### run_gsea (pre-ranked GSEA)
 
-For ranked-list enrichment (the classic GSEA approach):
+For ranked-list enrichment (the classic GSEA / prerank approach):
 
 ```python
-# ranked list: higher = more associated with target (e.g. logFC or custom score)
-ranked = all_results.set_index("gene")["logFC"]   # or "active_score" etc.
+# Obtain a ranked gene list (e.g. from active_score or differential_expression results).
+# Convention: higher value = more associated with the target group.
+ranked = all_results["logFC"].sort_values(ascending=False)
 
 gsea_res = scat.run_gsea(
     ranked_genes=ranked,
@@ -461,23 +505,24 @@ gsea_res = scat.run_gsea(
     organism="mouse",
     nperm=1000,
     min_size=15,
-    # gsea_res is a DataFrame with NES, ES, pvalue, p.adjust, leading_edge, ...
 )
-print(gsea_res.head())
-scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")  # auto-friendly
+print(gsea_res[["Term", "NES", "p.adjust", "leading_edge"]].head())
+
+# Works with existing plotting helpers (auto-detects GSEA columns)
+scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")
+
+# Dedicated running-sum plot (uses curves stored by run_gsea)
 scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
 ```
 
-`run_gsea` stores pre-computed RES curves in `.attrs["gsea_details"]` so `gseaplot` can render the exact running sum used for the NES/p-values.
+`run_gsea` stores the full enrichment score curves in `.attrs["gsea_details"]` so that `gseaplot` renders exactly the same RES that produced the reported NES/p-values.
 
-Requires `pip install "scatrans[gsea]"` (or gseapy).
-
-print(kegg_res[["Term", "p.adjust", "Count"]].head())
+Requires the optional extra:
+```bash
+pip install "scatrans[gsea]"   # pulls in gseapy
 ```
 
-The `gene_set_source` parameter (default `"scatrans"`) controls which KEGG set is used.
-See the section "Choosing gene sets explicitly with `gene_set_source`" above for full details
-and examples for both GO and KEGG.
+See the Plotting section below for details on GSEA-aware `enrich_dotplot` and the new `gseaplot`.
 
 **simplify_enrichment** – Remove redundant terms from enrichment results:
 
