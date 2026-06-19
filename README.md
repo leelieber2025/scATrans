@@ -447,6 +447,31 @@ kegg_res = scat.run_kegg(
     # To use the original Enrichr version instead: kegg_library="KEGG_2026"
 )
 
+### run_gsea (pre-ranked GSEA)
+
+For ranked-list enrichment (the classic GSEA approach):
+
+```python
+# ranked list: higher = more associated with target (e.g. logFC or custom score)
+ranked = all_results.set_index("gene")["logFC"]   # or "active_score" etc.
+
+gsea_res = scat.run_gsea(
+    ranked_genes=ranked,
+    gene_sets="GO_Biological_Process",
+    organism="mouse",
+    nperm=1000,
+    min_size=15,
+    # gsea_res is a DataFrame with NES, ES, pvalue, p.adjust, leading_edge, ...
+)
+print(gsea_res.head())
+scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")  # auto-friendly
+scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
+```
+
+`run_gsea` stores pre-computed RES curves in `.attrs["gsea_details"]` so `gseaplot` can render the exact running sum used for the NES/p-values.
+
+Requires `pip install "scatrans[gsea]"` (or gseapy).
+
 print(kegg_res[["Term", "p.adjust", "Count"]].head())
 ```
 
@@ -679,7 +704,7 @@ Full signatures and all parameters are documented in the function docstrings and
 - `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
 - `list_available_gene_features()`
 - `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — analyzes cell/sample counts and global unspliced fraction; returns warnings, recommendations, and a suggested `filter_active_genes` preset. Automatically called internally when `sample_col` or `use_pseudobulk=True` is used.
-- `run_enrichment(...)`, `run_kegg(...)`, `run_go(...)`, `simplify_enrichment(...)`, `save_enrichment_report(...)`, `expand_enrichment_genes(...)`, `list_bundled_gene_sets()`
+- `run_enrichment(...)`, `run_kegg(...)`, `run_go(...)`, `run_gsea(...)`, `simplify_enrichment(...)`, `save_enrichment_report(...)`, `expand_enrichment_genes(...)`, `list_bundled_gene_sets()`
 - `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
 - `scat.qc.unspliced_global(adata)`
 
@@ -735,11 +760,12 @@ Most return `(fig, ax)` (or `(fig, axes_list)` for grids like phase portraits) f
 - `scat.pl.volcano_3d(results_df, point_scale=..., min_size=2, s=None, ...)`  
   3D version of the volcano. Same size controls (`s` for fixed size).
 
+- `scat.pl.enrich_dotplot(enrich_df, ...)` now also works well with GSEA results (auto defaults to `x="NES"`, diverging cmap for `color_by="NES"`).
+- `scat.pl.gseaplot(ranked_genes, gsea_result, term=...)` — classic GSEA running-sum plot (uses precomputed curves from `run_gsea` when available).
 - `scat.pl.enrich_dotplot(enrich_df, top_n=15, show_terms=None, x="GeneRatio", size_by="Count", color_by="Adjusted P-value", ...)`  
   Enrichment dot plot (clusterProfiler style). 
-  - `x`: x-axis variable — "GeneRatio" (default), "FoldEnrichment", **"Count"**, or "-log10(p.adj)".
-    Pass `x="Count"` to visualize by the number of genes in the overlap (in addition to the classic GeneRatio/FoldEnrichment views).
-  - `size_by` (dot size, default "Count"), `color_by` (default adjusted p-value).
+  - `x`: x-axis variable — "GeneRatio" (default for ORA), "FoldEnrichment", **"Count"**, "-log10(p.adj)", or "NES" (for GSEA).
+  - `size_by` (dot size, default "Count"), `color_by` (default adjusted p-value; "NES" for GSEA uses diverging colormap).
   - `show_terms` accepts int (top N), "auto" (p.adjust <0.05 + Count>=2 smart selection), or list of term strings/Descriptions (exact or partial match, order preserved) —
     directly analogous to `dotplot(..., showCategory=...)`.
   Also available as `enrich_barplot`.

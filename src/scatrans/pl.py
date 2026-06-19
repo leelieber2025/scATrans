@@ -31,7 +31,7 @@ and shared environments.
 
 import logging
 from contextlib import contextmanager, suppress
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Any, Iterable, List, Mapping, Optional, Tuple, Union
 
 import matplotlib as mpl
 import matplotlib.cm as cm
@@ -625,13 +625,14 @@ def enrich_dotplot(
     """
     Dotplot for enrichment results (clusterProfiler style).
 
-    Common display choices (all columns from run_enrichment / run_kegg are available):
+    Common display choices (all columns from run_enrichment / run_kegg / run_gsea are available):
       - `x`: what to plot on the x-axis. Supported / nice values:
-          "GeneRatio" (default), "FoldEnrichment", "Count", "-log10(p.adj)".
+          "GeneRatio" (default for ORA), "FoldEnrichment", "Count", "-log10(p.adj)", "NES" (auto default for GSEA).
           You can also pass any other numeric column present in the dataframe.
-          Example: `x="Count"` to rank terms by the number of overlapping genes.
+          Example: `x="NES"` for GSEA results.
       - `size_by`: controls dot size (default "Count"). Common: "Count", "GeneRatio".
-      - `color_by`: controls dot color (default "Adjusted P-value" or "p.adjust").
+      - `color_by`: controls dot color (default "Adjusted P-value" or "p.adjust" for ORA;
+        for GSEA results with "NES" it will default to "NES" with a diverging colormap).
         Smaller p-values are usually more interesting.
       - `dot_max`, `dot_min`, `smallest_dot`: omicverse-style controls for dot size range
         (see omicverse.pl.dotplot for the excellent reference implementation).
@@ -682,6 +683,13 @@ def enrich_dotplot(
     if use_style:
         _style_ctx = style_context()
         _style_ctx.__enter__()
+
+    # Auto defaults for GSEA results (NES present)
+    is_gsea = ("NES" in enrich_df.columns) or ("ES" in enrich_df.columns)
+    if x == "GeneRatio" and is_gsea and "NES" in enrich_df.columns:
+        x = "NES"  # sensible default for GSEA
+    if color_by in ("Adjusted P-value", "p.adjust") and is_gsea and "NES" in enrich_df.columns:
+        color_by = "NES"
 
     # clusterProfiler-style term selection (show_terms takes precedence)
     if show_terms is not None:
@@ -868,6 +876,10 @@ def enrich_dotplot(
             )
             plot_df["_color_value"] = np.arange(len(plot_df), dtype=float)
             color_col = "_color_value"
+
+    # For GSEA NES, prefer diverging colormap if user kept default
+    if color_col == "NES" and cmap == "viridis_r":
+        cmap = "RdBu_r"
 
     # Ensure x_col is numeric (user may pass x="FoldEnrichment" that is string/NA in some outputs)
     if x_col in plot_df.columns:
@@ -1095,6 +1107,234 @@ def enrich_dotplot(
         _style_ctx.__exit__(None, None, None)
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
     return fig, ax
+
+
+def gseaplot(
+    ranked_genes: Union[pd.Series, Mapping, Iterable],
+    gsea_result: Optional[pd.DataFrame] = None,
+    term: Optional[str] = None,
+    title: Optional[str] = None,
+    figsize: Tuple[float, float] = (6.5, 5.5),
+    dpi: int = 300,
+    color: str = "#88C544",
+    cmap: str = "seismic",
+    ax: Optional[Any] = None,
+    show: bool = True,
+    use_style: bool = False,
+    save_path: Optional[str] = None,
+    pheno_pos: str = "Pos",
+    pheno_neg: str = "Neg",
+    **kwargs: Any,
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """
+    Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
+
+    Designed to work seamlessly with results from `scat.run_gsea`.
+
+    Parameters
+    ----------
+    ranked_genes : pd.Series or list-like
+        Gene scores (index=genes, values=scores). Same as passed to run_gsea.
+    gsea_result : pd.DataFrame, optional
+        Result from run_gsea(). If provided with `term`, will try to use pre-computed
+        RES curve and hits stored in .attrs['gsea_details'] for pixel-perfect match.
+    term : str, optional
+        Term name to plot (must match a row in gsea_result["Term"]).
+    title, figsize, dpi, save_path, show, use_style, ax : standard scATrans plot args.
+    color : color for the RES curve and hit ticks.
+    cmap : colormap for the ranked list bar at bottom.
+    pheno_pos, pheno_neg : labels for phenotype (shown in plot).
+    """
+    if use_style:
+        _style_ctx = style_context()
+        _style_ctx.__enter__()
+    else:
+        _style_ctx = None
+
+    # Normalize ranked input to Series
+    if isinstance(ranked_genes, (list, tuple)):
+        # assume order high->low, make scores
+        ranked = pd.Series(range(len(ranked_genes), 0, -1), index=[str(x) for x in ranked_genes])
+    elif isinstance(ranked_genes, Mapping):
+        ranked = pd.Series(ranked_genes)
+    else:
+        ranked = pd.Series(ranked_genes)
+
+    ranked = ranked.dropna()
+    ranked.index = ranked.index.astype(str)
+    if len(ranked) == 0:
+        logger.warning("No ranked genes for gseaplot")
+        fig, ax = _empty_placeholder_fig("No ranked genes")
+        return fig, ax
+
+    # Try to get precomputed data from gsea_result.attrs
+    RES = None
+    hits = None
+    nes = np.nan
+    pval = np.nan
+    fdr = np.nan
+    used_term = term
+
+    if gsea_result is not None and term is not None:
+        df = gsea_result
+        # find the row
+        mask = (
+            df["Term"].astype(str).str.strip().str.lower() == str(term).strip().lower()
+            if "Term" in df.columns
+            else pd.Series(False, index=df.index)
+        )
+        if mask.any():
+            row = df.loc[mask].iloc[0]
+            if "NES" in row:
+                nes = row.get("NES", np.nan)
+            if "pvalue" in row or "NOM p-val" in row:
+                pval = row.get("pvalue", row.get("NOM p-val", np.nan))
+            if "p.adjust" in row or "FDR q-val" in row:
+                fdr = row.get("p.adjust", row.get("FDR q-val", np.nan))
+            used_term = row.get("Term", term)
+
+        # precomputed from our run_gsea
+        if "gsea_details" in getattr(df, "attrs", {}):
+            details = df.attrs["gsea_details"]
+            key = None
+            for k in details:
+                if str(k).strip().lower() == str(term).strip().lower():
+                    key = k
+                    break
+            if key and isinstance(details[key], dict):
+                d = details[key]
+                RES = d.get("RES")
+                hits = d.get("hits", [])
+                if "nes" in d:
+                    nes = d["nes"]
+                if "pval" in d:
+                    pval = d["pval"]
+                if "fdr" in d:
+                    fdr = d["fdr"]
+
+    # (optional future: recompute via gseapy if needed)
+
+    # If still no RES, compute a basic RES (approximation; for exact use run_gsea + stored)
+    if RES is None:
+        # Try to recover genes for the term
+        gene_set = set()
+        if gsea_result is not None and term is not None and "leading_edge" in gsea_result.columns:
+            try:
+                lead = gsea_result.loc[
+                    gsea_result["Term"].astype(str).str.lower() == str(term).lower(), "leading_edge"
+                ].iloc[0]
+                if isinstance(lead, str):
+                    gene_set = set(lead.split(";"))
+                elif isinstance(lead, (list, tuple)):
+                    gene_set = set(lead)
+            except Exception:
+                pass
+        if not gene_set:
+            # last resort: empty plot
+            logger.warning("Could not recover gene set or RES for term %s. Plotting empty.", term)
+            fig, ax = _empty_placeholder_fig(f"No data for term {term}")
+            if _style_ctx is not None:
+                _style_ctx.__exit__(None, None, None)
+            return fig, ax
+
+        # very basic running sum (for demo; prefer precomputed)
+        N = len(ranked)
+        k = len(gene_set & set(ranked.index))
+        if k == 0:
+            RES = [0.0] * N
+            hits = []
+        else:
+            weights = np.abs(ranked.values)
+            sum_hit = weights[[i for i, g in enumerate(ranked.index) if g in gene_set]].sum() or 1.0
+            miss = 1.0 / (N - k) if k < N else 0.0
+            running = 0.0
+            RES = []
+            hits = []
+            for i, g in enumerate(ranked.index):
+                if g in gene_set:
+                    running += weights[i] / sum_hit
+                    hits.append(i)
+                else:
+                    running -= miss
+                RES.append(running)
+            # normalize like classic (optional)
+            max_es = max(RES) if RES else 1
+            min_es = min(RES) if RES else 0
+            RES = [(r - min_es) / (max_es - min_es) if (max_es - min_es) > 0 else 0 for r in RES]
+
+    # Now plot
+    if ax is None:
+        fig, axes = plt.subplots(
+            3,
+            1,
+            figsize=figsize,
+            dpi=dpi,
+            gridspec_kw={"height_ratios": [0.5, 0.1, 0.4], "hspace": 0.05},
+            sharex=True,
+        )
+        ax1, ax2, ax3 = axes  # RES, hits, ranked
+        _created = True
+    else:
+        fig = ax.figure
+        # user provided ax not supported for 3-panel easily, fallback to new
+        fig, axes = plt.subplots(3, 1, figsize=figsize, dpi=dpi, sharex=True)
+        ax1, ax2, ax3 = axes
+        _created = True
+
+    # 1. RES curve
+    x = np.arange(len(RES))
+    ax1.plot(x, RES, color=color, linewidth=1.5, label="Running ES")
+    ax1.axhline(0, color="black", linewidth=0.5, linestyle="--")
+    ax1.fill_between(x, RES, 0, alpha=0.2, color=color)
+    ax1.set_ylabel("Enrichment Score (ES)", fontsize=9)
+    ax1.set_title(title or (used_term or "GSEA Plot"), fontsize=11, fontweight="bold")
+    ax1.legend(loc="upper left", frameon=False, fontsize=8)
+
+    # annotate
+    if not np.isnan(nes):
+        ax1.text(
+            0.98,
+            0.95,
+            f"NES={nes:.2f}\n p={pval:.3g}\n FDR={fdr:.3g}",
+            transform=ax1.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
+        )
+
+    # 2. Hits ticks
+    ax2.set_ylim(-0.5, 0.5)
+    if hits:
+        ax2.vlines(hits, -0.3, 0.3, colors=color, linewidth=0.8)
+    ax2.set_yticks([])
+    ax2.set_ylabel("Hits", fontsize=8, rotation=0, ha="right", va="center")
+    sns.despine(ax=ax2, top=True, right=True, left=True, bottom=True)
+
+    # 3. Ranked metric (bar or scatter)
+    rank_vals = ranked.values
+    # color by sign or value
+    norm = Normalize(vmin=min(rank_vals), vmax=max(rank_vals))
+    colors = plt.get_cmap(cmap)(norm(rank_vals))
+    ax3.bar(x, rank_vals, color=colors, width=1.0, edgecolor="none")
+    ax3.axhline(0, color="black", linewidth=0.5)
+    ax3.set_ylabel("Ranked\nmetric", fontsize=8)
+    ax3.set_xlabel("Rank in Ordered Dataset", fontsize=9)
+    ax3.set_xlim(-0.5, len(x) - 0.5)
+
+    # labels for pos/neg
+    len(x) // 2
+    ax3.text(0.02, 0.95, pheno_pos, transform=ax3.transAxes, fontsize=8, color="red")
+    ax3.text(0.98, 0.05, pheno_neg, transform=ax3.transAxes, ha="right", fontsize=8, color="blue")
+
+    sns.despine(ax=ax3, top=True, right=True)
+
+    if _style_ctx is not None:
+        _style_ctx.__exit__(None, None, None)
+
+    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
+    # return the main ax (RES) for consistency, or the fig and list
+    return fig, ax1
 
 
 def volcano_plot(

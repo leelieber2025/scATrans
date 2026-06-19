@@ -1128,3 +1128,47 @@ def test_save_enrichment_report_mkdir_and_tsv(tmp_path):
     # metadata json always written when requested
     if "metadata_json" in saved:
         assert _Path(saved["metadata_json"]).exists()
+
+
+@pytest.mark.skipif(
+    not (lambda: __import__("importlib.util").util.find_spec("gseapy"))(),
+    reason="gseapy not installed for GSEA tests",
+)
+def test_run_gsea_basic():
+    """Basic run_gsea smoke test using gseapy.prerank wrapper."""
+    import pandas as pd
+
+    ranked = pd.Series({"GeneA": 5.0, "GeneB": 4.5, "GeneC": 3.0, "GeneX": -2.0})
+    gene_sets = {
+        "TERM_UP": ["GeneA", "GeneB", "GeneD"],
+        "TERM_DOWN": ["GeneX", "GeneY"],
+    }
+    res = scat.run_gsea(ranked, gene_sets, nperm=20, min_size=1, verbose=False)
+    assert isinstance(res, pd.DataFrame)
+    if not res.empty:
+        assert "NES" in res.columns or "ES" in res.columns
+        assert "pvalue" in res.columns or "p.adjust" in res.columns
+        # attrs should have gsea info
+        assert res.attrs.get("method") == "gsea_prerank"
+        assert "gsea_info" in res.attrs
+
+
+def test_run_gsea_without_gseapy_raises(monkeypatch):
+    """If gseapy missing, run_gsea should raise clear ImportError."""
+    # simulate no gseapy by patching
+    import builtins
+
+    import scatrans as scat
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "gseapy" or name.startswith("gseapy."):
+            raise ImportError("No module named 'gseapy' (simulated)")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    import pandas as pd
+
+    with pytest.raises(ImportError, match="requires the 'gseapy'"):
+        scat.run_gsea(pd.Series({"A": 1}), {"T": ["A"]})

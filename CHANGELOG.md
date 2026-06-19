@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-19
+
+### Added
+- `run_gsea(ranked_genes, gene_sets=..., nperm=..., ...)` — pre-ranked GSEA (via gseapy.prerank wrapper).
+  Reuses the same gene-set loading, `gene_case`, diagnostics, and `.attrs` system as ORA.
+  Returns DataFrame with `NES`, `ES`, `pvalue`, `p.adjust`, `leading_edge`, etc.
+  Optional dependency: `pip install "scatrans[gsea]"`.
+- `scat.pl.gseaplot(ranked_genes, gsea_result, term=...)` — classic GSEA running enrichment score plot.
+  Automatically uses pre-computed RES curves + hits stored in `run_gsea` results (`.attrs["gsea_details"]`).
+- `enrich_dotplot` now auto-detects GSEA results (defaults `x="NES"`, uses diverging colormap when `color_by="NES"`).
+- Added `gsea` extra in `pyproject.toml`.
+
+### Changed
+- Minor internal cleanups and test coverage for the new GSEA path.
+- All new functions follow the existing consistent signatures (`ax=`, `use_style=`, `save_path=`, etc.).
+
 ## [0.8.0] - 2026-06-14
 
 ### Added (enrichment module — major paper-readiness upgrade)

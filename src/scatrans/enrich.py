@@ -246,6 +246,20 @@ ORA_COLUMNS = [
     "TermSize",
 ]
 
+GSEA_COLUMNS = [
+    "Term",
+    "Description",
+    "ES",
+    "NES",
+    "pvalue",
+    "p.adjust",
+    "neg_log10_padj",
+    "leading_edge",
+    "Tag_percent",
+    "Gene_percent",
+    "TermSize",
+]
+
 
 def _get_analysis_info() -> Dict[str, Any]:
     """Return reproducibility metadata for attrs / save_enrichment_report."""
@@ -450,6 +464,13 @@ def _empty_ora_result(include_gene_list: bool = False, **attrs) -> pd.DataFrame:
     if include_gene_list and "Genes_list" not in cols:
         cols = cols + ["Genes_list"]
     df = pd.DataFrame(columns=cols)
+    df.attrs.update(attrs)
+    return df
+
+
+def _empty_gsea_result(**attrs) -> pd.DataFrame:
+    """Return an empty GSEA result DataFrame with GSEA_COLUMNS and .attrs populated."""
+    df = pd.DataFrame(columns=list(GSEA_COLUMNS))
     df.attrs.update(attrs)
     return df
 
@@ -1681,6 +1702,279 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
         cols = ["Ontology"] + [c for c in df.columns if c != "Ontology"]
         df = df[cols]
     return df
+
+
+def run_gsea(
+    ranked_genes: Union[pd.Series, Mapping[str, float], Iterable[str], pd.DataFrame],
+    gene_sets: Union[Mapping[str, Iterable[Any]], str],
+    min_size: int = 15,
+    max_size: int = 500,
+    nperm: int = 1000,
+    organism: str = "mouse",
+    gene_case: Optional[str] = None,
+    gene_set_source: str = "scatrans",
+    verbose: bool = True,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """
+    Pre-ranked Gene Set Enrichment Analysis (GSEA) using gseapy.prerank.
+
+    This implements the classic GSEA algorithm on a user-provided ranked gene list
+    (e.g. logFC, t-statistic or custom score from active_score / DE results).
+    It is the Python equivalent of clusterProfiler::GSEA / Broad GSEA Preranked.
+
+    Parameters
+    ----------
+    ranked_genes : pd.Series, dict, or list-like
+        - Preferred: pd.Series with gene names as index and numeric scores as values.
+          Higher score = more "up" in target group (e.g. logFC).
+          The function will sort internally if needed.
+        - dict: gene -> score
+        - list of genes: treated as pre-sorted from high to low (scores assigned decreasing).
+        Gene names will be cleaned according to gene_case.
+    gene_sets : str, dict or list
+        Same as run_enrichment: bundled name (e.g. "GO_Biological_Process"), GMT path,
+        dict of term->genes, or Enrichr library name.
+    min_size, max_size : int
+        Minimum / maximum number of genes in a gene set to consider.
+    nperm : int
+        Number of permutations for p-value estimation.
+    organism : str
+        "mouse" or "human" (used for Enrichr/gseapy library lookup).
+    gene_case : {"upper", "lower", None}
+        Case normalization for gene symbols (same as other enrichment functions).
+    gene_set_source : {"scatrans", "enrichr"}
+        Control source preference (same semantics as run_enrichment).
+    verbose : bool
+        Print progress.
+    **kwargs
+        Passed through to gseapy.prerank (e.g. seed, threads).
+
+    Returns
+    -------
+    pd.DataFrame
+        GSEA results with columns including Term, Description, ES, NES, pvalue, p.adjust,
+        neg_log10_padj, leading_edge, etc. Sorted by NES descending.
+        Rich metadata in .attrs (method="gsea_prerank", gene_set_info, nperm, gsea_info, analysis_info).
+
+    Notes
+    -----
+    - Unlike ORA, GSEA does not use an explicit "universe" in the same way; the ranked
+      list itself defines the background. min_size/max_size still apply.
+    - Requires gseapy. Install via `pip install gseapy` or `pip install "scatrans[gsea]"`.
+    - For best results with scATrans, pass a Series derived from active_score results, e.g.:
+        ranked = all_results.set_index("gene")["logFC"]   # or suitable score
+        res = scat.run_gsea(ranked, gene_sets="GO_Biological_Process")
+    """
+    try:
+        import gseapy as gp
+    except ImportError as e:
+        raise ImportError(
+            "run_gsea requires the 'gseapy' package. "
+            "Please install it with: pip install gseapy or pip install 'scatrans[gsea]'"
+        ) from e
+
+    analysis_info = _get_analysis_info()
+    organism_norm = str(organism).lower()
+
+    # Normalize ranked_genes input to pd.Series (gene -> score)
+    if isinstance(ranked_genes, pd.DataFrame):
+        # take first column as scores if two cols, or assume first is gene?
+        if ranked_genes.shape[1] >= 2:
+            ranked_genes = ranked_genes.iloc[:, 1]
+            ranked_genes.index = ranked_genes.iloc[:, 0].astype(str).values
+        else:
+            ranked_genes = ranked_genes.iloc[:, 0]
+    if isinstance(ranked_genes, (list, tuple)):
+        # treat as pre-ordered high->low, assign descending ranks
+        genes = _apply_gene_case([str(g).strip() for g in ranked_genes], gene_case)
+        scores = list(range(len(genes), 0, -1))
+        ranked = pd.Series(scores, index=genes)
+    elif isinstance(ranked_genes, Mapping):
+        ranked = pd.Series(ranked_genes)
+    elif isinstance(ranked_genes, pd.Series):
+        ranked = ranked_genes.copy()
+    else:
+        raise ValueError(
+            "ranked_genes must be a pd.Series (gene->score), dict, or list of genes (sorted high->low)"
+        )
+
+    # clean gene names
+    ranked.index = pd.Index(_apply_gene_case(ranked.index.tolist(), gene_case))
+    ranked = ranked.dropna()
+    ranked = ranked[~ranked.index.duplicated(keep="first")]  # keep first occurrence
+    if len(ranked) == 0:
+        if verbose:
+            _log_info("ranked_genes is empty after cleaning")
+        return _empty_gsea_result(
+            method="gsea_prerank",
+            organism=organism_norm,
+            gene_case=gene_case,
+            reason="ranked_genes_empty",
+            gene_set_info=None,
+            analysis_info=analysis_info,
+        )
+
+    if min_size < 1 or max_size < min_size:
+        raise ValueError("min_size and max_size must be positive with max_size >= min_size")
+
+    requested_gene_sets = gene_sets if isinstance(gene_sets, str) else "<dict>"
+    resolved_gene_sets = requested_gene_sets
+    if isinstance(gene_sets, str):
+        resolved_gene_sets = _resolve_gene_set_name(gene_sets, gene_set_source, organism_norm)
+        gene_sets = resolved_gene_sets
+
+    term_to_genes, term_to_desc, load_info = _load_gene_sets(
+        gene_sets, organism=organism_norm, verbose=verbose, gene_case=gene_case
+    )
+    gene_set_info = {
+        "requested": requested_gene_sets,
+        "resolved": resolved_gene_sets,
+        "requested_source": gene_set_source,
+        "actual_source": load_info.get("actual_source"),
+        "library_name": load_info.get("library_name"),
+        "n_terms": int(len(term_to_genes)),
+        "n_unique_genes": int(len(set().union(*term_to_genes.values()))) if term_to_genes else 0,
+    }
+
+    if not term_to_genes:
+        if verbose:
+            _log_info("No gene sets loaded")
+        return _empty_gsea_result(
+            method="gsea_prerank",
+            organism=organism_norm,
+            gene_case=gene_case,
+            reason="no_gene_sets",
+            gene_set_info=gene_set_info,
+            analysis_info=analysis_info,
+        )
+
+    # Prepare for gseapy: dict of str -> list
+    gene_sets_for_gp = {term: list(genes) for term, genes in term_to_genes.items()}
+
+    if verbose:
+        _log_info(
+            f"Running gseapy.prerank on {len(ranked)} genes with {len(gene_sets_for_gp)} gene sets "
+            f"(min_size={min_size}, max_size={max_size}, nperm={nperm})"
+        )
+
+    try:
+        pre_res = gp.prerank(
+            rnk=ranked,
+            gene_sets=gene_sets_for_gp,
+            min_size=min_size,
+            max_size=max_size,
+            permutation_num=nperm,
+            outdir=None,
+            no_plot=True,
+            verbose=False,  # we control logging
+            **kwargs,
+        )
+        res_df = pre_res.res2d.copy()
+    except Exception as e:
+        if verbose:
+            _log_info(f"gseapy.prerank failed: {e}")
+        return _empty_gsea_result(
+            method="gsea_prerank",
+            organism=organism_norm,
+            gene_case=gene_case,
+            reason="gseapy_error",
+            error=str(e),
+            gene_set_info=gene_set_info,
+            analysis_info=analysis_info,
+        )
+
+    if res_df is None or res_df.empty:
+        if verbose:
+            _log_info("gseapy returned no results (all gene sets filtered out?)")
+        return _empty_gsea_result(
+            method="gsea_prerank",
+            organism=organism_norm,
+            gene_case=gene_case,
+            reason="no_results_after_filters",
+            gene_set_info=gene_set_info,
+            analysis_info=analysis_info,
+        )
+
+    # Normalize column names for scATrans consistency
+    rename = {
+        "NOM p-val": "pvalue",
+        "FDR q-val": "p.adjust",
+        "FWER p-val": "FWER_pval",
+        "Lead_genes": "leading_edge",
+        "Tag %": "Tag_percent",
+        "Gene %": "Gene_percent",
+    }
+    res_df = res_df.rename(columns={k: v for k, v in rename.items() if k in res_df.columns})
+
+    # Ensure standard names
+    if "pvalue" not in res_df.columns and "pval" in res_df.columns:
+        res_df = res_df.rename(columns={"pval": "pvalue"})
+    if "p.adjust" not in res_df.columns and "padj" in res_df.columns:
+        res_df = res_df.rename(columns={"padj": "p.adjust"})
+
+    # Add neg_log10_padj for compatibility with filters/plots
+    if "p.adjust" in res_df.columns:
+        res_df["neg_log10_padj"] = -np.log10(
+            pd.to_numeric(res_df["p.adjust"], errors="coerce").clip(lower=1e-300)
+        )
+    if "pvalue" in res_df.columns and "neg_log10_padj" not in res_df.columns:
+        res_df["neg_log10_pval"] = -np.log10(
+            pd.to_numeric(res_df["pvalue"], errors="coerce").clip(lower=1e-300)
+        )
+
+    # Add TermSize if possible (from original gene sets)
+    if "TermSize" not in res_df.columns:
+        term_sizes = {t: len(gs) for t, gs in term_to_genes.items()}
+        res_df["TermSize"] = res_df["Term"].map(term_sizes).fillna(0).astype(int)
+
+    # Sort by NES (descending) if present, else by p.adjust
+    if "NES" in res_df.columns:
+        res_df = res_df.sort_values("NES", ascending=False, key=abs, na_position="last")
+    elif "p.adjust" in res_df.columns:
+        res_df = res_df.sort_values("p.adjust", ascending=True)
+    res_df = res_df.reset_index(drop=True)
+
+    # Reorder columns preferring GSEA_COLUMNS
+    col_order = [c for c in GSEA_COLUMNS if c in res_df.columns]
+    other_cols = [c for c in res_df.columns if c not in col_order]
+    res_df = res_df[col_order + other_cols]
+
+    # Attach rich diagnostics (consistent with ORA)
+    res_df.attrs.update(
+        {
+            "method": "gsea_prerank",
+            "organism": organism_norm,
+            "gene_case": gene_case,
+            "gene_set_info": gene_set_info,
+            "nperm": int(nperm),
+            "analysis_info": analysis_info,
+            "clusterprofiler_aligned": True,
+        }
+    )
+    res_df.attrs["gsea_info"] = {
+        "n_genes_ranked": int(len(ranked)),
+        "score_min": float(ranked.min()),
+        "score_max": float(ranked.max()),
+        "score_median": float(ranked.median()),
+    }
+    # Store gseapy internals for accurate gseaplot (RES curve + hits per term)
+    if hasattr(pre_res, "results"):
+        res_df.attrs["gsea_details"] = pre_res.results
+    if hasattr(pre_res, "ranking"):
+        res_df.attrs["ranking"] = pre_res.ranking.to_dict()
+
+    if verbose:
+        n_sig = (
+            int((res_df.get("p.adjust", pd.Series(1)) < 0.05).sum())
+            if "p.adjust" in res_df
+            else len(res_df)
+        )
+        _log_info(
+            f"GSEA completed: {len(res_df)} terms tested, {n_sig} with p.adjust < 0.05 (sorted by NES)"
+        )
+
+    return res_df
 
 
 def save_enrichment_report(
