@@ -22,21 +22,6 @@ pip install "scatrans[memento]"
 
 The package ships precomputed gene feature tables (gene length + intron number) for both mouse and human. These are used for optional bias correction in `active_score`. You can also supply custom tables (e.g. from your own GTF).
 
-### Species selection (mouse / human)
-
-Gene feature attachment (`add_gene_features`) and enrichment functions (`run_enrichment`, `run_kegg`, `run_go`) require explicit selection of species via the `organism` parameter.
-
-- Default: `organism="mouse"`
-- Supported values: `"mouse"` (or `"mmu"`) and `"human"` (or `"hsa"`)
-
-**Select the value that matches the species of your input data.** Mismatched organism leads to missing gene features or incorrect (empty or irrelevant) enrichment results.
-
-Use the same value consistently:
-
-- `adata = scat.add_gene_features(adata, organism="human")`
-- `scat.run_kegg(..., organism="human")`
-- `scat.run_enrichment(..., organism="human")`
-
 To install from source:
 
 ```bash
@@ -61,43 +46,88 @@ ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 
 `active_score` automatically runs this check and records the value in diagnostics.
 
-## Quick Start (Minimal Default Flow)
+## Quick Start (Complete End-to-End Example)
 
-A minimal example for first-time users. Adapt the `groupby`, `target_group`, `reference_group`, and `organism` values to your data.
+This is a complete, copy-paste friendly workflow for first-time users. It takes you from loaded data to differential results, filtering, enrichment, and visualization of enrichment results.
 
 ```python
 import scanpy as sc
 import scatrans as scat
 
+# 1. Load your data (must contain spliced/unspliced layers or use differential_expression instead)
 adata = sc.read_h5ad("your_data.h5ad")
 
-# 1. Store raw counts and layers early (before HVG selection or normalization).
-# This is required for correct enrichment background and count-based DE methods.
+# 2. Store raw counts + original layers early (before HVG/normalization)
 scat.store_raw_counts(adata, layer="counts", save_raw=False)
 
-# 2. Standard preprocessing (example).
+# 3. Standard preprocessing (adjust as needed for your analysis)
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
-# ... normalize_total, log1p, neighbors, UMAP, clustering ...
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+sc.pp.neighbors(adata)
+sc.tl.umap(adata)
+sc.tl.leiden(adata)
 
-# 3. Attach gene features (optional but needed for bias correction).
-# IMPORTANT: organism must match the species of your single-cell data.
+# 4. Attach gene features for bias correction (optional)
 adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
-# 4. Run the main analysis.
-# Use the same organism in later enrichment calls.
+# 5. Run differential analysis (active transcription score)
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    # show_plot=True shows a quick diagnostic comet plot
+    show_plot=False,
 )
 
-# 5. Inspect the full ranked results. The built-in significant list is often empty.
+print("Differential analysis results (top rows):")
 print(all_results.head())
+
+# 6. Gene filtering (use the full table; the built-in 'significant' is often empty)
+candidates = scat.filter_active_genes(
+    all_results,
+    preset="heuristic",           # or "pseudobulk" / "permissive"
+    # active_score_cutoff=30,
+    # logfc_cutoff=0.3,
+    # pval_cutoff=0.05,
+)
+
+print(f"\nFiltered candidate genes: {len(candidates)}")
+
+# 7. Functional enrichment (GO)
+enrich_res = scat.run_enrichment(
+    gene_list=candidates.index.tolist(),
+    gene_sets="GO_Biological_Process",   # or "GO_BP"
+    organism="mouse",                    # or "human"
+    adata=adata,                         # uses stored raw genes as background
+    pval_cutoff=0.05,
+)
+
+print("\nTop GO enrichment terms:")
+print(enrich_res.head())
+
+# KEGG enrichment (alternative)
+kegg_res = scat.run_kegg(
+    gene_list=candidates.index.tolist(),
+    organism="mouse",   # or "human"
+    adata=adata,
+)
+
+# 8. Visualize enrichment results
+scat.pl.enrich_dotplot(enrich_res, top_n=15, title="GO Enrichment")
+scat.pl.enrich_dotplot(kegg_res, top_n=10, title="KEGG Pathways")
+
+# Optional: save figures
+# scat.pl.enrich_dotplot(enrich_res, top_n=12, save_path="enrich_go.pdf")
+
+# Optional: main result plots
+# scat.pl.comet_plot(all_results, top_n=12)
+# scat.pl.volcano_plot(all_results, top_n=10)
 ```
 
-The built-in `significant` list is produced only when `use_permutation=True` and is frequently empty or very small. Use the full table returned in `all_results` and apply `filter_active_genes` (see below) for your own thresholds.
+You can now explore `all_results`, adjust filters in step 6, try different `gene_sets`, or run `run_go` / `run_gsea`.
+
+For pure differential expression without spliced/unspliced layers, replace step 5 with `scat.differential_expression(...)`.
 
 ### Preserving raw counts and layers
 
@@ -219,7 +249,7 @@ enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
     gene_sets="GO_Biological_Process",   # or "GO_BP" — automatically resolved to the
                                          # correct organism-specific built-in (Hs/Mm_GO_..._2026)
-    organism="mouse",  # must match species of your data ("mouse" or "human")
+    organism="mouse",  # or "human"
     adata=adata,   # if you called store_raw_counts(adata) earlier, this will
                    # automatically use the preserved full measured gene list as universe.
                    # Explicit `universe=` still takes precedence.
@@ -241,7 +271,7 @@ ranked = all_results["logFC"].sort_values(ascending=False)
 gsea_res = scat.run_gsea(
     ranked_genes=ranked,
     gene_sets="GO_Biological_Process",
-    organism="mouse",  # must match species of your data
+    organism="mouse",  # or "human"
     nperm=1000,
 )
 print(gsea_res.head())
@@ -260,7 +290,7 @@ Requires `pip install "scatrans[gsea]"`.
 ```python
 kegg_res = scat.run_kegg(
     gene_list=candidates.index.tolist(),
-    organism="mouse",           # or "human" — must match your data species
+    organism="mouse",  # or "human"
     # Defaults to the organism-specific built-in library (Hs_KEGG_2026 or Mm_KEGG_2026)
     adata=adata,   # if store_raw_counts was called earlier, this automatically uses
                    # the preserved full measured gene set as background.
@@ -270,17 +300,17 @@ kegg_res = scat.run_kegg(
 
 ### Using bundled gene sets
 
-The package defaults to organism-specific bundled sets (`Hs_GO_Biological_Process_2026.txt`, `Hs_KEGG_2026.txt`, and the corresponding mouse files). Specify `organism=` together with base names for KEGG or GO. Historical Enrichr names (e.g., `GO_Biological_Process_2023`) are accepted when written explicitly.
+The package defaults to organism-specific bundled sets. Use `organism=` together with base names such as `"GO_Biological_Process"` or `"KEGG"`. Supply a full historical name (e.g. `"GO_Biological_Process_2023"`) to select an Enrichr version.
 
 ```python
-# KEGG example (supply organism to select the matching bundled set)
-kegg = scat.run_kegg(gene_list=genes, organism="mouse")  # change to "human" for human data
+# KEGG example
+kegg = scat.run_kegg(gene_list=genes, organism="mouse")  # or "human"
 
 # GO — base name is enough (automatically resolved to Hs/Mm_GO_..._2026)
 go = scat.run_enrichment(
     gene_list=genes,
     gene_sets="GO_Biological_Process",   # or "GO_BP"
-    organism="mouse",  # or "human" — must match data
+    organism="mouse",  # or "human"
     # pass adata= (after you did store_raw_counts early) to use the preserved
     # full measured genes as universe/background automatically.
     # Explicit universe= or background= always takes precedence.
@@ -361,7 +391,7 @@ simplified = scat.simplify_enrichment(
 go_bp = scat.run_go(
     gene_list=markers,
     ontology="BP",          # "BP", "CC", "MF", or "ALL"
-    organism="mouse",       # or "human" — must match your data
+    organism="mouse",  # or "human"
     adata=adata,
     return_all=True,
 )
@@ -382,7 +412,7 @@ go_all = scat.run_go(
 The following helpers export results:
 
 ```python
-res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # use correct organism
+res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # or "human"
 
 saved = scat.save_enrichment_report(
     res,
@@ -409,9 +439,9 @@ long_table = scat.expand_enrichment_genes(res)
 
 All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`, `universe_info`, etc.) so you never lose information when a call returns no terms.
 
-### Enrichment visualization
+### Additional enrichment plot options
 
-Use the following functions immediately after running enrichment to generate plots.
+For basic usage see the Quick Start example above. Additional controls:
 
 ```python
 import scatrans as scat
@@ -536,7 +566,7 @@ Enrichment functions are covered in section 3.3. Run KEGG pathway enrichment (se
 ```python
 kegg_res = scat.run_kegg(
     gene_list=significant.index.tolist(),   # or from all_results
-    organism="mouse",                       # "mouse" or "human" — match your data
+    organism="mouse",  # or "human"
     adata=adata,   # preferred: if you called store_raw_counts earlier, this will
                    # automatically use the preserved full measured gene set.
     pval_cutoff=0.05,
@@ -779,7 +809,7 @@ Full signatures and all parameters are documented in the function docstrings and
 
 ### Other commonly used functions
 
-- `add_gene_features(adata, organism="mouse" or "human", ...)` — attach length/intron info from bundled or custom table
+- `add_gene_features(adata, organism=..., ...)` — attach length/intron info (`"mouse"` or `"human"`)
 - `generate_gene_features_from_gtf(gtf_path, output_name, ...)` — build a custom table from a GTF (requires `[gene_features]`)
 - `list_available_gene_features()` — list bundled tables
 - `generate-gene-features` (CLI) — same as above, for the shell
@@ -803,13 +833,13 @@ Gene length and intron count are used for optional bias correction inside `activ
 
 ```python
 # Use bundled tables
-adata = scat.add_gene_features(adata, organism="mouse")  # or "human" — match data species
+adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
 # or provide your own table
 adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
 ```
 
-The package includes tables for mouse and human. Pass `organism="mouse"` (default) or `organism="human"` to select the matching bundled table. For data from other species or custom GTF annotations, generate a table with the CLI or `generate_gene_features_from_gtf` and supply it via `gene_features_path`.
+The package includes tables for mouse and human. Use `organism="mouse"` (default) or `organism="human"` when calling `add_gene_features`. For other species or custom annotations use the gene feature generator CLI.
 
 ### Generating a custom table from GTF
 
