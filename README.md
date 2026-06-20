@@ -2,7 +2,7 @@
 
 scATrans is a Python toolkit for single-cell differential analysis. It is primarily designed for datasets that contain spliced/unspliced (or mature/nascent) RNA layers. In this setting it computes a composite active transcription score that integrates differential expression with reference-based excess unspliced RNA to rank genes.
 
-Even without spliced/unspliced layers, scATrans remains a complete, self-contained single-cell differential analysis package. It provides multiple differential expression methods (scanpy, PyDESeq2 pseudobulk, linear mixed models, and optional Memento), comprehensive functional enrichment (ORA, GSEA, GO, KEGG with bundled up-to-date gene sets and proper universe handling), and a full suite of publication-ready visualization tools. At present there is no closely comparable all-in-one Python package offering this breadth for single-cell data.
+It also supports conventional differential expression workflows (no velocity data required) using scanpy, PyDESeq2 pseudobulk, linear mixed models, or optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG) uses bundled gene sets with consistent universe handling, and a set of visualization functions is provided.
 
 ## Installation
 
@@ -22,36 +22,27 @@ pip install "scatrans[memento]"
 
 The package ships precomputed gene feature tables (gene length + intron number) for both mouse and human. These are used for optional bias correction in `active_score`. You can also supply custom tables (e.g. from your own GTF).
 
+### Species selection (mouse / human)
+
+Gene feature attachment (`add_gene_features`) and enrichment functions (`run_enrichment`, `run_kegg`, `run_go`) require explicit selection of species via the `organism` parameter.
+
+- Default: `organism="mouse"`
+- Supported values: `"mouse"` (or `"mmu"`) and `"human"` (or `"hsa"`)
+
+**Select the value that matches the species of your input data.** Mismatched organism leads to missing gene features or incorrect (empty or irrelevant) enrichment results.
+
+Use the same value consistently:
+
+- `adata = scat.add_gene_features(adata, organism="human")`
+- `scat.run_kegg(..., organism="human")`
+- `scat.run_enrichment(..., organism="human")`
+
 To install from source:
 
 ```bash
 git clone https://github.com/scATrans/scatrans.git
 cd scatrans
 pip install -e ".[dev]"
-```
-
-**Note on version when installing from git:**
-
-The package uses `setuptools_scm` to determine the version from git tags. If you see `0.8.0.devN` after `pip install @git+...`, it means the repository you are installing from has its latest tag at 0.8.x.
-
-To get version 0.9.0:
-
-- Tag the repository first (recommended):
-  ```bash
-  git tag 0.9.0
-  git push origin 0.9.0
-  ```
-  Then reinstall.
-
-- Or force it for this install:
-  ```bash
-  SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 pip install -U "scatrans[memento]@git+https://..."
-  ```
-
-After install, verify with:
-```python
-import scatrans as scat
-print(scat.__version__)  # should be 0.9.0
 ```
 
 **Logging.** The package logs under the name `scatrans`. You can control verbosity with:
@@ -61,7 +52,7 @@ import logging
 logging.getLogger("scatrans").setLevel(logging.INFO)
 ```
 
-**Quick data quality check (recommended).** Before analysis it is useful to inspect the global unspliced fraction:
+**Quick data quality check.** Before analysis, inspect the global unspliced fraction:
 
 ```python
 import scatrans as scat
@@ -72,38 +63,47 @@ ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 
 ## Quick Start (Minimal Default Flow)
 
+A minimal example for first-time users. Adapt the `groupby`, `target_group`, `reference_group`, and `organism` values to your data.
+
 ```python
 import scanpy as sc
 import scatrans as scat
 
 adata = sc.read_h5ad("your_data.h5ad")
 
-# Preserve original counts and spliced/unspliced layers before HVG or normalization.
+# 1. Store raw counts and layers early (before HVG selection or normalization).
+# This is required for correct enrichment background and count-based DE methods.
 scat.store_raw_counts(adata, layer="counts", save_raw=False)
 
+# 2. Standard preprocessing (example).
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
-# ... normalize, log1p, neighbors, UMAP, clustering ...
+# ... normalize_total, log1p, neighbors, UMAP, clustering ...
 
-# Optional: attach bundled gene features for bias correction.
-adata = scat.add_gene_features(adata)
+# 3. Attach gene features (optional but needed for bias correction).
+# IMPORTANT: organism must match the species of your single-cell data.
+adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
+# 4. Run the main analysis.
+# Use the same organism in later enrichment calls.
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
+    # show_plot=True shows a quick diagnostic comet plot
 )
 
+# 5. Inspect the full ranked results. The built-in significant list is often empty.
 print(all_results.head())
 ```
 
-Default parameters require no choices for bias correction, effective gamma, or mixed models. Pseudobulk mode and DE method (`de_method`) are configurable options. The built-in `significant` list requires `use_permutation=True` (for `unspliced_excess_fdr`) and is often small or empty; use the full ranked table in `all_results`.
+The built-in `significant` list is produced only when `use_permutation=True` and is frequently empty or very small. Use the full table returned in `all_results` and apply `filter_active_genes` (see below) for your own thresholds.
 
 ### Preserving raw counts and layers
 
-Call `store_raw_counts` immediately after loading and basic QC, before HVG selection or normalization. It preserves the full raw counts and the original spliced/unspliced (or mature/nascent) layers.
+Call `store_raw_counts` early (after loading and QC, before HVG or normalization). It writes the current `.X` to `layers["counts"]` and copies the original spliced/unspliced layers. These survive later subsetting and provide the correct background for enrichment and count-based DE.
 
-`store_raw_counts` writes the current `.X` to `layers["counts"]` and copies spliced/unspliced layers to `raw_spliced` / `raw_unspliced`. These survive HVG subsetting. The default `save_raw=False` avoids setting `adata.raw`.
+The default `save_raw=False` avoids populating `adata.raw`.
 
 After HVG-based visualization on a copy, restore or use the preserved layers for full-gene DE, active scoring, or enrichment (pass `adata=` to `run_enrichment` or `run_kegg` to use the stored gene list as background).
 
@@ -121,13 +121,13 @@ See the standalone differential expression section for the no-velocity use case.
 
 ## Core Workflow
 
-The default path performs differential expression, reference-gamma unspliced excess, optional length/intron bias correction, composite scoring, gene filtering, enrichment, and plotting.
+`active_score` performs differential expression, reference-gamma unspliced excess calculation, optional bias correction, composite scoring, and stores results plus diagnostics. Downstream steps commonly include gene filtering with `filter_active_genes`, functional enrichment, and plotting.
 
-Advanced options are disabled by default. The internal `significant` list applies strict thresholds and is frequently empty or small. Return the complete ranked table in `all_results` and apply custom filters. Diagnostics are stored in `adata_res.uns["scatrans"]["diagnostics"]`.
+The internal `significant` list uses strict thresholds. The complete results table is returned as `all_results`; use `filter_active_genes` for custom criteria. Diagnostics are available under `adata_res.uns["scatrans"]["diagnostics"]`.
 
 ---
 
-## Basic Analysis Workflow (Recommended Path)
+## Basic Analysis Workflow
 
 ### 3.1 Run active_score (default parameters)
 
@@ -147,7 +147,7 @@ This computes differential expression, reference-group gamma excess for the unsp
 
 These are standard options available for most analyses.
 
-**Pseudobulk mode** (recommended when you have multiple biological replicates per condition):
+**Pseudobulk mode** (use when you have multiple biological replicates per condition):
 
 ```python
 adata_res, significant, all_results = scat.active_score(
@@ -186,7 +186,7 @@ The `filter_active_genes` helper has a `preset="pseudobulk"` that applies more l
 
 ### 3.2 Gene filtering with filter_active_genes (core output tool)
 
-The internal `significant` list is strict. Most users filter the full table returned in `all_results` with `filter_active_genes`.
+The internal `significant` list is strict. Users typically filter the full table returned in `all_results` with `filter_active_genes`.
 
 ```python
 # Start permissive, then tighten based on your data
@@ -219,7 +219,7 @@ enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
     gene_sets="GO_Biological_Process",   # or "GO_BP" — automatically resolved to the
                                          # correct organism-specific built-in (Hs/Mm_GO_..._2026)
-    organism="mouse",
+    organism="mouse",  # must match species of your data ("mouse" or "human")
     adata=adata,   # if you called store_raw_counts(adata) earlier, this will
                    # automatically use the preserved full measured gene list as universe.
                    # Explicit `universe=` still takes precedence.
@@ -227,7 +227,7 @@ enrich_res = scat.run_enrichment(
     min_size=5,
     max_size=500,
 )
-# New in output (for convenience + clusterProfiler compatibility):
+# Additional columns and attrs (clusterProfiler compatibility):
 #   - "neg_log10_padj" column
 #   - res.attrs["universe_info"] with effective_universe_size, dropped_by_annotation_filter, etc.
 ```
@@ -241,7 +241,7 @@ ranked = all_results["logFC"].sort_values(ascending=False)
 gsea_res = scat.run_gsea(
     ranked_genes=ranked,
     gene_sets="GO_Biological_Process",
-    organism="mouse",
+    organism="mouse",  # must match species of your data
     nperm=1000,
 )
 print(gsea_res.head())
@@ -260,30 +260,30 @@ Requires `pip install "scatrans[gsea]"`.
 ```python
 kegg_res = scat.run_kegg(
     gene_list=candidates.index.tolist(),
-    organism="mouse",           # or "human"
+    organism="mouse",           # or "human" — must match your data species
     # Defaults to the organism-specific built-in library (Hs_KEGG_2026 or Mm_KEGG_2026)
     adata=adata,   # if store_raw_counts was called earlier, this automatically uses
-                   # the preserved full measured gene set as background (best practice).
+                   # the preserved full measured gene set as background.
     pval_cutoff=0.05,
 )
 ```
 
-### Default: use the package's bundled gene sets (clearest logic)
+### Using bundled gene sets
 
-The package defaults to organism-specific bundled sets (`Hs_GO_Biological_Process_2026.txt`, `Hs_KEGG_2026.txt`, and the corresponding mouse files). Specify `organism=` for KEGG or base GO names. Historical Enrichr names (e.g., `GO_Biological_Process_2023`) are passed through when supplied explicitly.
+The package defaults to organism-specific bundled sets (`Hs_GO_Biological_Process_2026.txt`, `Hs_KEGG_2026.txt`, and the corresponding mouse files). Specify `organism=` together with base names for KEGG or GO. Historical Enrichr names (e.g., `GO_Biological_Process_2023`) are accepted when written explicitly.
 
 ```python
-# KEGG — just specify organism, gets the correct built-in (Hs/Mm_2026) automatically
-kegg = scat.run_kegg(gene_list=genes, organism="mouse")
+# KEGG example (supply organism to select the matching bundled set)
+kegg = scat.run_kegg(gene_list=genes, organism="mouse")  # change to "human" for human data
 
 # GO — base name is enough (automatically resolved to Hs/Mm_GO_..._2026)
 go = scat.run_enrichment(
     gene_list=genes,
     gene_sets="GO_Biological_Process",   # or "GO_BP"
-    organism="mouse",
-    # Recommended: pass adata= (after you did store_raw_counts early) — it will
-    # automatically use the preserved full measured genes as universe/background.
-    # Explicit universe= or background= always wins if provided.
+    organism="mouse",  # or "human" — must match data
+    # pass adata= (after you did store_raw_counts early) to use the preserved
+    # full measured genes as universe/background automatically.
+    # Explicit universe= or background= always takes precedence.
     adata=adata,
 )
 ```
@@ -308,22 +308,19 @@ go_2021 = scat.run_enrichment(
     # universe=background,   # explicit still accepted and takes precedence
 )
 
-# Even without the year in some cases, but the year-containing names are the clearest signal
+# Supply the full name containing the year to select a historical version.
 ```
 
-`gene_set_source` remains as an **explicit override** if you ever need to force one side:
+`gene_set_source` can be used as an explicit override when needed:
 
-- `gene_set_source="scatrans"` → force the bundled version
-- `gene_set_source="enrichr"` → force the gseapy/Enrichr path
+- `gene_set_source="scatrans"` → use bundled sets
+- `gene_set_source="enrichr"` → use gseapy/Enrichr libraries
 
-Discovery (what bundled sets are available):
+List available bundled sets:
 
 ```python
 print(scat.list_bundled_gene_sets())
-# ['Hs_GO_Biological_Process_2026.txt', 'Hs_KEGG_2026.txt', 'Mm_GO_Biological_Process_2026.txt', 'Mm_KEGG_2026.txt', ...]
 ```
-
-**Motivation**: Default should be the package's own sets with almost no extra parameters (only organism for KEGG). Choosing an Enrichr version should be as simple as writing the gene set name you want.
 
 **Adding your own sets**: Drop `.gmt` files into `src/scatrans/data/`. See `src/scatrans/data/README.md`.
 
@@ -343,7 +340,7 @@ simplified = scat.simplify_enrichment(
     method="jaccard",
 )
 
-# PathwayDenester (nested-pathway test; recommended for GO/KEGG dotplots)
+# PathwayDenester (nested-pathway test)
 simplified = scat.simplify_enrichment(
     enrich_res,
     method="pathway_denester",
@@ -355,7 +352,7 @@ simplified = scat.simplify_enrichment(
 )
 ```
 
-`run_kegg` and `simplify_enrichment` are convenience wrappers around the core `run_enrichment` function.
+`run_kegg` and `simplify_enrichment` are wrappers around `run_enrichment`.
 
 ### run_go (GO enrichment, clusterProfiler-style)
 
@@ -364,28 +361,28 @@ simplified = scat.simplify_enrichment(
 go_bp = scat.run_go(
     gene_list=markers,
     ontology="BP",          # "BP", "CC", "MF", or "ALL"
-    organism="mouse",
-    adata=adata,            # recommended for correct universe
+    organism="mouse",       # or "human" — must match your data
+    adata=adata,
     return_all=True,
 )
 
 # ALL three ontologies + unified multiple-testing correction across them
 go_all = scat.run_go(
-    markers, ontology="ALL", organism="mouse",
+    markers, ontology="ALL", organism="mouse",  # or "human"
     return_all=True,
-    adjust_across_all=True,   # re-compute BH on all terms together (stricter)
+    adjust_across_all=True,
 )
 # go_all.attrs["per_ontology_attrs"] contains full diagnostics for BP/CC/MF separately
 ```
 
 `run_go` automatically resolves to the organism-specific bundled sets when possible (BP is bundled; CC/MF fall back to gseapy/Enrichr if the library is installed).
 
-### Exporting results for manuscripts / supplementary materials
+### Exporting results
 
-The new helpers make it trivial to produce clean, reproducible tables:
+The following helpers export results:
 
 ```python
-res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)
+res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # use correct organism
 
 saved = scat.save_enrichment_report(
     res,
@@ -412,17 +409,77 @@ long_table = scat.expand_enrichment_genes(res)
 
 All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`, `universe_info`, etc.) so you never lose information when a call returns no terms.
 
+### Enrichment visualization
+
+Use the following functions immediately after running enrichment to generate plots.
+
+```python
+import scatrans as scat
+
+# Dot plot for ORA results from run_enrichment / run_kegg / run_go
+# x-axis defaults to "GeneRatio"; other options: "Count", "FoldEnrichment", "-log10(p.adj)"
+scat.pl.enrich_dotplot(
+    enrich_res,
+    top_n=15,
+    title="GO Biological Process enrichment",
+)
+
+# For KEGG
+scat.pl.enrich_dotplot(
+    kegg_res,
+    top_n=10,
+    title="KEGG pathways",
+)
+
+# Save figure (vector-friendly, 300 dpi)
+scat.pl.enrich_dotplot(
+    enrich_res,
+    top_n=12,
+    save_path="go_enrichment.pdf",
+)
+
+# GSEA results (auto-switches to NES on x and color when NES column present)
+scat.pl.enrich_dotplot(
+    gsea_res,
+    top_n=15,
+    x="NES",
+    color_by="NES",
+)
+
+# GSEA running-sum plot (uses curves stored by run_gsea)
+if len(gsea_res) > 0:
+    term = gsea_res.iloc[0]["Term"]
+    scat.pl.gseaplot(
+        ranked_genes=ranked,
+        gsea_result=gsea_res,
+        term=term,
+        save_path="gsea_running_score.pdf",
+    )
+
+# Embed in multi-panel figure with ax=
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(6, 5))
+scat.pl.enrich_dotplot(enrich_res, top_n=8, ax=ax, show=False)
+fig.savefig("enrich_panel.pdf", dpi=300, bbox_inches="tight")
+```
+
+Additional options:
+- `show_terms=15` or `show_terms="auto"` or `show_terms=["term A", "term B"]`
+- `use_style=True` to apply publication style for that call only
+
+All `scat.pl.*` functions accept `save_path`, `ax`, `figsize`, `show`, and `dpi`.
+
 ### 3.4 Visualization
 
 ```python
 import scatrans as scat
 
 scat.pl.comet_plot(all_results, top_n=12, title="Active Drivers")
-scat.pl.volcano_plot(all_results, top_n=10, label_genes=["YourGene1", "YourGene2"])  # or just top_n
-scat.pl.bias_diagnostic_plot(all_results)   # before/after bias correction view
+scat.pl.volcano_plot(all_results, top_n=10, label_genes=["YourGene1", "YourGene2"])
+scat.pl.bias_diagnostic_plot(all_results)
 ```
 
-All plotting functions support `ax=` / `axes=` for embedding in multi-panel publication figures and `save_path=` for high-quality output (300 dpi, tight bbox, vector-friendly fonts).
+All plotting functions support `ax=` / `axes=` for multi-panel figures and `save_path=` (300 dpi output).
 
 ---
 
@@ -430,7 +487,7 @@ All plotting functions support `ax=` / `axes=` for embedding in multi-panel publ
 
 ### diagnose_design
 
-`diagnose_design` is a utility to analyze your experimental design (cell counts, number of biological replicates, global unspliced fraction, etc.) and give practical recommendations and warnings. It is especially useful when you have a small number of samples or are deciding whether to use pseudobulk or mixed-model analysis.
+`diagnose_design` analyzes experimental design (cell counts, replicate numbers, global unspliced fraction) and returns warnings and recommendations. It is called automatically inside `active_score` when `sample_col` or `use_pseudobulk=True`.
 
 **Basic usage:**
 
@@ -445,7 +502,7 @@ diag = scat.diagnose_design(
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    sample_col="sample"          # highly recommended if you have biological replicates
+    sample_col="sample"          # required for pseudobulk and mixed-model paths when replicates exist
 )
 
 # Inspect the results
@@ -474,20 +531,20 @@ A dictionary containing:
 
 `diagnose_design` is automatically called inside `active_score(...)` whenever you pass `sample_col` or set `use_pseudobulk=True`. You will see its output in the log.
 
-**run_kegg** – Run KEGG pathway enrichment directly:
+Enrichment functions are covered in section 3.3. Run KEGG pathway enrichment (see 3.3):
 
 ```python
 kegg_res = scat.run_kegg(
     gene_list=significant.index.tolist(),   # or from all_results
-    organism="mouse",                       # "mouse" or "human"
+    organism="mouse",                       # "mouse" or "human" — match your data
     adata=adata,   # preferred: if you called store_raw_counts earlier, this will
                    # automatically use the preserved full measured gene set.
     pval_cutoff=0.05,
     min_size=5,
     max_size=500,
-    return_all=False,                       # False = only significant terms
+    return_all=False,
     # Defaults to the organism-specific built-in (Hs/Mm_KEGG_2026).
-    # To use the original Enrichr version instead: kegg_library="KEGG_2026"
+    # To use a historical Enrichr version: kegg_library="KEGG_2021"
 )
 
 ### run_gsea (pre-ranked GSEA)
@@ -502,7 +559,7 @@ ranked = all_results["logFC"].sort_values(ascending=False)
 gsea_res = scat.run_gsea(
     ranked_genes=ranked,
     gene_sets="GO_Biological_Process",
-    organism="mouse",
+    organism="mouse",  # or "human"
     nperm=1000,
     min_size=15,
 )
@@ -522,9 +579,7 @@ Requires the optional extra:
 pip install "scatrans[gsea]"   # pulls in gseapy
 ```
 
-See the Plotting section below for details on GSEA-aware `enrich_dotplot` and the new `gseaplot`.
-
-**simplify_enrichment** – Remove redundant terms from enrichment results:
+**simplify_enrichment** (see full documentation and examples in 3.3):
 
 ```python
 # Jaccard: drop terms whose enriched gene sets overlap strongly with a kept term
@@ -547,20 +602,7 @@ simplified = scat.simplify_enrichment(
     to_test_threshold=0.0,
 )
 
-print(f"Reduced from {len(kegg_res)} to {len(simplified)} terms")
-print(simplified[["Term", "p.adjust", "Count"]].head())
-```
-
-| Parameter | `jaccard` | `pathway_denester` |
-|-----------|-----------|-------------------|
-| `similarity_cutoff` | Jaccard threshold (default 0.5) | ignored |
-| `gene_sets` | not used | GMT path, bundled name, or dict (auto from attrs when possible) |
-| `pval_threshold` | not used | independence p-value (default 0.05) |
-| `to_test_threshold` | not used | min shared-DEG fraction before testing (default 0) |
-| `term_size_limit` | not used | drop pathways larger than this size (0 = keep all) |
-| `show_excluded` | not used | if True, return excluded terms with `Denester_*` columns |
-
-This function looks for common gene list columns (`Genes`, `Lead_genes`, etc.) automatically.
+See 3.3 for usage examples and parameters.
 
 ---
 
@@ -669,7 +711,7 @@ Shrinkage strength and stability are now visible without `show_effective_gamma`.
 
 Adds the column `effective_gamma` (reference-group shrunk U/S ratio) to `adata.var` and to the results tables. Many genes will have similar values in pure heuristic mode; advanced (moments) mode usually shows more per-gene variation.
 
-Recommended light guard in `filter_active_genes` (when the column is present):
+Example filter using the column (when present):
 
 ```python
 final = scat.filter_active_genes(
@@ -696,7 +738,7 @@ The mixed-model settings and median `delta_variance` are recorded in diagnostics
 
 Uses scVelo moments for local smoothing before computing the group-wise gamma delta. It is still a simple reference-gamma excess calculation on the smoothed moments, not a full stochastic or dynamical model.
 
-Recommended only when you have a reasonable number of cells and want noise reduction. Falls back to heuristic when it fails (`advanced_fallback=True` by default). Experimental on pseudobulk data.
+Use when you have sufficient cells and want local smoothing. The function falls back to heuristic mode on failure (`advanced_fallback=True` by default).
 
 ---
 
@@ -709,7 +751,7 @@ Recommended only when you have a reasonable number of cells and want noise reduc
 - `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`. Works for both `active_score` and `differential_expression` results.
 - `store_raw_counts` / `ensure_raw_counts` / `restore_raw_counts` — preserve the original full count matrix and spliced/unspliced layers (call early, before HVG/normalize). Essential for correct backgrounds in enrichment and for count-based DE backends.
 
-### Basic parameters (most users only need these)
+### Common parameters
 
 These are the common "free switches" for the basic pipeline (including pseudobulk and DE method choice):
 
@@ -761,13 +803,13 @@ Gene length and intron count are used for optional bias correction inside `activ
 
 ```python
 # Use bundled tables
-adata = scat.add_gene_features(adata, organism="mouse")   # or organism="human"
+adata = scat.add_gene_features(adata, organism="mouse")  # or "human" — match data species
 
 # or provide your own table
 adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
 ```
 
-The package ships mouse tables + a human table (`human_GRCh38_2024A_gene_features.parquet`). Use `organism="human"` to select the bundled human table automatically. For other custom annotations, generate your own table and point to it with `gene_features_path`.
+The package includes tables for mouse and human. Pass `organism="mouse"` (default) or `organism="human"` to select the matching bundled table. For data from other species or custom GTF annotations, generate a table with the CLI or `generate_gene_features_from_gtf` and supply it via `gene_features_path`.
 
 ### Generating a custom table from GTF
 
@@ -828,19 +870,19 @@ See also `scat.list_available_gene_features()` (for bundled tables) and the full
 ```python
 import scatrans as scat
 scat.pl.set_style()                 # once early (opt-in)
-# or (recommended to avoid globals):
+# or (to limit scope):
 with scat.pl.style_context(linewidth=0.8):
     scat.pl.comet_plot(...)         # inside block or pass use_style=True
 # Default for pl.* functions is use_style=False (prevents surprising rcParams changes in notebooks).
 ```
 
 All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in multi-panel figures), `save_path=`, `show=`, `use_style=`, `figsize=` for consistency.
-Most return `(fig, ax)` (or `(fig, axes_list)` for grids like phase portraits) for easy further customization or closing.
+Most return `(fig, ax)` (or `(fig, axes_list)` for grids like phase portraits).
 
 ### Main Plotting Functions
 
 - `scat.pl.comet_plot(results_df, top_n=12, point_scale=1.0, min_size=2, max_size=180, s=None, ...)`  
-  Recommended: log fold change vs. bias-corrected unspliced excess residual (`unspliced_excess_residual`), sized and colored by `active_score`.
+  Plots log fold change vs. bias-corrected unspliced excess residual (`unspliced_excess_residual`), sized and colored by `active_score`.
   - `s=3` (or 1-5): force **fixed** small point size for everything (direct, simple control).
   - `point_scale=0.2` + `min_size=1`: for variable sizing, make tiniest background points truly small.
 
@@ -923,7 +965,7 @@ adata, de_results = scat.differential_expression(
 # Then use the same downstream tools as with active_score results
 candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)
 
-# Preferred (most convenient + correct): after scat.store_raw_counts(adata) early in your flow,
+# After scat.store_raw_counts(adata) early in the workflow,
 # just pass adata= here. It auto-supplies the full measured gene list as background/universe.
 enrich = scat.run_enrichment(
     candidates.index.tolist(),
@@ -940,7 +982,7 @@ The package therefore supports both velocity-based active transcription analysis
 
 **Important: raw counts requirement**
 
-Count-based backends (Memento, PyDESeq2) work best with raw integer counts. The very common pattern of
+Count-based backends (Memento, PyDESeq2) expect raw integer counts. A common pattern that leaves unsuitable data is:
 
 ```python
 sc.pp.highly_variable_genes(adata, ...)
@@ -951,7 +993,7 @@ sc.pp.log1p(adata)
 
 leaves `adata.X` as log-transformed HVGs only, which is unsuitable.
 
-**Recommended practice** (do early):
+**Early in the workflow:**
 
 ```python
 import scatrans as scat
@@ -977,7 +1019,7 @@ adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
 
 The unspliced excess term (used by the primary `active_score` workflow) is a group-contrast proxy derived from a reference-group gamma calculation. It is not a full stochastic or dynamical model.
 
-Interpretation is simplest for clear binary contrasts. Within-group heterogeneity reduces observed signal. The permutation approximation (used when `use_permutation=True`) fixes unspliced/spliced layers and the reference gamma on the original labels; the note is recorded in the results. Global unspliced fractions above ~50% are flagged as potential technical artifacts. Bias-correction quality depends on the number of genes with length and intron annotations. With few biological replicates, power for the unspliced excess term and permutation-based FDR is limited. Mixed-model statistics tend to be conservative when between-sample variation is large.
+The unspliced excess term is most directly applicable to binary group contrasts. Within-group heterogeneity can reduce observed signal. When `use_permutation=True`, labels are shuffled while unspliced/spliced layers and the reference gamma remain fixed; this is noted in the results. Global unspliced fractions above ~50% are reported in diagnostics. Bias correction effectiveness depends on annotation coverage. Small replicate numbers limit power for the unspliced excess term and FDR estimates. Mixed-model results tend to be conservative with large between-sample variation.
 
 When used purely as a differential expression + enrichment toolkit (via `differential_expression`, `run_enrichment`, etc.), scATrans relies on established backends (scanpy, PyDESeq2, etc.) whose standard statistical caveats apply.
 
