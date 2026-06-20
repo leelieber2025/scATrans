@@ -11,10 +11,36 @@ This folder contains two kinds of data:
 
 - `mouse_2020A_gene_features.parquet`
 - `Mus_musculus.GRCm39.115_gene_features.parquet`
+- `human_GRCh38_2024A_gene_features.parquet`
 
-These provide `gene_length` + `intron_number` for mouse. Used by `add_gene_features()` / `active_score()`.
+These provide `gene_length` + `intron_number`. `add_gene_features(..., organism="mouse")` picks a mouse table; `organism="human"` picks the human table. Used by `add_gene_features()` / `active_score()`.
 
-You can generate similar files for other species using the CLI or `pp_bias.generate_gene_features_from_gtf`.
+You can generate similar files for other species or custom annotations using:
+
+CLI (recommended):
+```bash
+pip install "scatrans[gene_features]"
+generate-gene-features --gtf /path/to/genes.gtf \
+                       --output human_GRCh38_gene_features.parquet \
+                       --organism human
+```
+
+Programmatic:
+```python
+import scatrans as scat
+df = scat.generate_gene_features_from_gtf(
+    "/path/to/genes.gtf",
+    output_name="my_features.parquet",
+    organism="human"
+)
+```
+
+Then attach to your data:
+```python
+adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
+```
+
+The resulting table must have columns `gene_name`, `gene_length`, `intron_number` (and optionally `gene_type`).
 
 ---
 

@@ -163,6 +163,12 @@ def test_add_gene_features_and_list(adata_basic):
     # list should return something (now re-exported at top level for convenience)
     avail = scat.list_available_gene_features()
     assert isinstance(avail, list)
+    # New: bundled human data should be discoverable and usable
+    assert any("human" in f.lower() for f in avail), "human gene features should be bundled"
+    # organism=human should resolve without error (even if few genes match the dummy adata)
+    out_h = scat.add_gene_features(adata_basic.copy(), organism="human")
+    assert "gene_length" in out_h.var.columns
+    assert "intron_number" in out_h.var.columns
 
 
 # --------------------------- enrichment ---------------------------

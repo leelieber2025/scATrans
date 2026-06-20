@@ -1,8 +1,8 @@
 # scATrans
 
-scATrans computes a composite score from differential expression and reference-based excess unspliced (nascent) RNA between groups. It ranks genes in single-cell spliced/unspliced or mature/nascent data.
+scATrans is a Python toolkit for single-cell differential analysis. It is primarily designed for datasets that contain spliced/unspliced (or mature/nascent) RNA layers. In this setting it computes a composite active transcription score that integrates differential expression with reference-based excess unspliced RNA to rank genes.
 
-Results must be interpreted using the provided diagnostics. The method has known limitations and does not guarantee recovery of truly active genes.
+Even without spliced/unspliced layers, scATrans remains a complete, self-contained single-cell differential analysis package. It provides multiple differential expression methods (scanpy, PyDESeq2 pseudobulk, linear mixed models, and optional Memento), comprehensive functional enrichment (ORA, GSEA, GO, KEGG with bundled up-to-date gene sets and proper universe handling), and a full suite of publication-ready visualization tools. At present there is no closely comparable all-in-one Python package offering this breadth for single-cell data.
 
 ## Installation
 
@@ -20,7 +20,7 @@ pip install "scatrans[pseudobulk]"
 pip install "scatrans[memento]"
 ```
 
-The package ships precomputed gene feature tables (gene length and intron number) for mouse. These are used for bias correction when available.
+The package ships precomputed gene feature tables (gene length + intron number) for both mouse and human. These are used for optional bias correction in `active_score`. You can also supply custom tables (e.g. from your own GTF).
 
 To install from source:
 
@@ -700,16 +700,6 @@ Recommended only when you have a reasonable number of cells and want noise reduc
 
 ---
 
-## Limitations
-
-The unspliced excess term is a group-contrast proxy derived from a reference-group gamma calculation. It is not a full stochastic or dynamical model.
-
-Interpretation is simplest for clear binary contrasts. Within-group heterogeneity reduces observed signal. The permutation approximation (used when `use_permutation=True`) fixes unspliced/spliced layers and the reference gamma on the original labels; the note is recorded in the results. Global unspliced fractions above ~50% are flagged as potential technical artifacts. Bias-correction quality depends on the number of genes with length and intron annotations. With few biological replicates, power for the unspliced excess term and permutation-based FDR is limited. Mixed-model statistics tend to be conservative when between-sample variation is large.
-
-Always examine diagnostics, score distributions, and (when available) the original spliced/unspliced counts before biological interpretation.
-
----
-
 ## API Reference (Simplified)
 
 ### Core functions
@@ -717,6 +707,7 @@ Always examine diagnostics, score distributions, and (when available) the origin
 - `active_score(...)` — main analysis for active transcription from velocity data. Returns `(adata_res, significant, all_results)`.
 - `differential_expression(...)` — standalone DE (no velocity data required). Supports the same backends as `active_score` (including optional Memento). Returns `(adata, results_df)`.
 - `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`. Works for both `active_score` and `differential_expression` results.
+- `store_raw_counts` / `ensure_raw_counts` / `restore_raw_counts` — preserve the original full count matrix and spliced/unspliced layers (call early, before HVG/normalize). Essential for correct backgrounds in enrichment and for count-based DE backends.
 
 ### Basic parameters (most users only need these)
 
@@ -746,12 +737,17 @@ Full signatures and all parameters are documented in the function docstrings and
 
 ### Other commonly used functions
 
-- `add_gene_features(adata, organism="mouse", ...)` — attach length/intron info
-- `list_available_gene_features()`
+- `add_gene_features(adata, organism="mouse" or "human", ...)` — attach length/intron info from bundled or custom table
+- `generate_gene_features_from_gtf(gtf_path, output_name, ...)` — build a custom table from a GTF (requires `[gene_features]`)
+- `list_available_gene_features()` — list bundled tables
+- `generate-gene-features` (CLI) — same as above, for the shell
+- `store_raw_counts(adata, layer="counts", save_raw=False)`, `ensure_raw_counts(adata)`, `restore_raw_counts(adata, ...)` — preserve full raw counts + original spliced/unspliced layers before HVG/normalization (critical for correct DE, enrichment background, and Memento/PyDESeq2)
 - `diagnose_design(adata, groupby, target_group, reference_group, sample_col=None)` — analyzes cell/sample counts and global unspliced fraction; returns warnings, recommendations, and a suggested `filter_active_genes` preset. Automatically called internally when `sample_col` or `use_pseudobulk=True` is used.
 - `run_enrichment(...)`, `run_kegg(...)`, `run_go(...)`, `run_gsea(...)`, `simplify_enrichment(...)`, `save_enrichment_report(...)`, `expand_enrichment_genes(...)`, `list_bundled_gene_sets()`
-- `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, ...)
+- `scat.pl.*` plotting functions (comet_plot, volcano_plot, bias_diagnostic_plot, enrich_dotplot, gseaplot, active_score_rankplot, active_genes_heatmap, velocity_phase_portraits, ...)
 - `scat.qc.unspliced_global(adata)`
+- `scat.pl.set_style()` / `scat.pl.style_context()` — publication-friendly matplotlib style (opt-in, off by default per-plot via use_style=)
+- Submodules `scat.pl` and `scat.qc` (scanpy-style)
 
 ### Layer names
 
@@ -761,13 +757,69 @@ The package auto-detects `mature`/`nascent` (kb_python) and remaps them internal
 
 ## Gene Feature Attachment & CLI
 
+Gene length and intron count are used for optional bias correction inside `active_score`.
+
 ```python
-adata = scat.add_gene_features(adata, organism="mouse")
+# Use bundled tables
+adata = scat.add_gene_features(adata, organism="mouse")   # or organism="human"
+
 # or provide your own table
 adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
 ```
 
-After installing the `gene_features` extra, the `generate-gene-features` CLI is available for creating custom tables from GTF files.
+The package ships mouse tables + a human table (`human_GRCh38_2024A_gene_features.parquet`). Use `organism="human"` to select the bundled human table automatically. For other custom annotations, generate your own table and point to it with `gene_features_path`.
+
+### Generating a custom table from GTF
+
+Install the generator:
+
+```bash
+pip install "scatrans[gene_features]"
+```
+
+Use the CLI (works with 10x `genes.gtf` or GENCODE GTFs):
+
+```bash
+# Mouse
+generate-gene-features --gtf /path/to/genes.gtf \
+                       --output my_mouse_features.parquet \
+                       --organism mouse
+
+# Human (GENCODE or 10x)
+generate-gene-features --gtf gencode.v49.primary_assembly.annotation.gtf \
+                       --output human_GRCh38_2024A_gene_features.parquet \
+                       --organism human
+```
+
+Then use it:
+
+```python
+import scatrans as scat
+
+adata = scat.add_gene_features(
+    adata,
+    gene_features_path="human_GRCh38_2024A_gene_features.parquet"
+)
+
+# bias correction will now be able to use length + intron_number
+adata_res, significant, all_results = scat.active_score(adata, ...)
+```
+
+You can also call the generator programmatically:
+
+```python
+from scatrans import generate_gene_features_from_gtf
+
+df = generate_gene_features_from_gtf(
+    "path/to/genes.gtf",
+    output_name="my_custom_features.parquet",
+    organism="human"
+)
+```
+
+See also `scat.list_available_gene_features()` (for bundled tables) and the full signature of `add_gene_features`.
+
+**Tip**: The generated parquet must contain a `gene_name` column (plus `gene_length` and `intron_number`). `add_gene_features` does a `reindex` on your `adata.var_names`.
 
 ---
 
@@ -836,7 +888,14 @@ Most return `(fig, ax)` (or `(fig, axes_list)` for grids like phase portraits) f
 
 ## Command-Line Interface
 
-Only the gene-feature generator is exposed as a CLI (`generate-gene-features`).
+The only console script is the gene-feature table generator:
+
+```bash
+pip install "scatrans[gene_features]"
+generate-gene-features --gtf /path/to/genes.gtf --output my_features.parquet --organism human
+```
+
+See the "Gene Feature Attachment & CLI" section for full examples (mouse/human + how to use the output with `add_gene_features`).
 
 ---
 
@@ -914,9 +973,21 @@ adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
 
 ---
 
+## Limitations
+
+The unspliced excess term (used by the primary `active_score` workflow) is a group-contrast proxy derived from a reference-group gamma calculation. It is not a full stochastic or dynamical model.
+
+Interpretation is simplest for clear binary contrasts. Within-group heterogeneity reduces observed signal. The permutation approximation (used when `use_permutation=True`) fixes unspliced/spliced layers and the reference gamma on the original labels; the note is recorded in the results. Global unspliced fractions above ~50% are flagged as potential technical artifacts. Bias-correction quality depends on the number of genes with length and intron annotations. With few biological replicates, power for the unspliced excess term and permutation-based FDR is limited. Mixed-model statistics tend to be conservative when between-sample variation is large.
+
+When used purely as a differential expression + enrichment toolkit (via `differential_expression`, `run_enrichment`, etc.), scATrans relies on established backends (scanpy, PyDESeq2, etc.) whose standard statistical caveats apply.
+
+Always examine diagnostics, score distributions, and (when available) the original spliced/unspliced counts before biological interpretation.
+
+---
+
 ## License
 
-MIT License.
+Apache License 2.0.
 
 ---
 

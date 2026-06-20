@@ -33,10 +33,14 @@ def _open_package_data(filename: str) -> Iterator[Path]:
 
     This is the recommended way to access package data resources and is
     safe for installed packages (wheel/sdist) and editable installs.
+    Raises FileNotFoundError (wrapped) if the resource does not exist.
     """
     ref = files("scatrans.data") / filename
     with as_file(ref) as concrete:
-        yield Path(concrete)
+        p = Path(concrete)
+        if not p.exists():
+            raise FileNotFoundError(f"scatrans/data/{filename} not found in package resources")
+        yield p
 
 
 def list_available_gene_features(verbose: bool = False) -> List[str]:
@@ -53,10 +57,11 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
     list of str
         Filenames of .parquet files available via the package data.
     """
-    # Known files (used as fallback)
+    # Known files (used as fallback when discovery fails)
     known = [
         "mouse_2020A_gene_features.parquet",
         "Mus_musculus.GRCm39.115_gene_features.parquet",
+        "human_GRCh38_2024A_gene_features.parquet",
     ]
 
     discovered: List[str] = []
@@ -86,7 +91,15 @@ def generate_gene_features_from_gtf(
     organism: str = "mouse",
 ):
     """
-    Generate gene features parquet from a GTF file (for developers/maintainers and CLI).
+    Generate a gene features parquet (gene_length + intron_number) from a GTF.
+
+    This is the recommended way to create custom tables for human or non-standard
+    annotations so that bias correction in active_score() can be used.
+
+    Requires the `gtfparse` package (installed via `pip install "scatrans[gene_features]"`).
+
+    After generation, attach the result with:
+        adata = scat.add_gene_features(adata, gene_features_path="your_output.parquet")
 
     Long-running step (GTF parsing). Progress is emitted via the 'scatrans' logger.
     When used from the CLI entrypoint, the CLI configures logging so messages appear.
@@ -94,11 +107,11 @@ def generate_gene_features_from_gtf(
     Parameters
     ----------
     gtf_path : str
-        Path to the 10X Genomics or GENCODE genes.gtf file.
+        Path to a 10X Genomics or GENCODE genes.gtf file (must contain "exon" and "gene" features).
     output_name : str, optional
-        Output parquet filename. If None, auto-generated as {organism}_gene_features.parquet
+        Output parquet filename. If None, auto-generated as {organism}_gene_features.parquet.
     organism : str, default "mouse"
-        Used only for default naming (you can use any name you want).
+        Only used for default output naming; the generated table itself is generic.
     """
     try:
         import gtfparse
@@ -108,8 +121,14 @@ def generate_gene_features_from_gtf(
             "Install with: pip install 'scatrans[gene_features]' or pip install gtfparse"
         ) from None
 
+    gtf_path = Path(gtf_path).expanduser()
+    if not gtf_path.exists():
+        raise FileNotFoundError(f"GTF file not found: {gtf_path}")
+
     if output_name is None:
         output_name = f"{organism}_gene_features.parquet"
+    else:
+        output_name = str(Path(output_name).expanduser())
 
     logger.info("Parsing GTF file (may take 30-60 seconds)... %s", gtf_path)
     df = gtfparse.read_gtf(gtf_path)
@@ -179,8 +198,8 @@ def add_gene_features(
     Add gene features (length, intron number) to adata.var for bias correction.
 
     The function looks for files in three ways (priority order):
-    1. gene_features_path (full user-provided path)
-    2. gene_feature_file (filename that must exist inside the package data/)
+    1. gene_features_path (full user-provided path; ~ expanded)
+    2. gene_feature_file (bare filename inside package data/; path-like values auto-treated as custom)
     3. Default filename chosen from `organism`
 
     Uses robust importlib.resources access so it works whether the package
@@ -192,9 +211,11 @@ def add_gene_features(
     organism : str, default "mouse"
         Used only as fallback when gene_feature_file is not provided.
     gene_feature_file : str, optional
-        Filename in the package data/ directory.
+        Bare filename inside the package data/ directory (e.g. one of the files from
+        list_available_gene_features()). If you pass a path containing / or ~ here,
+        it will be treated as a custom file (like gene_features_path) for convenience.
     gene_features_path : str, optional
-        Full custom path to a parquet file (highest priority).
+        Full custom path to a parquet file (highest priority). ~ is expanded to $HOME.
     """
     logger.info("Loading gene features for bias correction...")
 
@@ -203,22 +224,49 @@ def add_gene_features(
 
     # Priority 1: Full custom path (user file, do not touch package resources)
     if gene_features_path is not None:
-        final_path = Path(gene_features_path)
+        final_path = Path(gene_features_path).expanduser()
         logger.info("Using custom path: %s", final_path)
 
     # Priority 2: explicit filename inside package data/
     elif gene_feature_file is not None:
-        using_package_data = True
-        pkg_filename = gene_feature_file
+        gf_val = str(gene_feature_file)
+        p = Path(gf_val)
+        # Detect if user passed a path (~/..., /abs, rel/dir, or with /) to the "filename" arg by mistake.
+        # In that case treat it as custom path for convenience (and to avoid prepending package data dir).
+        if (
+            p.is_absolute()
+            or gf_val.startswith("~")
+            or "/" in gf_val
+            or "\\" in gf_val
+            or len(p.parts) > 1
+        ):
+            final_path = p.expanduser()
+            logger.warning(
+                "gene_feature_file received a path-like value (%s). "
+                "Treating as custom file path (prefer the gene_features_path= parameter for this).",
+                gf_val,
+            )
+        else:
+            using_package_data = True
+            pkg_filename = gf_val
 
     # Priority 3: Default based on organism (backward compatible)
     else:
         using_package_data = True
-        pkg_filename = (
-            f"{organism}_gene_features.parquet"
-            if organism == "human"
-            else "mouse_2020A_gene_features.parquet"
-        )
+        avail = list_available_gene_features(verbose=False)
+        if organism == "human":
+            # Prefer any human-named file present in the package data
+            human_cands = [
+                f
+                for f in avail
+                if "human" in f.lower() or "grch" in f.lower() or "hg38" in f.lower()
+            ]
+            pkg_filename = (
+                human_cands[0] if human_cands else "human_GRCh38_2024A_gene_features.parquet"
+            )
+        else:
+            mouse_cands = [f for f in avail if "mouse" in f.lower() or f.startswith("Mus")]
+            pkg_filename = mouse_cands[0] if mouse_cands else "mouse_2020A_gene_features.parquet"
         logger.info("Using default for %s: %s", organism, pkg_filename)
 
     # For package data we resolve via resources (context ensures the file is available)
@@ -226,7 +274,7 @@ def add_gene_features(
         try:
             with _open_package_data(pkg_filename) as resolved:
                 final_path = resolved
-                logger.info("Resolved package data file: %s", pkg_filename)
+                logger.info("Resolved package data file: %s", final_path)
         except Exception as exc:
             available = list_available_gene_features(verbose=False)
             raise FileNotFoundError(

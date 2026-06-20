@@ -353,23 +353,25 @@ def _load_gene_sets(
         }
         return term_to_genes, term_to_desc, load_info
     if isinstance(gene_sets_input, str):
+        p = Path(gene_sets_input).expanduser()
         looks_like_path = (
-            os.path.exists(gene_sets_input)
+            p.exists()
             or os.path.isabs(gene_sets_input)
+            or gene_sets_input.startswith("~")
             or "/" in gene_sets_input
             or "\\" in gene_sets_input
         )
         if looks_like_path:
-            if not os.path.exists(gene_sets_input):
+            if not p.exists():
                 raise FileNotFoundError(f"GMT file not found: {gene_sets_input}")
-            with open(gene_sets_input, encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 content = f.read()
             term_to_genes, term_to_desc = _parse_gmt_content(content, gene_case=gene_case)
             load_info = {
                 "actual_source": "gmt",
                 "library_name": os.path.basename(gene_sets_input),
                 "resolved_name": gene_sets_input,
-                "path": os.path.abspath(gene_sets_input),
+                "path": str(p.resolve()) if p.exists() else os.path.abspath(gene_sets_input),
             }
             return term_to_genes, term_to_desc, load_info
 

@@ -5,6 +5,7 @@ Recommended usage:
     import scatrans as scat
     scat.active_score(...)
     scat.add_gene_features(...)
+    scat.generate_gene_features_from_gtf(...)   # if you need custom tables from GTF
     scat.pl.set_style()
     scat.run_enrichment(...)
 
@@ -24,7 +25,11 @@ from .enrich import (
     simplify_enrichment,
 )
 from .generate_gene_features import main as generate_gene_features_main
-from .pp_bias import add_gene_features, list_available_gene_features
+from .pp_bias import (
+    add_gene_features,
+    generate_gene_features_from_gtf,
+    list_available_gene_features,
+)
 from .tl import (
     active_score,
     diagnose_design,
@@ -44,6 +49,7 @@ __all__ = [
     "restore_raw_counts",
     "store_raw_counts",
     "add_gene_features",
+    "generate_gene_features_from_gtf",
     "list_available_gene_features",
     "run_enrichment",
     "run_kegg",
@@ -63,7 +69,7 @@ __all__ = [
 try:
     from ._version import version as __version__
 except ImportError:
-    __version__ = "0.8.0"
+    __version__ = "0.9.0"
 
 # Optional: prevent some internal modules from appearing too prominently
 # in casual inspection while still allowing advanced users to do
