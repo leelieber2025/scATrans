@@ -54,7 +54,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.9.0"
+    VERSION = "0.9.2"
 
 logger = logging.getLogger(__name__)
 
@@ -1220,7 +1220,9 @@ def differential_expression(
     It is intended for users who want high-quality DE (especially via Memento),
     followed by scATrans' downstream tools:
 
-        candidates = scat.filter_active_genes(de_results, ...)
+        candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)  # upregulated
+        # down or both directions:
+        # down_cands = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
         # For enrichment, pass adata= (if store_raw_counts was used) so it uses
         # the preserved full measured gene set as universe, not just current HVGs.
         enrich = scat.run_enrichment(candidates.index.tolist(), ..., adata=adata)
@@ -1714,6 +1716,7 @@ def filter_active_genes(
     velocity_residual_cutoff: Any = _NOT_PROVIDED,
     unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
+    logfc_direction: str = "up",
     active_score_fdr_cutoff: Any = _NOT_PROVIDED,
     unspliced_excess_fdr_cutoff: Any = _NOT_PROVIDED,
     effective_gamma_min: Any = _NOT_PROVIDED,
@@ -1745,9 +1748,9 @@ def filter_active_genes(
       user-supplied thresholds).
 
     Presets are oriented toward target-group "activated" / upregulated signals (positive
-    logFC + positive unspliced_excess_residual). For pure two-sided DE gene selection from
-    differential_expression() results, use preset=None and supply your own logfc_cutoff
-    (e.g. a negative value or use abs() filtering yourself after the call).
+    logFC + positive unspliced_excess_residual; direction defaults to "up").
+    For downregulated or two-sided selection from differential_expression() results,
+    pass preset=None + logfc_direction="down" or "both" (with your desired logfc_cutoff).
 
     If you explicitly pass any cutoff parameter, it takes precedence over the preset.
 
@@ -1784,7 +1787,14 @@ def filter_active_genes(
     unspliced_excess_residual_cutoff : float
         Minimum bias-corrected unspliced (nascent) excess residual.
     logfc_cutoff : float
-        Minimum log fold change.
+        Magnitude threshold for logFC (treated as non-negative). See logfc_direction.
+    logfc_direction : {"up", "down", "both"}
+        Direction filter applied when a "logFC" column is present:
+        - "up" (default): keep if logFC > logfc_cutoff (upregulated in target)
+        - "down": keep if logFC < -logfc_cutoff (downregulated in target)
+        - "both": keep if |logFC| > logfc_cutoff (differentially expressed either way)
+        Presets and this helper's design are "active"/up-biased by default.
+        Use direction="down" or "both" with preset=None for standalone DE results.
     active_score_fdr_cutoff : float or None
         If the column exists, max permutation FDR on the composite active_score (ranking aid).
     unspliced_excess_fdr_cutoff : float or None
@@ -1801,7 +1811,8 @@ def filter_active_genes(
     Returns
     -------
     pd.DataFrame
-        Subset of the input, sorted by active_score descending.
+        Subset of the input. Sorted by active_score (desc) when present;
+        otherwise by p_adj then logFC (direction-aware for pure DE tables).
     """
     if not isinstance(results, pd.DataFrame):
         raise ValueError("results must be the all_results DataFrame returned by active_score")
@@ -1883,6 +1894,19 @@ def filter_active_genes(
         velocity_residual_cutoff,
     )
     logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
+    # logfc_direction is not preset-driven (presets remain up-biased); normalize here
+    dir_raw = str(logfc_direction).lower() if logfc_direction is not None else "up"
+    if dir_raw in {"up", "positive", "pos", "u"}:
+        direction = "up"
+    elif dir_raw in {"down", "negative", "neg", "d"}:
+        direction = "down"
+    elif dir_raw in {"both", "two_sided", "twosided", "abs", "absolute", "either", "any", "b"}:
+        direction = "both"
+    else:
+        raise ValueError(
+            f"logfc_direction={logfc_direction!r} not recognized. "
+            'Use one of: "up", "down", "both".'
+        )
     active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
     unspliced_excess_fdr_cutoff = _resolve(
         "unspliced_excess_fdr_cutoff", unspliced_excess_fdr_cutoff, 1.0
@@ -1911,7 +1935,23 @@ def filter_active_genes(
     if residual_col in df.columns:
         mask &= df[residual_col] > unspliced_excess_residual_cutoff
     if "logFC" in df.columns:
-        mask &= df["logFC"] > logfc_cutoff
+        lc = logfc_cutoff
+        if isinstance(lc, (int, float)) and lc == float("-inf"):
+            # permissive: no logFC threshold for any direction
+            pass
+        else:
+            try:
+                lc = float(lc)
+            except Exception:
+                lc = 0.0
+            if lc < 0:
+                lc = -lc  # always use positive magnitude
+            if direction == "up":
+                mask &= df["logFC"] > lc
+            elif direction == "down":
+                mask &= df["logFC"] < -lc
+            else:  # both
+                mask &= df["logFC"].abs() > lc
 
     # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
@@ -1935,17 +1975,27 @@ def filter_active_genes(
     filtered = df[mask].copy()
 
     # Sorting: prefer active_score when present (velocity + DE composite),
-    # otherwise fall back to p_adj, then positive logFC (for pure DE results,
-    # consistent with target-group activation bias of the helper).
+    # otherwise fall back to p_adj, then logFC according to direction
+    # (strongest up first, strongest down first, or largest |logFC| for both).
     if "active_score" in filtered.columns:
         filtered = filtered.sort_values("active_score", ascending=False)
     elif "p_adj" in filtered.columns:
         sort_cols = ["p_adj"]
         ascending = [True]
         if "logFC" in filtered.columns:
-            sort_cols.append("logFC")
-            ascending.append(False)
+            if direction == "down":
+                sort_cols.append("logFC")
+                ascending.append(True)  # most negative first
+            elif direction == "both":
+                filtered = filtered.assign(_logfc_abs=filtered["logFC"].abs())
+                sort_cols.append("_logfc_abs")
+                ascending.append(False)
+            else:
+                sort_cols.append("logFC")
+                ascending.append(False)
         filtered = filtered.sort_values(sort_cols, ascending=ascending)
+        if "_logfc_abs" in filtered.columns:
+            filtered = filtered.drop(columns=["_logfc_abs"])
     else:
         filtered = filtered.sort_values(filtered.columns[0])
 
@@ -1964,9 +2014,19 @@ def filter_active_genes(
             sort_cols = ["p_adj"]
             ascending = [True]
             if "logFC" in results.columns:
-                sort_cols.append("logFC")
-                ascending.append(False)
+                if direction == "down":
+                    sort_cols.append("logFC")
+                    ascending.append(True)
+                elif direction == "both":
+                    results = results.assign(_logfc_abs=results["logFC"].abs())
+                    sort_cols.append("_logfc_abs")
+                    ascending.append(False)
+                else:
+                    sort_cols.append("logFC")
+                    ascending.append(False)
             results.sort_values(sort_cols, ascending=ascending, inplace=True)
+            if "_logfc_abs" in results.columns:
+                results.drop(columns=["_logfc_abs"], inplace=True)
         return results
 
     return filtered

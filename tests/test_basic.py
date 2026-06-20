@@ -738,6 +738,64 @@ def test_filter_active_genes_presets(adata_mixed_small):
     assert len(f_over) > len(f_heu) or len(f_heu) == 0
 
 
+def test_filter_active_genes_logfc_direction(adata_mixed_small):
+    """logfc_direction supports 'up' (default), 'down', and 'both' for pure DE or mixed tables."""
+    # Use a table that has logFC (from active_score or we build a minimal one)
+    _, _, allr = scat.active_score(
+        adata_mixed_small,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+        n_jobs=1,
+    )
+    assert "logFC" in allr.columns
+
+    # up (default behavior)
+    up = scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.0, logfc_direction="up")
+    if len(up) > 0:
+        assert (up["logFC"] > 0).all()
+
+    # down
+    down = scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.0, logfc_direction="down")
+    if len(down) > 0:
+        assert (down["logFC"] < 0).all()
+
+    # both should contain genes from both sides (or at least as many as up+down if pval loose)
+    both = scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.0, logfc_direction="both")
+    assert len(both) >= len(up)
+    assert len(both) >= len(down)
+
+    # magnitude cutoff works for down
+    down_strict = scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.1, logfc_direction="down")
+    if len(down_strict) > 0:
+        assert (down_strict["logFC"] < -0.1).all()
+
+    # alias names
+    assert len(scat.filter_active_genes(allr, logfc_cutoff=0.0, logfc_direction="neg")) == len(down)
+    assert len(scat.filter_active_genes(allr, logfc_cutoff=0.0, logfc_direction="abs")) == len(both)
+
+    # also test on a minimal pure-DE-like DataFrame (no active_score)
+    de_df = pd.DataFrame(
+        {
+            "logFC": [1.2, 0.8, -0.9, -1.5, 0.05, -0.2],
+            "p_adj": [0.001, 0.01, 0.001, 0.0001, 0.4, 0.3],
+        },
+        index=["G1", "G2", "G3", "G4", "G5", "G6"],
+    )
+    up_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3)
+    assert list(up_de.index) == ["G1", "G2"]  # sorted p then logFC desc
+
+    down_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
+    assert list(down_de.index) == ["G4", "G3"]  # most neg first
+
+    both_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
+    # p_adj order then |logFC| desc within ties: G4(0.0001), G1(0.001,|1.2|), G3(0.001,|0.9|), G2(0.01)
+    assert list(both_de.index) == ["G4", "G1", "G3", "G2"]
+
+
 # --------------------------- Enrichment core logic & edge cases (per design review) ---------------------------
 
 

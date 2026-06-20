@@ -238,6 +238,12 @@ filtered_inplace = scat.filter_active_genes(all_results, preset="heuristic", inp
 # or preset="pseudobulk" after aggregation, or preset="permissive"
 ```
 
+For pure differential_expression() results you can also select downregulated genes:
+```python
+down_cands = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
+both = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
+```
+
 The helper safely ignores filters for columns that do not exist (e.g. `unspliced_excess_fdr` when you did not use `use_permutation`). Legacy column names `velocity_residual` / `velocity_delta_raw` remain in `adata.var` as aliases.
 
 ### 3.3 Functional enrichment
@@ -778,7 +784,7 @@ Use when you have sufficient cells and want local smoothing. The function falls 
 
 - `active_score(...)` — main analysis for active transcription from velocity data. Returns `(adata_res, significant, all_results)`.
 - `differential_expression(...)` — standalone DE (no velocity data required). Supports the same backends as `active_score` (including optional Memento). Returns `(adata, results_df)`.
-- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset="heuristic" | "pseudobulk" | "permissive"`. Works for both `active_score` and `differential_expression` results.
+- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset`, `logfc_direction="up"|"down"|"both"`, etc. Works for both `active_score` and `differential_expression` results (including downregulated candidates).
 - `store_raw_counts` / `ensure_raw_counts` / `restore_raw_counts` — preserve the original full count matrix and spliced/unspliced layers (call early, before HVG/normalize). Essential for correct backgrounds in enrichment and for count-based DE backends.
 
 ### Common parameters
@@ -993,7 +999,9 @@ adata, de_results = scat.differential_expression(
 )
 
 # Then use the same downstream tools as with active_score results
-candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)
+candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)  # upregulated (default)
+# downregulated: logfc_direction="down"
+# both: logfc_direction="both"
 
 # After scat.store_raw_counts(adata) early in the workflow,
 # just pass adata= here. It auto-supplies the full measured gene list as background/universe.

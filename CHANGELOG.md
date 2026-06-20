@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-06-20
+
+### Added / Changed
+- `filter_active_genes` now accepts `logfc_direction="up"|"down"|"both"` (default remains `"up"` for backward compatibility and "active" semantics).
+  - `logfc_cutoff` is interpreted as a positive magnitude in all modes.
+  - `"down"`: selects logFC < -cutoff (downregulated genes from differential_expression results).
+  - `"both"`: selects |logFC| > cutoff.
+  - Sorting for pure-DE tables is now direction-aware (most-negative-first for down, largest |logFC| for both).
+  - This directly supports the common request for downregulated candidates in standalone DE workflows.
+- Updated docstrings, tests, and examples.
+
 ## [0.9.0] - 2026-06-19
 
 ### Added
