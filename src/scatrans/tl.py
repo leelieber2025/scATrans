@@ -31,7 +31,7 @@ from statsmodels.stats.multitest import multipletests
 from . import qc as _qc  # for unspliced_global integration
 from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
-from ._permutation import _single_permutation_task
+from ._permutation import _single_permutation_task, run_permutation_test
 from ._utils import (
     LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
@@ -232,8 +232,8 @@ def active_score(
     Several extensions are available as explicit options (see the README section
     "Optional advanced features"):
     - show_effective_gamma
-    - gamma_method="robust_median" (improved stability for small reference groups)
-    - gamma_method="empirical_bayes" (hierarchical/分层 empirical Bayes log-ratio shrinkage; recommended for small reference groups)
+    - gamma_method="robust_median" (heuristic variant of additive shrinkage using median per-gene ratio as base; not Bayesian)
+    - gamma_method="empirical_bayes" (hierarchical empirical Bayes log-ratio shrinkage; recommended for small reference groups)
     - bias_correction="none"
     - use_mixed_model
     - use_permutation
@@ -594,6 +594,12 @@ def active_score(
         logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
         pass
 
+    # For permutation tasks we pass *already preprocessed* adata copies (or layers).
+    # Re-applying normalize_log1p (or auto) inside _single_permutation_task would double-transform
+    # the permuted data while the real data was transformed only once -> biased FDR.
+    # "auto" is safe in practice because of the "log1p" in uns check, but we force "none" for perm.
+    perm_de_preprocess = "none"
+
     X_features = (
         np.column_stack([np.log1p(gene_length[valid_feat]), np.log1p(intron_number[valid_feat])])
         if valid_feat.sum() >= 50
@@ -941,67 +947,62 @@ def active_score(
         ):
             n_perm = int(current_max_perm)
 
-        # Use the extracted single-task (parallel loop stays here for clarity / progress reporting)
-        logger.info("Running parallel permutation testing (%d iterations)...", n_perm)
-
+        # Delegate to the canonical implementation in _permutation (eliminates dead-code duplication).
+        # Pass explicit valid_expr to avoid .var.get differences and ensure consistent masking.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            perm_results = Parallel(n_jobs=effective_n_jobs, backend="loky")(
-                delayed(_single_permutation_task)(
-                    i + random_seed,
-                    obs_labels,
-                    target_group,
-                    reference_group,
-                    adata,
-                    X_features,
-                    valid_feat,
-                    velocity_layer_for_perm_uns,
-                    velocity_layer_for_perm_spl,
-                    total_us_raw,
-                    min_total_counts,
-                    weight_fc,
-                    weight_unspliced,
-                    weight_pval,
-                    lambda_fc,
-                    lambda_res,
-                    lambda_pval,
-                    is_pseudobulk,
-                    perm_pb_backend,
-                    perm_de_method,
-                    prior_weight,
-                    gamma_method,
-                    de_preprocess,
-                    strict_pydeseq2_counts,
-                    eb_prior_for_perm,
-                    bias_correction=bias_correction,
-                    use_memento_de=perm_memento_de,
-                    memento_capture_rate=memento_capture_rate,
-                    memento_num_boot=memento_num_boot,
-                    memento_n_cpus=memento_n_cpus,
-                )
-                for i in range(n_perm)
+            (
+                active_score_pval_arr,
+                active_score_fdr_arr,
+                unspliced_excess_pval_arr,
+                unspliced_excess_fdr_arr,
+                perm_use_fdr,
+                _perm_disabled_reason,
+            ) = run_permutation_test(
+                n_perm=n_perm,
+                effective_n_jobs=effective_n_jobs,
+                random_seed=random_seed,
+                obs_labels=obs_labels,
+                target_group=target_group,
+                reference_group=reference_group,
+                adata=adata,
+                X_features=X_features,
+                valid_feat=valid_feat,
+                velocity_layer_for_perm_uns=velocity_layer_for_perm_uns,
+                velocity_layer_for_perm_spl=velocity_layer_for_perm_spl,
+                total_us_raw=total_us_raw,
+                min_total_counts=min_total_counts,
+                weight_fc=weight_fc,
+                weight_unspliced=weight_unspliced,
+                weight_pval=weight_pval,
+                lambda_fc=lambda_fc,
+                lambda_res=lambda_res,
+                lambda_pval=lambda_pval,
+                is_pseudobulk=is_pseudobulk,
+                perm_pb_backend=perm_pb_backend,
+                perm_de_method=perm_de_method,
+                prior_weight=prior_weight,
+                gamma_method=gamma_method,
+                de_preprocess=perm_de_preprocess,
+                strict_pydeseq2_counts=strict_pydeseq2_counts,
+                real_score=real_score,
+                real_residual=residual,
+                eb_prior=eb_prior_for_perm,
+                bias_correction=bias_correction,
+                use_memento_de=perm_memento_de,
+                memento_capture_rate=memento_capture_rate,
+                memento_num_boot=memento_num_boot,
+                memento_n_cpus=memento_n_cpus,
+                valid_expr=valid_expr,
             )
 
-        perm_scores_matrix = np.vstack([r[0] for r in perm_results])
-        perm_residual_matrix = np.vstack([r[1] for r in perm_results])
+        adata.var["active_score_pval"] = active_score_pval_arr
+        adata.var[UNSPLICED_EXCESS_PVAL_COL] = unspliced_excess_pval_arr
+        adata.var["active_score_fdr"] = active_score_fdr_arr
+        adata.var[UNSPLICED_EXCESS_FDR_COL] = unspliced_excess_fdr_arr
 
-        exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-        adata.var["active_score_pval"] = (1.0 + exceed_count) / (n_perm + 1.0)
-
-        exceed_res = np.sum(
-            perm_residual_matrix >= np.asarray(residual, dtype=float).reshape(1, -1), axis=0
-        )
-        adata.var[UNSPLICED_EXCESS_PVAL_COL] = (1.0 + exceed_res) / (n_perm + 1.0)
-
-        adata.var["active_score_fdr"] = np.ones(adata.n_vars)
-        adata.var[UNSPLICED_EXCESS_FDR_COL] = np.ones(adata.n_vars)
-        if valid_expr.sum() > 0:
-            adata.var.loc[valid_expr, "active_score_fdr"] = multipletests(
-                adata.var["active_score_pval"].values[valid_expr], method="fdr_bh"
-            )[1]
-            adata.var.loc[valid_expr, UNSPLICED_EXCESS_FDR_COL] = multipletests(
-                adata.var[UNSPLICED_EXCESS_PVAL_COL].values[valid_expr], method="fdr_bh"
-            )[1]
+        if not perm_use_fdr:
+            use_fdr_for_significance = False
 
         if current_max_perm is not None and current_max_perm < 100:
             use_fdr_for_significance = False
@@ -2277,7 +2278,7 @@ def diagnose_design(
     target_group: str,
     reference_group: str,
     sample_col: str | None = None,
-    min_cells_per_sample: int = 10,  # reserved; not yet used to filter samples or adjust power estimates
+    _min_cells_per_sample: int = 10,  # reserved/internal; not yet used (will affect sample filtering/power in future)
 ) -> dict[str, Any]:
     """
     Analyze the experimental design and provide guidance on suitable analysis choices
@@ -2295,6 +2296,8 @@ def diagnose_design(
       - suggested_preset: filter_active_genes preset ("heuristic" or "pseudobulk")
       - power_summary: permutation runtime / power guidance dict
       - workflow_preset: recommended entry from WORKFLOW_PRESETS
+
+    Note: ``_min_cells_per_sample`` is reserved for future use and currently ignored.
     """
     adata = adata_input.copy()
 
@@ -2603,11 +2606,11 @@ def active_score_simple(
     For full control (permutation, advanced mode, mixed models, etc.) use
     :func:`active_score` directly.
     """
-    ad = adata_input.copy() if copy_input else adata_input
-    _maybe_add_gene_features(ad, organism)
-    backend = _resolve_simple_backend_kwargs(ad, groupby, target_group, reference_group, sample_col)
+    adata = adata_input.copy() if copy_input else adata_input
+    _maybe_add_gene_features(adata, organism)
+    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
     return active_score(
-        ad,
+        adata,
         groupby=groupby,
         target_group=target_group,
         reference_group=reference_group,
@@ -2634,10 +2637,10 @@ def differential_expression_simple(
     Same backend auto-selection as :func:`active_score_simple`.
     For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
     """
-    ad = adata_input.copy() if copy_input else adata_input
-    backend = _resolve_simple_backend_kwargs(ad, groupby, target_group, reference_group, sample_col)
+    adata = adata_input.copy() if copy_input else adata_input
+    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
     return differential_expression(
-        ad,
+        adata,
         groupby=groupby,
         target_group=target_group,
         reference_group=reference_group,

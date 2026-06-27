@@ -8,6 +8,7 @@ to keep the core active_score readable and to enable reuse (esp. bias correction
 from __future__ import annotations
 
 import logging
+import uuid
 import warnings
 from math import comb  # re-exported for permutation use
 from typing import Any, Iterable
@@ -206,11 +207,22 @@ def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
     X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
     X = np.asarray(X, dtype=float)
     finite = X[np.isfinite(X)]
-    if finite.size and np.nanmax(finite) > 50:
-        logger.warning(
-            "Mixed model input is neither marked log1p nor integer counts; applying log1p."
-        )
-        return np.log1p(np.clip(X, 0, None))
+    if finite.size:
+        mx = np.nanmax(finite)
+        has_neg = np.any(finite < 0)
+        # Improved heuristic:
+        # - negative values or very small max → almost certainly already log-transformed
+        # - large max on non-negative data → probably needs log1p
+        if has_neg or mx <= 5:
+            return X
+        if mx > 20:  # more conservative than previous 50; catches scran / SCT residuals etc.
+            logger.warning(
+                "Mixed model input is neither marked log1p nor integer counts; applying log1p "
+                "for stability (max value=%.1f). If this is already log-scale, set de_preprocess='none' "
+                "or pre-log the input.",
+                mx,
+            )
+            return np.log1p(np.clip(X, 0, None))
     return X
 
 
@@ -327,7 +339,11 @@ def _pseudobulk_with_layers(
     group_df = adata.obs[[sample_col, groupby]].copy()
     group_df[sample_col] = group_df[sample_col].astype(str)
     group_df[groupby] = group_df[groupby].astype(str)
-    pb_key = group_df[sample_col] + "||" + group_df[groupby]
+
+    # Use a per-run UUID separator that can never appear in real sample/group names.
+    # This completely eliminates the "||" injection / mis-split risk.
+    _pb_sep = f"\x00PB{uuid.uuid4().hex}\x00"
+    pb_key = group_df[sample_col] + _pb_sep + group_df[groupby]
     unique_keys = pd.Index(pb_key.unique())
 
     X_rows, obs_rows = [], []
@@ -346,7 +362,7 @@ def _pseudobulk_with_layers(
         if float(x_sum.sum()) < min_counts:
             continue
 
-        sample_id, group_value = key.split("||", 1)
+        sample_id, group_value = key.split(_pb_sep, 1)
         X_rows.append(sparse.csr_matrix(x_sum.reshape(1, -1)))
         obs_rows.append(
             {
@@ -471,9 +487,7 @@ def _fit_huber_bias_correction(
                 a_max=np.percentile(total_us_for_weights[fit_mask], 95),
             )
             with warnings.catch_warnings():
-                import warnings as _w
-
-                _w.simplefilter("ignore")
+                warnings.simplefilter("ignore")
                 model = HuberRegressor(epsilon=huber_epsilon, max_iter=huber_max_iter).fit(
                     X_fit, delta_velocity[fit_mask], sample_weight=weights
                 )

@@ -183,6 +183,7 @@ def run_permutation_test(
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
+    valid_expr: np.ndarray | None = None,
 ) -> tuple:
     """Run parallel permutation and return score/residual p-values and FDR arrays.
 
@@ -246,7 +247,9 @@ def run_permutation_test(
 
     active_score_fdr = np.ones(adata.n_vars)
     unspliced_excess_fdr = np.ones(adata.n_vars)
-    valid_expr = adata.var.get("valid_expr", np.ones(adata.n_vars, dtype=bool))
+    if valid_expr is None:
+        valid_expr = adata.var.get("valid_expr", np.ones(adata.n_vars, dtype=bool))
+    valid_expr = np.asarray(valid_expr, dtype=bool)
     if valid_expr.sum() > 0:
         active_score_fdr[valid_expr] = multipletests(
             active_score_pval[valid_expr], method="fdr_bh"

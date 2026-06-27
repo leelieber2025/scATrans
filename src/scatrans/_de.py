@@ -21,6 +21,30 @@ from scipy.sparse import csr_matrix
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 
+def _pydeseq2_uses_design_factors() -> bool:
+    """Detect whether the installed PyDESeq2 supports the modern design_factors= API.
+
+    Uses version parsing instead of blind except TypeError to avoid swallowing
+    unrelated future errors.
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+
+        vstr = version("pydeseq2")
+    except Exception:
+        # If we cannot determine, prefer the modern path and let the try/except in caller
+        # be a last resort (narrowed).
+        return True
+    # pydeseq2 0.4+ standardized on design_factors; earlier used design=
+    # Be defensive: parse major.minor
+    try:
+        parts = vstr.split(".")
+        major = int(parts[0]) if parts else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor) >= (0, 4)
+    except Exception:
+        return True
+
 from ._utils import (
     _is_integer_counts_like,
     _prepare_log_normalized_expression,
@@ -56,6 +80,10 @@ def _run_de_wrapper(
 
     When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
     This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
+
+    logFC is normalized toward log2 scale for cross-backend comparability of logfc_cutoff:
+      - PyDESeq2 + t-test family: native log2
+      - wilcoxon, mixedlm, memento: converted from natural/log1p scale (/ log(2))
 
     Internal function: type hints strengthened for mypy/pyright.
     """
@@ -186,7 +214,7 @@ def _run_de_wrapper(
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            try:
+            if _pydeseq2_uses_design_factors():
                 dds = DeseqDataSet(
                     counts=counts_use,
                     metadata=metadata,
@@ -195,7 +223,7 @@ def _run_de_wrapper(
                     quiet=True,
                     n_cpus=n_jobs,
                 )
-            except TypeError:
+            else:
                 dds = DeseqDataSet(
                     counts=counts_use,
                     metadata=metadata,
@@ -206,14 +234,14 @@ def _run_de_wrapper(
                 )
             dds.deseq2()
 
-            try:
+            if _pydeseq2_uses_design_factors():
                 stat_res = DeseqStats(
                     dds,
                     contrast=[use_groupby, target_group, reference_group],
                     quiet=True,
                     n_cpus=n_jobs,
                 )
-            except TypeError:
+            else:
                 stat_res = DeseqStats(
                     dds,
                     contrast=[use_groupby, target_group, reference_group],
@@ -245,7 +273,12 @@ def _run_de_wrapper(
             "names"
         )
         de_df = pd.DataFrame(index=ad_temp.var_names)
-        de_df["logFC"] = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
+        raw_lfc = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
+        # Wilcoxon in scanpy reports log1p(mean_t) - log1p(mean_r) (natural-ish scale).
+        # Convert to log2 for consistency with t-test / PyDESeq2.
+        if de_method == "wilcoxon":
+            raw_lfc = raw_lfc / np.log(2)
+        de_df["logFC"] = raw_lfc
         de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names).fillna(1.0)
         de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names).fillna(1.0)
         return de_df
@@ -393,7 +426,8 @@ def _run_mixedlm_de(
         p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
 
     de_df = pd.DataFrame(index=var_names)
-    de_df["logFC"] = pd.Series(logfcs, index=var_names)
+    # mixedlm coefficient is on log1p scale (natural log). Convert to log2 for comparability.
+    de_df["logFC"] = pd.Series(logfcs, index=var_names) / np.log(2)
     de_df["p_val"] = pd.Series(main_pvals, index=var_names)
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
@@ -493,10 +527,12 @@ def _run_memento_de(
         raw_counts is None
         and hasattr(ad_temp, "raw")
         and ad_temp.raw is not None
-        and ad_temp.raw.shape[1] >= ad_temp.shape[1]
+        and getattr(ad_temp.raw, "shape", (0, 0))[1] == ad_temp.n_vars
+        and hasattr(ad_temp.raw, "var_names")
+        and np.array_equal(ad_temp.raw.var_names, ad_temp.var_names)
     ):
         raw_counts = ad_temp.raw.X
-        logger.info("Memento: using counts from adata.raw.")
+        logger.info("Memento: using counts from adata.raw (exact match).")
         raw_counts = _to_csr(raw_counts)
 
     if raw_counts is None and _is_integer_counts_like(ad_temp.X):
@@ -542,9 +578,11 @@ def _run_memento_de(
         result = pd.DataFrame(index=res_index)
 
     de_df = pd.DataFrame(index=res_index)
-    de_df["logFC"] = (
+    m_lfc = (
         pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
     )
+    # memento de_coef is typically on natural log scale; convert to log2
+    de_df["logFC"] = m_lfc / np.log(2)
     pvals = (
         pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
     )

@@ -669,13 +669,12 @@ def run_enrichment(
             )
     else:
         cutoff = float(pval_cutoff)
-        if pval_cutoff != 0.05:
-            _warn_user(
-                "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
-                "Please use `padj_cutoff` instead for clarity.",
-                # Using warning not DeprecationWarning to avoid noise in many notebooks;
-                # users doing -W error will still see it.
-            )
+        # Always warn when the legacy pval_cutoff name is used (even at default value).
+        # This ensures users see the deprecation regardless of the numeric value passed.
+        _warn_user(
+            "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
+            "Please use `padj_cutoff` instead for clarity.",
+        )
 
     genes = _clean_gene_list(gene_list, gene_case=gene_case)
     if not genes:
@@ -1153,6 +1152,13 @@ def run_go(
             gs_name = ont
         else:
             gs_name = ont_map.get(ont, ont)
+
+        if ont not in ("BP", "GO_BP"):
+            # Only BP has bundled offline data. CC/MF will fall back to gseapy/Enrichr (needs optional dep + network).
+            logger.info(
+                "run_go(ontology=%s): CC/MF are not bundled; will use gseapy/Enrichr (requires internet if not cached).",
+                ont,
+            )
 
         return run_enrichment(
             gene_list=gene_list,

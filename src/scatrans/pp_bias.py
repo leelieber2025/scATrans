@@ -137,10 +137,33 @@ def generate_gene_features_from_gtf(
         df = df.to_pandas()
         logger.info("Converted to Pandas DataFrame")
 
-    # 1. gene_length (sum of all exons)
+    # 1. gene_length: proper union of exon intervals per gene (critical!)
+    # Previous code summed lengths across all transcripts → massive overcount for multi-isoform genes.
     exon = df[df["feature"] == "exon"].copy()
-    exon["length"] = exon["end"] - exon["start"] + 1
-    gene_length = exon.groupby("gene_id")["length"].sum().rename("gene_length")
+    exon["start"] = pd.to_numeric(exon["start"], errors="coerce")
+    exon["end"] = pd.to_numeric(exon["end"], errors="coerce")
+    exon = exon.dropna(subset=["gene_id", "start", "end"])
+
+    def _exon_union_length(grp):
+        if len(grp) == 0:
+            return 0
+        # Collect (start, end) pairs (GTF is 1-based, inclusive)
+        ivs = sorted(
+            (int(s), int(e)) for s, e in zip(grp["start"], grp["end"])
+            if pd.notna(s) and pd.notna(e)
+        )
+        if not ivs:
+            return 0
+        merged = [list(ivs[0])]
+        for s, e in ivs[1:]:
+            last = merged[-1]
+            if s <= last[1] + 1:  # overlap or adjacent (inclusive)
+                last[1] = max(last[1], e)
+            else:
+                merged.append([s, e])
+        return sum(e - s + 1 for s, e in merged)
+
+    gene_length = exon.groupby("gene_id").apply(_exon_union_length, include_groups=False).rename("gene_length")
 
     # 2. intron_number (max exons per transcript - 1)
     transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")

@@ -835,7 +835,7 @@ The correction is intended to reduce technical contributions from gene length an
 The core unspliced excess uses a per-gene reference gamma = U_ref / S_ref (shrunk).
 
 - Default: `gamma_method="heuristic_shrink"` + `prior_weight=5.0` (additive pseudo-count shrinkage toward a global ratio).
-- For small reference groups, try `gamma_method="robust_median"`: uses the **median** ratio across reference genes as the anchor. This reduces sensitivity to a few outlier genes in the reference and can yield more stable residuals.
+- For small reference groups, try `gamma_method="robust_median"`: a **heuristic variant** of the above that uses the *median of per-gene* U/S ratios (instead of the global sum ratio) as the shrinkage anchor. It is *not* an empirical-Bayes or hierarchical method; see source/docstring for details.
 - **`gamma_method="empirical_bayes"`** (optional, recommended for small reference): **hierarchical (分层) gamma estimation** using robust log-ratio empirical Bayes shrinkage. Prior hyperparameters are estimated once from the reference group (trimmed median + MAD); per-gene gammas are shrunk toward the shared prior on the log-ratio scale (hierarchical model across genes). During permutation, the **same fixed prior** is reused while observed ratios are recomputed from shuffled labels (conditional permutation preserved). This is the main "分层 γ 估计" addition.
 - `gamma_method="raw"` disables most shrinkage (exploratory only).
 

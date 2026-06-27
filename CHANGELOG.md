@@ -7,14 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased / Review 2026-06-27]
 ### Added / Improved
-- Clarified and documented the `gamma_method="empirical_bayes"` implementation as **hierarchical (分层) gamma estimation** for the reference U/S ratio. Added explicit descriptions, Chinese term, and usage notes across module docs, tl.py, and README.
-- Stronger emphasis on "always pass explicit target_group/reference_group" (defaults differ between core `active_score` ("GA"/"Ctrl") and convenience wrappers ("Disease"/"Control")).
+- Clarified and documented the `gamma_method="empirical_bayes"` implementation as **hierarchical (分层) gamma estimation** for the reference U/S ratio (README keeps the CN term; source now English-only).
+- Stronger emphasis on "always pass explicit target_group/reference_group".
 
-### Changed / Fixed
-- Replaced internal `assert` with explicit RuntimeError in gene feature path (pp_bias.py).
-- Reduced log spam ("storing ... as categorical") during permutation label shuffling and internal DE calls by temporarily raising anndata logger level.
-- Minor docstring and comment precision updates for gamma, diagnostics, and defaults.
-- No behavior changes to computation, results, or public signatures.
+### Changed / Fixed (critical)
+- **Bug 1**: Eliminated dead code — `tl.py` now calls the canonical `run_permutation_test(...)` in `_permutation.py` instead of duplicating the Parallel loop. Removed ~duplicated logic and the maintenance trap. `valid_expr` is passed explicitly for consistent behavior.
+- **Bug 2**: Fixed double normalization (double log1p) in permutations. When `de_preprocess="normalize_log1p"` (or auto that applies), the value passed to permutation tasks is forced to "none" so that perm copies of the already-transformed adata are not re-normalized. Prevents systematically biased FDR.
+- **Scientific Error 1**: Fixed EB gamma: `sigma2` in `_apply_empirical_bayes_gamma` now correctly includes the `n_ref` factor: `1.0 / (n_ref * U_r + c) + ...`. This was causing n_r-fold over-estimate of observation noise and excessive shrinkage (especially bad for the small-ref case EB is meant to help). `n_ref` is computed from r_mask in the caller.
+- **Scientific Error 2**: Clarified `robust_median` docs in code/README: it is a heuristic variant of `heuristic_shrink` (different base_gamma estimator) and is **not** Bayesian/EB/hierarchical. Renamed descriptions to prevent user confusion.
+- **Design fixes**:
+  - Tightened Memento raw counts check from `>=` to exact `== n_vars` + `var_names` equality (prevents misaligned HVG/raw usage).
+  - Renamed shadowing local `ad = ...` in `active_score_simple` / `differential_expression_simple` (avoids hiding `import anndata as ad`).
+  - Made `min_cells_per_sample` private (`_min_cells_per_sample`) + doc note (was public but did nothing).
+  - Removed all Chinese comments ("分层") from source (tl.py, _velocity.py); retained in README only.
+  - Replaced risky bare `except TypeError` for PyDESeq2 design_factors/design compat with explicit `_pydeseq2_uses_design_factors()` using `importlib.metadata` version check.
+
+- Reduced anndata category storage log noise during internal DE/perm (narrow logger level bump).
+- All tests + targeted EB/perm/explicit-norm cases pass after fixes.
 
 ## [0.9.2] - 2026-06-20
 

@@ -2,7 +2,7 @@
 scATrans internal velocity delta computation (heuristic + advanced scVelo moments track).
 
 Reference gamma (U/S ratio) estimation supports multiple robust methods, including
-"empirical_bayes" which implements hierarchical (分层) gamma shrinkage: per-gene
+"empirical_bayes" which implements hierarchical gamma shrinkage: per-gene
 log-ratios in the reference group are shrunk toward a robust data-driven prior
 (estimated via trimmed median + MAD on log-ratios). This borrows strength across
 genes and improves stability especially for small reference groups.
@@ -111,9 +111,15 @@ def _apply_empirical_bayes_gamma(
     U_r: np.ndarray,
     S_r: np.ndarray,
     eb_prior: dict[str, Any],
+    *,
+    n_ref: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Shrink per-gene reference log-ratios toward a fixed prior.
+
+    n_ref: number of cells in the reference group. Required for correct delta-method
+           variance of the mean log-ratio: Var(log(Ū/S̄)) ≈ 1/(n_r * Ū) + 1/(n_r * S̄).
+           Previously the n_r factor was missing, causing over-shrinkage.
 
     Returns (gamma_ref, shrinkage_weight, posterior_log_sd).
     """
@@ -125,8 +131,9 @@ def _apply_empirical_bayes_gamma(
     U_r = np.asarray(U_r, dtype=float).ravel()
     S_r = np.asarray(S_r, dtype=float).ravel()
 
+    n_ref = max(1.0, float(n_ref))
     r_g = np.log((U_r + eps) / (S_r + eps))
-    sigma2 = 1.0 / (U_r + c) + 1.0 / (S_r + c)
+    sigma2 = 1.0 / (n_ref * U_r + c) + 1.0 / (n_ref * S_r + c)
     sigma2 = np.maximum(sigma2, 1e-12)
 
     w_g = tau2 / (tau2 + sigma2)
@@ -200,9 +207,11 @@ def _compute_velocity_delta(
 
     gamma_method:
         - "heuristic_shrink": original global ratio + additive shrinkage using prior_weight
-        - "robust_median": use median reference ratio as base gamma for more stability
-          with small reference groups (still applies shrinkage form)
-        - "empirical_bayes": hierarchical (分层) gamma estimation via robust log-ratio
+        - "robust_median": variant of heuristic_shrink that uses the *median of per-gene*
+          U/S ratios (instead of global sum ratio) as the anchor for additive pseudo-count
+          shrinkage. This is *not* a Bayesian/empirical-Bayes method; documented as a
+          robust heuristic alternative for small reference groups.
+        - "empirical_bayes": hierarchical gamma estimation via robust log-ratio
           empirical Bayes shrinkage (see module docstring). Recommended for small ref.
         - "raw" or other: minimal/no shrinkage (per-gene raw ratio)
 
@@ -223,6 +232,8 @@ def _compute_velocity_delta(
     eps = _EPS
     gamma_info: dict[str, Any] = {"gamma_method": gamma_method}
 
+    n_ref = float(np.sum(r_mask)) if r_mask is not None else 1.0
+
     if gamma_method == "empirical_bayes":
         if eb_prior is None:
             eb_prior, prior_meta = _estimate_eb_prior_from_reference(
@@ -240,7 +251,7 @@ def _compute_velocity_delta(
                     "gamma_prior_tau_squared": eb_prior.get("tau_squared"),
                 }
             )
-        gamma_ref, w_g, post_sd = _apply_empirical_bayes_gamma(U_r, S_r, eb_prior)
+        gamma_ref, w_g, post_sd = _apply_empirical_bayes_gamma(U_r, S_r, eb_prior, n_ref=n_ref)
         gamma_info["shrinkage_summary"] = _shrinkage_summary(w_g)
         gamma_info["shrinkage_weights"] = w_g
         gamma_info["posterior_log_sd"] = post_sd
