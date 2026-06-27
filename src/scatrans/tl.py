@@ -662,6 +662,10 @@ def active_score(
         if extra_col in de_df.columns:
             adata.var[extra_col] = de_df[extra_col]
 
+    n_mixed_failed = 0
+    if use_mixed_model:
+        n_mixed_failed = int(de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0)
+
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
     unspliced_fraction = np.nan
     try:
@@ -871,6 +875,7 @@ def active_score(
             "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"]))
             if "delta_variance" in adata.var.columns
             else np.nan,
+            "n_genes_failed_fit": n_mixed_failed if use_mixed_model else 0,
         },
     }
     if mode == "advanced" and moments_info:
@@ -903,8 +908,9 @@ def active_score(
     # ==================== PERMUTATION ====================
     current_max_perm = None
     use_fdr_for_significance = True
-    # active_fdr_disabled_reason is recorded only for very small permutation spaces
-    # (currently informational; not exposed in the public result)
+    _perm_disabled_reason = None
+    # disabled_reason (e.g. "small_permutation_space") is now returned from run_permutation_test
+    # and propagated to metadata/diagnostics for transparency.
 
     if use_permutation:
         if is_pseudobulk:
@@ -1001,12 +1007,9 @@ def active_score(
         adata.var["active_score_fdr"] = active_score_fdr_arr
         adata.var[UNSPLICED_EXCESS_FDR_COL] = unspliced_excess_fdr_arr
 
-        if not perm_use_fdr:
-            use_fdr_for_significance = False
-
-        if current_max_perm is not None and current_max_perm < 100:
-            use_fdr_for_significance = False
-            _ = "small_permutation_space"
+        # Use the decision returned by canonical run_permutation_test (now authoritative).
+        # Previously always-True + vestigial if-not + separate max_perm check were inconsistent.
+        use_fdr_for_significance = bool(perm_use_fdr)
 
     return _finalize_active_score_results(
         adata,
@@ -1031,6 +1034,7 @@ def active_score(
         active_fdr_cutoff=active_fdr_cutoff,
         unspliced_excess_fdr_cutoff=unspliced_excess_fdr_cutoff,
         use_fdr_for_significance=use_fdr_for_significance,
+        perm_disabled_reason=_perm_disabled_reason,
         use_delta_variance_pval=use_delta_variance_pval,
         delta_var_pval_cutoff=delta_var_pval_cutoff,
         de_method=de_method,
@@ -1208,6 +1212,7 @@ def _finalize_active_score_results(
         "active_fdr_cutoff": extra_metadata.get("active_fdr_cutoff"),
         "unspliced_excess_fdr_cutoff": extra_metadata.get("unspliced_excess_fdr_cutoff"),
         "use_fdr_for_significance": extra_metadata.get("use_fdr_for_significance"),
+        "perm_disabled_reason": extra_metadata.get("perm_disabled_reason"),
         "significant_criteria": {
             "logFC": f"> {extra_metadata.get('logfc_cutoff')}",
             "p_adj": f"< {extra_metadata.get('pval_cutoff')}",
@@ -1541,6 +1546,8 @@ def differential_expression(
         if extra in de_df.columns:
             adata.var[extra] = de_df[extra]
 
+    n_mixed_failed_de = int(de_df.attrs.get("n_genes_failed_fit", 0)) if (use_mixed_model and hasattr(de_df, "attrs")) else 0
+
     # Build clean results table (no velocity columns)
     cols = ["logFC", "p_val", "p_adj"]
     for c in [
@@ -1608,6 +1615,7 @@ def differential_expression(
             "use_delta_variance_pval": use_delta_variance_pval,
             "delta_var_pval_cutoff": delta_var_pval_cutoff,
             "mixed_model_pval": mixed_model_pval if use_mixed_model else None,
+            "n_genes_failed_mixed_fit": n_mixed_failed_de,
             "memento_num_boot": memento_num_boot if use_memento_de else None,
             "memento_n_cpus": memento_n_cpus if use_memento_de else None,
             "n_jobs": n_jobs,

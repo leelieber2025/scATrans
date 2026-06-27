@@ -432,6 +432,24 @@ def _run_mixedlm_de(
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
     de_df["delta_var_pval"] = pd.Series(p_lrts, index=var_names)
+
+    # Count genes that hit the neutral fallback in per-gene fit (broad except).
+    # These indicate convergence/singularity/too-few-samples issues; users should be aware
+    # rather than silently getting delta_variance=0 + p=1 for many genes.
+    neutral_mask = (
+        (np.abs(logfcs) < 1e-12) &
+        (p_walds > 1.0 - 1e-9) &
+        (np.abs(dvars) < 1e-12)
+    )
+    n_failed = int(np.sum(neutral_mask))
+    de_df.attrs["n_genes_failed_fit"] = n_failed
+    if n_failed > 0:
+        logger.warning(
+            "MixedLM: %d/%d genes had degenerate fits (e.g. small n per group, collinearity) "
+            "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
+            "See diagnostics['mixed_model']['n_genes_failed_fit'].",
+            n_failed, len(de_df)
+        )
     return de_df
 
 
@@ -577,15 +595,34 @@ def _run_memento_de(
         res_index = ad_temp.var_names
         result = pd.DataFrame(index=res_index)
 
+    # Schema guard: memento.binary_test_1d contract is not version-pinned strictly.
+    # Without this, missing 'de_coef'/'de_pval' leads to silent/wrong or crashing fallback.
+    if isinstance(result, pd.DataFrame):
+        expected_cols = {"de_coef", "de_pval"}
+        missing = expected_cols - set(result.columns)
+        if missing:
+            logger.warning(
+                "Memento result missing required columns %s (possible memento-de API/version drift). "
+                "logFC/p_val will fall back to neutral values (0/1). Results unreliable for use_memento_de=True. "
+                "Pin compatible version e.g. 'memento-de>=0.1.0,<0.3.0' if needed.",
+                sorted(missing),
+            )
+
     de_df = pd.DataFrame(index=res_index)
-    m_lfc = (
-        pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
-    )
+    # Safe access to avoid scalar .reindex crash or silent zeroing on column absence
+    if isinstance(result, pd.DataFrame) and "de_coef" in result.columns:
+        m_lfc_raw = result["de_coef"]
+    else:
+        m_lfc_raw = 0.0
+    m_lfc = pd.to_numeric(m_lfc_raw, errors="coerce").reindex(res_index).fillna(0.0)
     # memento de_coef is typically on natural log scale; convert to log2
     de_df["logFC"] = m_lfc / np.log(2)
-    pvals = (
-        pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
-    )
+
+    if isinstance(result, pd.DataFrame) and "de_pval" in result.columns:
+        pval_raw = result["de_pval"]
+    else:
+        pval_raw = 1.0
+    pvals = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index).fillna(1.0)
     de_df["p_val"] = pvals
 
     # BH adjustment (Memento may return raw p; we make p_adj consistent with other backends)

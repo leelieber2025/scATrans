@@ -191,7 +191,7 @@ def run_permutation_test(
     -------
     active_score_pval, active_score_fdr,
     unspliced_excess_pval, unspliced_excess_fdr,
-    use_fdr_for_significance, disabled_reason
+    use_fdr, disabled_reason
     """
     logger.info("Running parallel permutation testing (%d iterations)...", n_perm)
 
@@ -258,8 +258,13 @@ def run_permutation_test(
             unspliced_excess_pval[valid_expr], method="fdr_bh"
         )[1]
 
-    use_fdr = True
-    disabled_reason = None
+    # FDR decision and disabled_reason:
+    # - FDR is computed on valid_expr (always, for the pvals we have).
+    # - For very small permutation spaces (n_perm < 100, common in pseudobulk with few samples),
+    #   we mark use_fdr=False and provide reason so callers can avoid using FDR for significance
+    #   (p-values become coarse; BH adjustment less reliable). This eliminates vestigial logic in tl.py.
+    use_fdr = n_perm >= 100
+    disabled_reason = None if use_fdr else "small_permutation_space"
 
     return (
         active_score_pval,

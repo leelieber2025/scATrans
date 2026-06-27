@@ -340,9 +340,10 @@ def _pseudobulk_with_layers(
     group_df[sample_col] = group_df[sample_col].astype(str)
     group_df[groupby] = group_df[groupby].astype(str)
 
-    # Use a per-run UUID separator that can never appear in real sample/group names.
-    # This completely eliminates the "||" injection / mis-split risk.
-    _pb_sep = f"\x00PB{uuid.uuid4().hex}\x00"
+    # Use a per-run UUID separator (printable, no embedded NUL) that is vanishingly unlikely
+    # to appear in real sample/group names. Avoids pandas str-concat truncation with \0 and
+    # eliminates "||" injection / mis-split risk from earlier fragile separator.
+    _pb_sep = f"__scAT_PB_{uuid.uuid4().hex}__"
     pb_key = group_df[sample_col] + _pb_sep + group_df[groupby]
     unique_keys = pd.Index(pb_key.unique())
 

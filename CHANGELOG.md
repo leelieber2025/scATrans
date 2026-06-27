@@ -25,6 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reduced anndata category storage log noise during internal DE/perm (narrow logger level bump).
 - All tests + targeted EB/perm/explicit-norm cases pass after fixes.
 
+### Additional fixes (2026-06-27 round 2)
+- **Scientific Error 3**: `generate_gene_features_from_gtf()` now computes **true exon union length per gene** (merge overlapping intervals) instead of naively summing all exons across all transcripts. Prevents ~N_transcript-fold overestimation of gene_length for multi-isoform genes (affects only users who generate their own tables; bundled .parquet files are unaffected).
+- **Scientific Error 4**: `logFC` is now normalized toward consistent **log2 scale** across backends inside `_run_de_wrapper`:
+  - wilcoxon, mixedlm, memento: divided by ln(2)
+  - t-test / PyDESeq2: left as native log2
+  - Updated docstring. Makes `logfc_cutoff` semantically comparable.
+- **Bug 3**: `_pseudobulk_with_layers` now uses a **per-run UUID-based private separator** (instead of fragile "||") to build internal keys. Completely eliminates split errors when sample names contain "||".
+- **Bug 4**: Removed redundant `import warnings as _w` inside `with warnings.catch_warnings()` in `_fit_huber_bias_correction`.
+- **Design 6**: `pval_cutoff` deprecation warning now fires **on every use** of the legacy name (previously only when != 0.05).
+- **Design 7**: `run_go(ontology="CC"/"MF")` now emits a clear INFO log explaining that only BP is bundled and the others require gseapy + network.
+- **Design 8**: Made the "max > 50" heuristic in `_prepare_log_normalized_expression` (mixed model prep) more robust: checks for negatives, uses lower threshold (20), better warning message.
+- **Design 9**: `valid_expr` is now **explicitly passed** from `tl.py` into `run_permutation_test` (no more hidden reliance on adata.var after the fact).
+
+### Post-review hardening (2026-06-27)
+- **Fragility fix (high)**: Added explicit schema validation + safe column access + clear warning in `_run_memento_de` for expected 'de_coef'/'de_pval' from memento.binary_test_1d. Prevents silent fallback (or crash) if upstream memento-de changes column names/structure. Updated optional dep pin to "memento-de>=0.1.0,<0.3.0".
+- **Cleanup + consistency (high)**: `run_permutation_test` now owns the small-space FDR decision (use_fdr=False + disabled_reason="small_permutation_space" when n_perm < 100). Removed vestigial dead `if not perm_use_fdr` and useless max_perm check/assign in tl.py. `disabled_reason` (and `perm_disabled_reason`) now properly returned and stored in adata.uns["scatrans"] metadata.
+- **Diagnostics improvement**: MixedLM per-gene fits now count genes hitting the neutral-except fallback (`n_genes_failed_fit`). Recorded in diagnostics["mixed_model"] (active_score) and DE metadata (differential_expression). Warning emitted when >0 so users are not unaware of silent neutral (delta_var=0, p=1) genes.
+- Only confirmed high-impact issues from the review list were addressed; medium/nuance items (e.g. EB small-ref prior, advanced fallback diag completeness) were already mitigated by existing diagnostics/fallbacks or not correctness bugs.
+
+All new issues addressed. Full test suite green.
+
 ## [0.9.2] - 2026-06-20
 
 ### Added / Changed
