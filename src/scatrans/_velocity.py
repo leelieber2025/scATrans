@@ -65,6 +65,7 @@ def _estimate_eb_prior_from_reference(
     n_genes_used = int(r_valid.size)
 
     if n_genes_used < min_genes_for_prior:
+        # Too few expressed genes for any per-gene ratio prior -> global sum ratio fallback.
         fallback_triggered = True
         global_ratio = (float(np.sum(U_r)) + eps) / (float(np.sum(S_r)) + eps)
         prior_mean_log = float(np.log(global_ratio))
@@ -76,13 +77,20 @@ def _estimate_eb_prior_from_reference(
         trim_mask = (r_valid >= lo) & (r_valid <= hi)
         r_trim = r_valid[trim_mask] if trim_mask.sum() >= min_genes_for_prior else r_valid
         if r_trim.size < min_genes_for_prior:
+            # After trimming for robustness we have too few; fall back to the same
+            # global-ratio estimator used for the "not enough genes" case. This makes
+            # fallback_triggered semantically consistent (we used the non-robust path).
             fallback_triggered = True
-            method_detail = "empirical_bayes_fallback_untrimmed_median"
+            global_ratio = (float(np.sum(U_r)) + eps) / (float(np.sum(S_r)) + eps)
+            prior_mean_log = float(np.log(global_ratio))
+            tau = max(0.25, _robust_mad_scale(r_valid) if r_valid.size else 0.5)
+            method_detail = "empirical_bayes_fallback_global_ratio"
+            n_genes_used = int(r_valid.size)
         else:
             method_detail = "empirical_bayes_trimmed_median_mad"
-        prior_mean_log = float(np.median(r_trim))
-        tau = _robust_mad_scale(r_trim)
-        n_genes_used = int(r_trim.size)
+            prior_mean_log = float(np.median(r_trim))
+            tau = _robust_mad_scale(r_trim)
+            n_genes_used = int(r_trim.size)
 
     # prior_weight scales count pseudocount for observation precision (backward-compat knob)
     count_pseudo = max(count_pseudocount, prior_weight * 0.2)

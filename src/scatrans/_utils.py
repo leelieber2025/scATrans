@@ -210,12 +210,12 @@ def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
     if finite.size:
         mx = np.nanmax(finite)
         has_neg = np.any(finite < 0)
-        # Improved heuristic:
-        # - negative values or very small max → almost certainly already log-transformed
-        # - large max on non-negative data → probably needs log1p
-        if has_neg or mx <= 5:
+        # Heuristic for already log-transformed data (e.g. log1p, scran, SCT residuals):
+        # - negatives or max <=20 : treat as already transformed (closes the 5<mx<=20 gap)
+        # - mx >20 on non-negative: likely raw-ish counts, apply log1p + warn
+        if has_neg or mx <= 20:
             return X
-        if mx > 20:  # more conservative than previous 50; catches scran / SCT residuals etc.
+        if mx > 20:
             logger.warning(
                 "Mixed model input is neither marked log1p nor integer counts; applying log1p "
                 "for stability (max value=%.1f). If this is already log-scale, set de_preprocess='none' "
@@ -312,13 +312,18 @@ def _pseudobulk_with_layers(
     adata: ad.AnnData,
     sample_col: str,
     groupby: str,
-    layers: Iterable[str] = ("spliced", "unspliced"),
+    layers: Iterable[str] = (),
     x_layer: str | None = None,
     use_total_for_x: bool = False,
     min_cells: int = 10,
     min_counts: int = 1000,
 ) -> ad.AnnData:
-    """Aggregate to pseudobulk while preserving the requested layers."""
+    """Aggregate to pseudobulk while preserving the requested layers.
+
+    layers: which .layers to aggregate and carry through (e.g. velocity layers).
+            Default empty so pure-DE callers do not accidentally require spliced/unspliced.
+    use_total_for_x=True requires spliced+unspliced to exist (independent of layers list).
+    """
     if sample_col not in adata.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found.")
     if groupby not in adata.obs.columns:
@@ -328,6 +333,10 @@ def _pseudobulk_with_layers(
             raise ValueError(f"Layer '{layer}' not found in adata.layers")
 
     if use_total_for_x:
+        if "spliced" not in adata.layers or "unspliced" not in adata.layers:
+            raise ValueError(
+                "use_total_for_x=True requires both 'spliced' and 'unspliced' layers to be present."
+            )
         X_source = _safe_add_matrices(adata.layers["spliced"], adata.layers["unspliced"])
         x_source_name = "spliced + unspliced"
     else:

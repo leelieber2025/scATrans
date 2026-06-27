@@ -292,12 +292,16 @@ def add_gene_features(
             pkg_filename = mouse_cands[0] if mouse_cands else "mouse_2020A_gene_features.parquet"
         logger.info("Using default for %s: %s", organism, pkg_filename)
 
-    # For package data we resolve via resources (context ensures the file is available)
+    # Load the gene features table.
+    # CRITICAL for wheel installs: when using_package_data, pd.read_parquet MUST be
+    # performed inside the _open_package_data() context. as_file() extracts to a
+    # temp path that is deleted on __exit__ of the with block.
+    gf = None
     if using_package_data:
         try:
             with _open_package_data(pkg_filename) as resolved:
-                final_path = resolved
-                logger.info("Resolved package data file: %s", final_path)
+                logger.info("Resolved package data file: %s", resolved)
+                gf = pd.read_parquet(resolved).set_index("gene_name")
         except Exception as exc:
             available = list_available_gene_features(verbose=False)
             raise FileNotFoundError(
@@ -307,20 +311,19 @@ def add_gene_features(
                 "  1. Use the CLI to generate it:\n"
                 f"     generate-gene-features --gtf /path/to/genes.gtf --output {pkg_filename}\n"
                 "  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
-                f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
+                "  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
             ) from exc
+    else:
+        if final_path is None:
+            raise RuntimeError(
+                "Internal error resolving gene features path. "
+                "This should not happen; please report with your add_gene_features call."
+            )
+        gf = pd.read_parquet(final_path).set_index("gene_name")
 
-    # At this point final_path is always a real Path we can read
-    if final_path is None:
-        raise RuntimeError(
-            "Internal error resolving gene features path. "
-            "This should not happen; please report with your add_gene_features call."
-        )
+    gf = gf[~gf.index.duplicated(keep="first")]
 
     try:
-        gf = pd.read_parquet(final_path).set_index("gene_name")
-        gf = gf[~gf.index.duplicated(keep="first")]
-
         adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
         adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
 

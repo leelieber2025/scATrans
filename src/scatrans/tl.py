@@ -546,6 +546,7 @@ def active_score(
             adata,
             sample_col,
             groupby,
+            layers=["spliced", "unspliced"],
             x_layer=pb_x_layer,
             use_total_for_x=pb_use_total_for_x,
             min_cells=min_cells,
@@ -600,9 +601,13 @@ def active_score(
     # "auto" is safe in practice because of the "log1p" in uns check, but we force "none" for perm.
     perm_de_preprocess = "none"
 
+    # Always provide feature matrix for genes with length/intron info when available.
+    # The actual decision to use Huber regression (vs median fallback) lives inside
+    # _fit_huber_bias_correction and is based on n_fit >= min_fit_obs (30 by default).
+    # This removes the prior 50/30 threshold mismatch.
     X_features = (
         np.column_stack([np.log1p(gene_length[valid_feat]), np.log1p(intron_number[valid_feat])])
-        if valid_feat.sum() >= 50
+        if np.any(valid_feat)
         else None
     )
 
@@ -1140,6 +1145,15 @@ def _finalize_active_score_results(
                 "Permutation space is very small; unspliced_excess_fdr was not applied "
                 "to the built-in significant list."
             )
+        # Apply delta_variance pval filter only in the permutation path where a meaningful
+        # significant mask can be produced (avoids dead-code application to the all-False mask).
+        if (
+            extra_metadata.get("use_delta_variance_pval")
+            and "delta_var_pval" in adata.var.columns
+        ):
+            mask = mask & (
+                adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
+            )
     else:
         mask = pd.Series(False, index=adata.var.index)
         if not use_permutation:
@@ -1149,15 +1163,6 @@ def _finalize_active_score_results(
                 "inspect all_results and use filter_active_genes for custom thresholds.",
                 ue_fdr_cutoff,
             )
-
-    if (
-        "use_delta_variance_pval" in extra_metadata
-        and extra_metadata.get("use_delta_variance_pval")
-        and "delta_var_pval" in adata.var.columns
-    ):
-        mask = mask & (
-            adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
-        )
 
     significant = adata.var.loc[mask, cols].copy().sort_values("active_score", ascending=False)
     all_results = adata.var.loc[:, cols].copy().sort_values("active_score", ascending=False)
@@ -1467,12 +1472,14 @@ def differential_expression(
 
     if use_pseudobulk:
         logger.info("Performing pseudobulk aggregation for DE...")
+        available_layers = [l for l in ("spliced", "unspliced") if l in adata.layers]
         adata = _pseudobulk_with_layers(
             adata,
             sample_col,
             groupby,
+            layers=available_layers,
             x_layer=pb_x_layer if pb_x_layer != "X" else None,
-            use_total_for_x=pb_use_total_for_x,
+            use_total_for_x=pb_use_total_for_x and bool(available_layers),
             min_cells=min_cells,
             min_counts=min_counts,
         )
@@ -1483,11 +1490,7 @@ def differential_expression(
             )
 
     # DE preprocess
-    if use_memento_de and de_preprocess != "none":
-        logger.info(
-            "use_memento_de=True: forcing de_preprocess='none' (Memento works on raw counts)."
-        )
-        de_preprocess = "none"
+    # (Memento coercion to 'none' already performed early via _coerce_memento_de_preprocess)
 
     if de_preprocess == "normalize_log1p":
         logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")

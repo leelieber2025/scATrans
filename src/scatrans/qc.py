@@ -18,8 +18,9 @@ def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", wa
     S = adata.layers[spliced_key]
     U = adata.layers[unspliced_key]
 
-    sum_s = S.sum() if not sparse.issparse(S) else S.sum()
-    sum_u = U.sum() if not sparse.issparse(U) else U.sum()
+    # Both numpy arrays and scipy sparse matrices support .sum(); no need for the branch.
+    sum_s = float(S.sum())
+    sum_u = float(U.sum())
 
     total = sum_s + sum_u
     if total == 0:

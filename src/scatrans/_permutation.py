@@ -75,7 +75,9 @@ def _single_permutation_task(
         if not np.array_equal(shuffled_labels, original_labels):
             break
     else:
-        logger.warning("Failed to generate a different permutation after 50 attempts.")
+        logger.warning("Failed to generate a different permutation after 50 attempts. Skipping this replicate.")
+        n = len(original_labels)
+        return np.full(n, np.nan), np.full(n, np.nan)
 
     ad_temp = adata_subset.copy()
 
@@ -233,17 +235,39 @@ def run_permutation_test(
             for i in range(n_perm)
         )
 
-    perm_scores_matrix = np.vstack([r[0] for r in perm_results])
-    perm_residual_matrix = np.vstack([r[1] for r in perm_results])
+    # Filter out any replicates that failed to produce a distinct shuffle (returned NaNs).
+    # This prevents using original labels for the null (which would bias p-values upward).
+    valid_scores = []
+    valid_residuals = []
+    for r in perm_results:
+        s, res = r
+        if s is not None and res is not None and not np.any(np.isnan(np.asarray(s))):
+            valid_scores.append(s)
+            valid_residuals.append(res)
+    n_success = len(valid_scores)
+    if n_success == 0:
+        logger.warning("All %d permutation replicates failed to generate distinct shuffles.", n_perm)
+        # Fall back to non-informative p-values (no power to reject).
+        n_genes = adata.n_vars
+        return (
+            np.ones(n_genes),
+            np.ones(n_genes),
+            np.ones(n_genes),
+            np.ones(n_genes),
+            False,
+            "permutation_shuffle_failed",
+        )
+    perm_scores_matrix = np.vstack(valid_scores)
+    perm_residual_matrix = np.vstack(valid_residuals)
 
     exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-    active_score_pval = (1.0 + exceed_count) / (n_perm + 1.0)
+    active_score_pval = (1.0 + exceed_count) / (n_success + 1.0)
 
     # One-sided test for positive unspliced excess (matches active-gene direction filter).
     exceed_res = np.sum(
         perm_residual_matrix >= np.asarray(real_residual, dtype=float).reshape(1, -1), axis=0
     )
-    unspliced_excess_pval = (1.0 + exceed_res) / (n_perm + 1.0)
+    unspliced_excess_pval = (1.0 + exceed_res) / (n_success + 1.0)
 
     active_score_fdr = np.ones(adata.n_vars)
     unspliced_excess_fdr = np.ones(adata.n_vars)

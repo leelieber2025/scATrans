@@ -510,24 +510,40 @@ def _load_gene_sets(
 
 
 def _bh_p_adjust(pvalues: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR control.
+
+    NaN-tolerant: non-finite p-values are left as NaN in the output (consistent
+    with statsmodels.stats.multitest.multipletests behavior used elsewhere).
+    """
     pvalues = np.asarray(pvalues, dtype=float)
-    if not np.isfinite(pvalues).all():
-        raise ValueError("pvalues must contain only finite values.")
     n = len(pvalues)
     if n == 0:
         return np.array([])
-    sorted_idx = np.argsort(pvalues)
-    sorted_p = pvalues[sorted_idx]
-    adjusted = sorted_p * n / np.arange(1, n + 1)
+    finite_mask = np.isfinite(pvalues)
+    out = np.full(n, np.nan, dtype=float)
+    if not finite_mask.any():
+        return out
+    finite_vals = pvalues[finite_mask]
+    m = len(finite_vals)
+    sorted_idx_local = np.argsort(finite_vals)
+    sorted_p = finite_vals[sorted_idx_local]
+    adjusted = sorted_p * m / np.arange(1, m + 1)
     adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
     adjusted = np.minimum(adjusted, 1.0)
-    out = np.empty(n)
-    out[sorted_idx] = adjusted
+    # map adjusted values back to original positions among the finite ones
+    adjusted_full = np.empty(m)
+    adjusted_full[sorted_idx_local] = adjusted
+    out[finite_mask] = adjusted_full
     return out
 
 
 def _apply_p_adjust(pvalues: np.ndarray, method: str = "fdr_bh") -> np.ndarray:
-    """Apply multiple-testing correction across all tested terms in one ORA call."""
+    """Apply multiple-testing correction across all tested terms in one ORA call.
+
+    For standard fdr_bh / bonferroni we delegate to statsmodels.multipletests
+    when available (consistent with _de.py and _permutation.py). Falls back to
+    our implementations otherwise.
+    """
     method_norm = str(method).lower().replace("-", "_")
     pvalues = np.asarray(pvalues, dtype=float)
     n = len(pvalues)
@@ -535,10 +551,25 @@ def _apply_p_adjust(pvalues: np.ndarray, method: str = "fdr_bh") -> np.ndarray:
         return np.array([])
     if method_norm in ("none", "raw", "off"):
         return pvalues.copy()
+
     if method_norm in ("fdr_bh", "bh", "fdr", "padj"):
-        return _bh_p_adjust(pvalues)
+        try:
+            from statsmodels.stats.multitest import multipletests
+
+            # multipletests returns (reject, pvals_corrected, alphacSidak, alphacBonf)
+            _, padj, _, _ = multipletests(pvalues, alpha=0.05, method="fdr_bh", is_sorted=False)
+            return np.asarray(padj, dtype=float)
+        except Exception:
+            return _bh_p_adjust(pvalues)
+
     if method_norm in ("bonferroni", "bonf"):
-        return np.minimum(pvalues * n, 1.0)
+        try:
+            from statsmodels.stats.multitest import multipletests
+
+            _, padj, _, _ = multipletests(pvalues, alpha=0.05, method="bonferroni")
+            return np.asarray(padj, dtype=float)
+        except Exception:
+            return np.minimum(pvalues * n, 1.0)
     raise ValueError(
         f"p_adjust_method={method!r} not recognized. Use one of: 'fdr_bh', 'bonferroni', 'none'."
     )
@@ -669,12 +700,15 @@ def run_enrichment(
             )
     else:
         cutoff = float(pval_cutoff)
-        # Always warn when the legacy pval_cutoff name is used (even at default value).
-        # This ensures users see the deprecation regardless of the numeric value passed.
-        _warn_user(
-            "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
-            "Please use `padj_cutoff` instead for clarity.",
-        )
+        # Only warn on non-default usage of the legacy parameter name.
+        # Warning on *every* call (even the documented default) was too noisy and
+        # polluted test output / normal user scripts. Users who pass pval_cutoff
+        # with a custom value get the nudge to switch to padj_cutoff.
+        if pval_cutoff != 0.05:
+            _warn_user(
+                "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
+                "Please use `padj_cutoff` instead for clarity.",
+            )
 
     genes = _clean_gene_list(gene_list, gene_case=gene_case)
     if not genes:
@@ -1961,7 +1995,8 @@ def run_gsea(
     -------
     pd.DataFrame
         GSEA results with columns including Term, Description, ES, NES, pvalue, p.adjust,
-        neg_log10_padj, leading_edge, etc. Sorted by NES descending.
+        neg_log10_padj, leading_edge, etc. Sorted by |NES| (absolute value) descending
+        so that the strongest magnitude effects (positive or negative) appear first.
         Rich metadata in .attrs (method="gsea_prerank", gene_set_info, nperm, gsea_info, analysis_info).
 
     Notes
@@ -1986,10 +2021,11 @@ def run_gsea(
 
     # Normalize ranked_genes input to pd.Series (gene -> score)
     if isinstance(ranked_genes, pd.DataFrame):
-        # take first column as scores if two cols, or assume first is gene?
         if ranked_genes.shape[1] >= 2:
-            ranked_genes = ranked_genes.iloc[:, 1]
-            ranked_genes.index = ranked_genes.iloc[:, 0].astype(str).values
+            # Column 0 = gene names, Column 1 = scores (original intent)
+            gene_names = ranked_genes.iloc[:, 0].astype(str).values
+            scores = ranked_genes.iloc[:, 1].values
+            ranked_genes = pd.Series(scores, index=gene_names)
         else:
             ranked_genes = ranked_genes.iloc[:, 0]
     if isinstance(ranked_genes, (list, tuple)):
@@ -2140,7 +2176,7 @@ def run_gsea(
         term_sizes = {t: len(gs) for t, gs in term_to_genes.items()}
         res_df["TermSize"] = res_df["Term"].map(term_sizes).fillna(0).astype(int)
 
-    # Sort by NES (descending) if present, else by p.adjust
+    # Sort by |NES| descending (strongest effects first, regardless of sign) if present.
     if "NES" in res_df.columns:
         res_df = res_df.sort_values("NES", ascending=False, key=abs, na_position="last")
     elif "p.adjust" in res_df.columns:
@@ -2183,7 +2219,7 @@ def run_gsea(
             else len(res_df)
         )
         _log_info(
-            f"GSEA completed: {len(res_df)} terms tested, {n_sig} with p.adjust < 0.05 (sorted by NES)"
+            f"GSEA completed: {len(res_df)} terms tested, {n_sig} with p.adjust < 0.05 (sorted by |NES|)"
         )
 
     return res_df
@@ -2665,9 +2701,11 @@ def compare_enrichment(
 
     for cname in cluster_names:
         cname_str = str(cname)
-        genes = gene_clusters[cname]
-        genes = _clean_and_validate_gene_list_for_compare(genes, gene_case=gene_case)
-        n_raw = len(list(gene_clusters[cname])) if hasattr(gene_clusters[cname], "__len__") else -1
+        # Materialize once: gene_clusters[cname] may be a generator/iterator.
+        # Consuming it in _clean... and then again for n_raw would give n_raw=0.
+        raw_items = list(gene_clusters[cname])
+        n_raw = len(raw_items)
+        genes = _clean_and_validate_gene_list_for_compare(raw_items, gene_case=gene_case)
         n_clean = len(genes)
 
         if not genes:

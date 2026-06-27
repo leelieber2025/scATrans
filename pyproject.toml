@@ -22,7 +22,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "scanpy>=1.9,<2.0",
+    "scanpy>=1.9",
     "anndata>=0.8",
     "numpy>=1.21",
     "pandas>=1.3",

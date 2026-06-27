@@ -335,12 +335,13 @@ def _run_mixedlm_de(
     n_genes = expr_mat.shape[1]
     var_names = ad_temp.var_names
 
-    # Per-gene worker (returns idx, logfc, wald_p, lrt_p, delta_var)
+    # Per-gene worker (returns idx, logfc, wald_p, lrt_p, delta_var, failed_fit_flag)
+    # The explicit flag avoids counting truly neutral (logFC~0, p~1, dvar~0) biological genes as "failed".
     def _fit_gene_mixed(idx: int):
         y = expr_mat[:, idx].astype(float)
         # guard against all-zero / constant (mixedlm will be singular)
         if np.allclose(y, y[0]):
-            return idx, 0.0, 1.0, 1.0, 0.0
+            return idx, 0.0, 1.0, 1.0, 0.0, True
         df = pd.DataFrame({"y": y, "condition": condition, "sample": samples})
         try:
             with warnings.catch_warnings():
@@ -392,10 +393,10 @@ def _run_mixedlm_de(
             total_v = var_fe + max(re_var, 0.0) + max(resid_var, 0.0)
             delta_var = var_fe / total_v if total_v > 1e-12 else 0.0
 
-            return idx, logfc, p_wald, lrt_p, float(np.clip(delta_var, 0.0, 1.0))
+            return idx, logfc, p_wald, lrt_p, float(np.clip(delta_var, 0.0, 1.0)), False
         except Exception:
             # Degenerate fit (few samples per group, collinear, etc.) -> non-informative
-            return idx, 0.0, 1.0, 1.0, 0.0
+            return idx, 0.0, 1.0, 1.0, 0.0, True
 
     # Parallel execution (loky or threading; mixedlm releases GIL-ish via numpy)
     effective_jobs = max(1, n_jobs) if n_jobs and n_jobs > 0 else 1
@@ -410,6 +411,7 @@ def _run_mixedlm_de(
     p_walds = np.array([r[2] for r in results], dtype=float)
     p_lrts = np.array([r[3] for r in results], dtype=float)
     dvars = np.array([r[4] for r in results], dtype=float)
+    failed_flags = np.array([r[5] for r in results], dtype=bool)
 
     # Choose which p-value to expose as the main "p_val" for active_score weighting and default filtering.
     # "wald": the coefficient test (standard for logFC-like effect)
@@ -433,15 +435,9 @@ def _run_mixedlm_de(
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
     de_df["delta_var_pval"] = pd.Series(p_lrts, index=var_names)
 
-    # Count genes that hit the neutral fallback in per-gene fit (broad except).
-    # These indicate convergence/singularity/too-few-samples issues; users should be aware
-    # rather than silently getting delta_variance=0 + p=1 for many genes.
-    neutral_mask = (
-        (np.abs(logfcs) < 1e-12) &
-        (p_walds > 1.0 - 1e-9) &
-        (np.abs(dvars) < 1e-12)
-    )
-    n_failed = int(np.sum(neutral_mask))
+    # Use explicit failure flag returned from workers (avoids counting true biological
+    # neutral genes (logFC~0, p~1, dvar~0) as "failed fits").
+    n_failed = int(np.sum(failed_flags))
     de_df.attrs["n_genes_failed_fit"] = n_failed
     if n_failed > 0:
         logger.warning(
