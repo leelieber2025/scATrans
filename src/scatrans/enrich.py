@@ -8,7 +8,7 @@ import warnings
 from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,54 @@ from scipy.stats import hypergeom
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+# Reproducibility metadata for bundled 2026 gene-set libraries (see data/README.md).
+BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
+    "Hs_GO_Biological_Process_2026": {
+        "bundled_file": "Hs_GO_Biological_Process_2026.txt",
+        "species": "Homo sapiens",
+        "collection": "GO Biological Process",
+        "source_pipeline": "clusterProfiler::buildGOmap + org.Hs.eg.db + GO.db (Bioconductor)",
+        "package_version_tag": "scATrans 0.9.x data bundle",
+        "extracted_date": "2026-06",
+        "format": "GMT-like tab-separated (.txt)",
+        "gene_id_type": "SYMBOL",
+        "n_terms": 14208,
+    },
+    "Mm_GO_Biological_Process_2026": {
+        "bundled_file": "Mm_GO_Biological_Process_2026.txt",
+        "species": "Mus musculus",
+        "collection": "GO Biological Process",
+        "source_pipeline": "clusterProfiler::buildGOmap + org.Mm.eg.db + GO.db (Bioconductor)",
+        "package_version_tag": "scATrans 0.9.x data bundle",
+        "extracted_date": "2026-06",
+        "format": "GMT-like tab-separated (.txt)",
+        "gene_id_type": "SYMBOL",
+        "n_terms": 14956,
+    },
+    "Hs_KEGG_2026": {
+        "bundled_file": "Hs_KEGG_2026.txt",
+        "species": "Homo sapiens",
+        "collection": "KEGG pathways",
+        "source_pipeline": "clusterProfiler KEGG cache (organism hsa) via enrichKEGG mappings",
+        "package_version_tag": "scATrans 0.9.x data bundle",
+        "extracted_date": "2026-06",
+        "format": "GMT-like tab-separated (.txt)",
+        "gene_id_type": "SYMBOL",
+        "n_terms": 222,
+    },
+    "Mm_KEGG_2026": {
+        "bundled_file": "Mm_KEGG_2026.txt",
+        "species": "Mus musculus",
+        "collection": "KEGG pathways",
+        "source_pipeline": "clusterProfiler KEGG cache (organism mmu) via enrichKEGG mappings",
+        "package_version_tag": "scATrans 0.9.x data bundle",
+        "extracted_date": "2026-06",
+        "format": "GMT-like tab-separated (.txt)",
+        "gene_id_type": "SYMBOL",
+        "n_terms": 218,
+    },
+}
 
 # --- importlib.resources compatibility (py>=3.10 stdlib, else backport)
 # Using the backport on 3.9 avoids spec.origin=None issues in some install scenarios (editable/wheel in CI).
@@ -124,9 +172,18 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
     return files_list
 
 
+def _bundled_provenance_for(resolved_name: str) -> Dict[str, Any]:
+    """Return provenance dict for a bundled library basename (without extension)."""
+    base = resolved_name
+    for ext in (".txt", ".gmt", ".tsv"):
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+    return dict(BUNDLED_GENE_SET_PROVENANCE.get(base, {}))
+
+
 def _try_load_bundled_gene_set(
     name: str, gene_case: Optional[str] = None
-) -> Optional[Tuple[Dict[str, set], Dict[str, str]]]:
+) -> Optional[Tuple[Dict[str, set], Dict[str, str], str]]:
     """
     Try to load a gene set from the files bundled in scatrans/data/.
 
@@ -145,7 +202,15 @@ def _try_load_bundled_gene_set(
         try:
             with _open_package_data(cand) as p:
                 content = p.read_text(encoding="utf-8")
-            return _parse_gmt_content(content, gene_case=gene_case)
+            terms, desc = _parse_gmt_content(content, gene_case=gene_case)
+            loaded_as = cand
+            if not loaded_as.endswith((".txt", ".gmt", ".tsv")):
+                loaded_as = cand
+            base = loaded_as
+            for ext in (".txt", ".gmt", ".tsv"):
+                if base.lower().endswith(ext):
+                    base = base[: -len(ext)]
+            return terms, desc, base
         except Exception:
             continue
 
@@ -378,14 +443,16 @@ def _load_gene_sets(
         # 1. Try bundled package data first (ClusterProfiler-derived GO/KEGG etc.)
         bundled = _try_load_bundled_gene_set(gene_sets_input, gene_case=gene_case)
         if bundled is not None:
-            term_to_genes, term_to_desc = bundled
+            term_to_genes, term_to_desc, bundled_key = bundled
             if verbose:
                 _log_info(f"Loaded bundled gene set '{gene_sets_input}' from package data")
+            prov = _bundled_provenance_for(bundled_key)
             load_info = {
                 "actual_source": "bundled",
                 "library_name": gene_sets_input,
-                "resolved_name": gene_sets_input,
+                "resolved_name": bundled_key,
                 "path": None,
+                "provenance": prov,
             }
             return term_to_genes, term_to_desc, load_info
 
@@ -422,13 +489,15 @@ def _load_gene_sets(
                     _log_info(
                         f"Loaded bundled gene set '{gene_sets_input}' from package data (after gseapy fallback)"
                     )
+                b_terms, b_desc, bundled_key = bundled2
+                prov = _bundled_provenance_for(bundled_key)
                 load_info = {
                     "actual_source": "bundled",
                     "library_name": gene_sets_input,
-                    "resolved_name": gene_sets_input,
+                    "resolved_name": bundled_key,
                     "path": None,
+                    "provenance": prov,
                 }
-                b_terms, b_desc = bundled2 if isinstance(bundled2, tuple) else (bundled2, {})
                 return b_terms, b_desc, load_info
             raise ValueError(
                 f"Failed to load '{gene_sets_input}' via gseapy or as bundled package data: {e}\n"
@@ -455,6 +524,24 @@ def _bh_p_adjust(pvalues: np.ndarray) -> np.ndarray:
     out = np.empty(n)
     out[sorted_idx] = adjusted
     return out
+
+
+def _apply_p_adjust(pvalues: np.ndarray, method: str = "fdr_bh") -> np.ndarray:
+    """Apply multiple-testing correction across all tested terms in one ORA call."""
+    method_norm = str(method).lower().replace("-", "_")
+    pvalues = np.asarray(pvalues, dtype=float)
+    n = len(pvalues)
+    if n == 0:
+        return np.array([])
+    if method_norm in ("none", "raw", "off"):
+        return pvalues.copy()
+    if method_norm in ("fdr_bh", "bh", "fdr", "padj"):
+        return _bh_p_adjust(pvalues)
+    if method_norm in ("bonferroni", "bonf"):
+        return np.minimum(pvalues * n, 1.0)
+    raise ValueError(
+        f"p_adjust_method={method!r} not recognized. Use one of: 'fdr_bh', 'bonferroni', 'none'."
+    )
 
 
 def _empty_ora_result(include_gene_list: bool = False, **attrs) -> pd.DataFrame:
@@ -497,6 +584,7 @@ def run_enrichment(
     gene_case: Optional[str] = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
+    p_adjust_method: str = "fdr_bh",
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -530,10 +618,11 @@ def run_enrichment(
     and other diagnostics (including `gene_set_info` and `reason` on empty results).
 
     pval_cutoff / padj_cutoff : float
-        Cutoff applied to **adjusted p-values** (`p.adjust` column), not raw p-values.
-        - `padj_cutoff` is the preferred modern name.
-        - `pval_cutoff` is kept for backward compatibility and behaves identically.
-        Default 0.05. If both are passed, `padj_cutoff` takes precedence.
+        Cutoff applied to **adjusted p-values** (`p.adjust` column), **NOT** raw p-values.
+        IMPORTANT: Despite the name, pval_cutoff filters on the BH-adjusted p-value.
+        - Preferred: use `padj_cutoff` explicitly.
+        - `pval_cutoff` is deprecated for new code (warning emitted when used alone).
+        Default 0.05. If both passed, padj_cutoff wins.
 
     gene_set_source : {"scatrans", "enrichr"}, default "scatrans"
         Explicit override for which family to use.
@@ -553,9 +642,15 @@ def run_enrichment(
         of the overlapping genes (in addition to the semicolon-joined "Genes" string).
         Useful for in-memory Python workflows; "Genes" remains for CSV/export compat.
 
+    p_adjust_method : {"fdr_bh", "bonferroni", "none"}, default "fdr_bh"
+        Multiple-testing correction applied **across all tested terms** in this call
+        (including when a custom dict mixes GO/KEGG/custom pathways). For multi-cluster
+        comparisons use ``compare_enrichment(..., adjust_across_clusters=True)``.
+
     background : optional
         Deprecated alias of `universe`. Use `universe` instead.
-        If both `universe` and `background` are provided, a ValueError is raised.
+        If both are provided, raises ValueError.
+        In docs and examples we strongly prefer the term `universe`.
     """
     # Normalize organism early for consistency (attrs, resolver, etc.)
     organism_norm = str(organism).lower()
@@ -574,6 +669,13 @@ def run_enrichment(
             )
     else:
         cutoff = float(pval_cutoff)
+        if pval_cutoff != 0.05:
+            _warn_user(
+                "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
+                "Please use `padj_cutoff` instead for clarity.",
+                # Using warning not DeprecationWarning to avoid noise in many notebooks;
+                # users doing -W error will still see it.
+            )
 
     genes = _clean_gene_list(gene_list, gene_case=gene_case)
     if not genes:
@@ -592,8 +694,15 @@ def run_enrichment(
             analysis_info=analysis_info,
         )
 
-    if min_size < 1 or max_size < min_size or not (0 <= cutoff <= 1):
-        raise ValueError("Invalid min_size, max_size or pval_cutoff/padj_cutoff")
+    # Early validation (clear errors, consistent with review feedback)
+    if min_size < 1:
+        raise ValueError("min_size must be >= 1")
+    if max_size < min_size:
+        raise ValueError("max_size must be >= min_size")
+    if not (0 <= cutoff <= 1):
+        raise ValueError("pval_cutoff / padj_cutoff must be between 0 and 1")
+    if gene_case is not None and gene_case not in (None, "upper", "lower"):
+        raise ValueError("gene_case must be None, 'upper' or 'lower'")
 
     # Record the originally requested gene_sets name (for attrs / reproducibility)
     requested_gene_sets = gene_sets if isinstance(gene_sets, str) else "<dict>"
@@ -619,6 +728,10 @@ def run_enrichment(
         "n_terms": int(len(term_to_genes)),
         "n_unique_genes": int(len(all_gs_genes)),
     }
+    if load_info.get("provenance"):
+        gene_set_info["provenance"] = load_info["provenance"]
+    if load_info.get("resolved_name"):
+        gene_set_info["resolved_name"] = load_info["resolved_name"]
 
     if not term_to_genes:
         _warn_user(
@@ -640,11 +753,17 @@ def run_enrichment(
 
     # --- Universe / background resolution (clusterProfiler-aligned conservative default) ---
     # `universe` is the preferred name; `background` kept only as deprecated alias.
-    # If both are given, raise immediately to avoid silent "only universe wins" behavior.
+    # If both are given, raise immediately.
     if universe is not None and background is not None:
         raise ValueError(
             "Please provide only one of `universe` or `background`, not both. Use `universe`."
         )
+    if background is not None and universe is None:
+        _warn_user(
+            "`background` parameter is deprecated, please use `universe` instead. "
+            "`background` will be removed in a future version."
+        )
+        universe = background
 
     # Smart default: if the user did not explicitly pass universe/background,
     # and they pass an `adata` on which `store_raw_counts` was previously called,
@@ -821,7 +940,7 @@ def run_enrichment(
         )
 
     res_df = pd.DataFrame(results)
-    res_df["p.adjust"] = _bh_p_adjust(res_df["pvalue"].values)
+    res_df["p.adjust"] = _apply_p_adjust(res_df["pvalue"].values, method=p_adjust_method)
     res_df["neg_log10_padj"] = -np.log10(
         res_df["p.adjust"].astype(float).clip(lower=1e-300)
     )  # p.adjust values below 1e-300 are clipped to avoid -inf in neg_log10_padj
@@ -844,6 +963,12 @@ def run_enrichment(
     res_df.attrs.update(base_attrs)
     res_df.attrs["universe_info"] = universe_info
     res_df.attrs["pval_cutoff"] = cutoff  # record the effective cutoff used
+    res_df.attrs["p_adjust_method"] = p_adjust_method
+    res_df.attrs["multiple_testing"] = {
+        "scope": "all_tested_terms",
+        "method": p_adjust_method,
+        "n_tests": int(len(res_df)),
+    }
 
     if return_all:
         if verbose:
@@ -1543,30 +1668,67 @@ def simplify_enrichment(
     if df.empty:
         return df
 
+    cluster_col = None
+    for cand in ("Cluster", "cluster", "group", "Group"):
+        if cand in df.columns:
+            cluster_col = cand
+            break
+
     if method_norm == "jaccard":
-        kept = []
-        kept_sets = []
-        for idx, row in df.iterrows():
-            genes_str = str(row.get(gene_col, ""))
-            current = {g.strip() for g in re.split(r"[;,]+", genes_str) if g.strip()}
-            if not current:
-                continue
-            redundant = any(
-                (len(current & s) / len(current | s) if len(current | s) > 0 else 0)
-                >= similarity_cutoff
-                for s in kept_sets
-            )
-            if not redundant:
-                kept.append(idx)
-                kept_sets.append(current)
-        if verbose:
-            _log_info(
-                f"Simplified from {len(df)} to {len(kept)} terms (Jaccard >= {similarity_cutoff})"
-            )
-        result = df.loc[kept].reset_index(drop=True)
+        if cluster_col and df[cluster_col].nunique() > 1:
+            # Simplify within each cluster to preserve multi-group structure (clusterProfiler-like)
+            kept_parts = []
+            for _cl, sub in df.groupby(cluster_col, sort=False):
+                kept = []
+                kept_sets = []
+                for idx, row in sub.iterrows():
+                    genes_str = str(row.get(gene_col, ""))
+                    current = {g.strip() for g in re.split(r"[;,]+", genes_str) if g.strip()}
+                    if not current:
+                        continue
+                    redundant = any(
+                        (len(current & s) / len(current | s) if len(current | s) > 0 else 0)
+                        >= similarity_cutoff
+                        for s in kept_sets
+                    )
+                    if not redundant:
+                        kept.append(idx)
+                        kept_sets.append(current)
+                if kept:
+                    kept_parts.append(df.loc[kept])
+            result = pd.concat(kept_parts, ignore_index=True) if kept_parts else df.iloc[0:0].copy()
+            if verbose:
+                _log_info(
+                    f"Simplified (per-cluster Jaccard >= {similarity_cutoff}) from {len(df)} to {len(result)} terms"
+                )
+        else:
+            kept = []
+            kept_sets = []
+            for idx, row in df.iterrows():
+                genes_str = str(row.get(gene_col, ""))
+                current = {g.strip() for g in re.split(r"[;,]+", genes_str) if g.strip()}
+                if not current:
+                    continue
+                redundant = any(
+                    (len(current & s) / len(current | s) if len(current | s) > 0 else 0)
+                    >= similarity_cutoff
+                    for s in kept_sets
+                )
+                if not redundant:
+                    kept.append(idx)
+                    kept_sets.append(current)
+            if verbose:
+                _log_info(
+                    f"Simplified from {len(df)} to {len(kept)} terms (Jaccard >= {similarity_cutoff})"
+                )
+            result = df.loc[kept].reset_index(drop=True)
         if hasattr(enrich_df, "attrs"):
             result.attrs.update(dict(enrich_df.attrs))
         result.attrs["simplify_method"] = "jaccard"
+        if cluster_col:
+            result.attrs["simplify_per_cluster"] = bool(
+                cluster_col and df[cluster_col].nunique() > 1
+            )
         return result
     if method_norm == "pathway_denester":
         if by is None or by not in df.columns:
@@ -1576,6 +1738,30 @@ def simplify_enrichment(
         term_to_genes = _resolve_gene_sets_for_simplify(
             df, gene_sets=gene_sets, organism=organism, verbose=verbose
         )
+        if cluster_col and df[cluster_col].nunique() > 1:
+            parts = []
+            for _, sub in df.groupby(cluster_col, sort=False):
+                if sub.empty:
+                    continue
+                s = _simplify_by_pathway_denester(
+                    sub,
+                    term_to_genes,
+                    gene_col=gene_col,
+                    p_col=by,
+                    to_test_threshold=to_test_threshold,
+                    pval_threshold=pval_threshold,
+                    term_size_limit=term_size_limit,
+                    show_excluded=show_excluded,
+                    verbose=verbose,
+                )
+                if not s.empty:
+                    parts.append(s)
+            result = pd.concat(parts, ignore_index=True) if parts else df.iloc[0:0].copy()
+            if hasattr(enrich_df, "attrs"):
+                result.attrs.update(dict(enrich_df.attrs))
+            result.attrs["simplify_method"] = "pathway_denester"
+            result.attrs["simplify_per_cluster"] = True
+            return result
         return _simplify_by_pathway_denester(
             df,
             term_to_genes,
@@ -1589,7 +1775,8 @@ def simplify_enrichment(
         )
     if method_norm == "goatools":
         raise NotImplementedError(
-            "goatools semantic simplification is not implemented in this version."
+            "method='goatools' is not implemented yet. "
+            "Use method='jaccard' or method='pathway_denester'."
         )
     raise ValueError("method must be 'jaccard', 'pathway_denester', or 'goatools'")
 
@@ -1716,6 +1903,10 @@ def run_gsea(
     gene_case: Optional[str] = None,
     gene_set_source: str = "scatrans",
     verbose: bool = True,
+    seed: int = 42,
+    threads: int = 4,
+    ascending: bool = False,
+    weighted_score_type: str = "classic",
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -1749,8 +1940,16 @@ def run_gsea(
         Control source preference (same semantics as run_enrichment).
     verbose : bool
         Print progress.
+    seed : int
+        Random seed forwarded to ``gseapy.prerank`` (reproducible permutations).
+    threads : int
+        CPU threads for gseapy prerank.
+    ascending : bool
+        If True, lower ranked metric = more enriched (gseapy convention).
+    weighted_score_type : str
+        GSEA scoring mode passed to gseapy (default ``"classic"``).
     **kwargs
-        Passed through to gseapy.prerank (e.g. seed, threads).
+        Additional arguments forwarded to ``gseapy.prerank`` (e.g. ``graph_num``).
 
     Returns
     -------
@@ -1861,6 +2060,7 @@ def run_gsea(
         )
 
     try:
+        prerank_kwargs = dict(kwargs)
         pre_res = gp.prerank(
             rnk=ranked,
             gene_sets=gene_sets_for_gp,
@@ -1870,7 +2070,11 @@ def run_gsea(
             outdir=None,
             no_plot=True,
             verbose=False,  # we control logging
-            **kwargs,
+            seed=prerank_kwargs.pop("seed", seed),
+            threads=prerank_kwargs.pop("threads", threads),
+            ascending=prerank_kwargs.pop("ascending", ascending),
+            weighted_score_type=prerank_kwargs.pop("weighted_score_type", weighted_score_type),
+            **prerank_kwargs,
         )
         res_df = pre_res.res2d.copy()
     except Exception as e:
@@ -2105,3 +2309,507 @@ def save_enrichment_report(
             _warn_user(f"Could not write Excel report: {e}")
 
     return outputs
+
+
+# =============================================================================
+# Multi-group / compareCluster-style support
+# =============================================================================
+
+
+def _clean_and_validate_gene_list_for_compare(
+    genes: Iterable[Any], gene_case: Optional[str] = None
+) -> List[str]:
+    """Lightweight cleaner used by compare helpers (re-uses the main cleaner)."""
+    return _clean_gene_list(genes, gene_case=gene_case)
+
+
+def extract_gene_lists(
+    de_results: Union[pd.DataFrame, Mapping[str, pd.DataFrame]],
+    *,
+    logfc_cutoff: float = 0.5,
+    pval_cutoff: float = 0.05,
+    logfc_direction: str = "up",
+    separate_directions: bool = False,
+    name_prefix: Optional[str] = None,
+    gene_case: Optional[str] = None,
+) -> Dict[str, List[str]]:
+    """
+    Extract named gene lists from one or more DE result DataFrames for downstream enrichment.
+
+    This is the recommended way to prepare inputs for `compare_enrichment` when you
+    have results from `differential_expression()` or the `all_results` from `active_score()`.
+
+    Supports up / down / both, and can split directions into separate named sets
+    (e.g. "GA_up", "GA_down") so you can enrich and visualize them distinctly
+    (useful for upset plots and grouped dotplots).
+
+    Parameters
+    ----------
+    de_results : DataFrame or dict[str, DataFrame]
+        - Single DataFrame: treated as one unnamed contrast (you can use name_prefix).
+        - dict {contrast_name: de_df}: each df is processed and keys become the cluster names.
+    logfc_cutoff : float
+        Minimum |logFC| (sign handled by direction).
+    pval_cutoff : float
+        Max p_adj (or p_val if no p_adj column).
+    logfc_direction : {"up", "down", "both"}
+    separate_directions : bool
+        If True and direction in {"both", "up", "down"} context, will emit separate entries
+        "<name>_up" and "<name>_down". Great for "up vs down" enrichment comparison.
+    name_prefix : str, optional
+        Prepended to generated names when a single df is passed.
+    gene_case : optional
+        Passed through to gene cleaning.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Ready to pass to `compare_enrichment(gene_clusters=...)`.
+
+    Example
+    -------
+    # Multiple contrasts
+    de_dict = {"GA_vs_Ctrl": ga_res, "GB_vs_Ctrl": gb_res}
+    gene_sets = scat.extract_gene_lists(
+        de_dict, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up"
+    )
+    comp = scat.compare_enrichment(gene_sets, gene_sets="GO_Biological_Process", organism="mouse")
+
+    # Up and down as separate "clusters" for upset / grouped dotplot
+    gene_sets = scat.extract_gene_lists(
+        de_dict, logfc_direction="both", separate_directions=True
+    )
+    """
+    # Normalize direction
+    dir_raw = str(logfc_direction).lower()
+    if dir_raw in ("up", "positive", "pos", "u"):
+        direction = "up"
+    elif dir_raw in ("down", "negative", "neg", "d"):
+        direction = "down"
+    elif dir_raw in ("both", "two_sided", "twosided", "abs", "either", "any", "b"):
+        direction = "both"
+    else:
+        raise ValueError(f"logfc_direction={logfc_direction!r} not recognized.")
+
+    def _get_genes_from_df(df: pd.DataFrame) -> List[str]:
+        if df is None or df.empty:
+            return []
+        work = df
+        # index often contains genes
+        if isinstance(work.index, pd.Index) and len(work.index) > 0:
+            genes = work.index.astype(str).tolist()
+        elif "gene" in work.columns:
+            genes = work["gene"].astype(str).tolist()
+        else:
+            genes = work.iloc[:, 0].astype(str).tolist() if work.shape[1] > 0 else []
+
+        if "p_adj" in work.columns:
+            padj = pd.to_numeric(work["p_adj"], errors="coerce")
+        elif "p_val" in work.columns:
+            padj = pd.to_numeric(work["p_val"], errors="coerce")
+        else:
+            padj = pd.Series(1.0, index=work.index)
+
+        if "logFC" in work.columns:
+            lfc = pd.to_numeric(work["logFC"], errors="coerce")
+        else:
+            lfc = pd.Series(0.0, index=work.index)
+
+        mask = padj < float(pval_cutoff)
+        lc = float(logfc_cutoff)
+
+        if direction == "up":
+            mask = mask & (lfc > lc)
+        elif direction == "down":
+            mask = mask & (lfc < -lc)
+        else:
+            mask = mask & (lfc.abs() > lc)
+
+        selected = [g for g, m in zip(genes, mask) if m]
+        return _clean_and_validate_gene_list_for_compare(selected, gene_case=gene_case)
+
+    result: Dict[str, List[str]] = {}
+
+    if isinstance(de_results, pd.DataFrame):
+        genes = _get_genes_from_df(de_results)
+        base_name = name_prefix or "contrast"
+        if separate_directions and direction == "both":
+            # Recompute up and down separately
+            # (re-implement light logic to split)
+            work = de_results
+            if "p_adj" in work.columns:
+                padj = pd.to_numeric(work["p_adj"], errors="coerce")
+            elif "p_val" in work.columns:
+                padj = pd.to_numeric(work["p_val"], errors="coerce")
+            else:
+                padj = pd.Series(1.0, index=work.index)
+            lfc = (
+                pd.to_numeric(work.get("logFC", 0), errors="coerce")
+                if "logFC" in work.columns
+                else pd.Series(0, index=work.index)
+            )
+            sig = padj < float(pval_cutoff)
+            lc = float(logfc_cutoff)
+            up = [
+                g
+                for g, keep, lf in zip(
+                    _clean_and_validate_gene_list_for_compare(
+                        work.index.astype(str) if hasattr(work.index, "astype") else [], gene_case
+                    ),
+                    sig,
+                    lfc,
+                )
+                if keep and lf > lc
+            ]
+            down = [
+                g
+                for g, keep, lf in zip(
+                    _clean_and_validate_gene_list_for_compare(
+                        work.index.astype(str) if hasattr(work.index, "astype") else [], gene_case
+                    ),
+                    sig,
+                    lfc,
+                )
+                if keep and lf < -lc
+            ]
+            if name_prefix:
+                result[f"{name_prefix}_up"] = _clean_and_validate_gene_list_for_compare(
+                    up, gene_case
+                )
+                result[f"{name_prefix}_down"] = _clean_and_validate_gene_list_for_compare(
+                    down, gene_case
+                )
+            else:
+                result["up"] = _clean_and_validate_gene_list_for_compare(up, gene_case)
+                result["down"] = _clean_and_validate_gene_list_for_compare(down, gene_case)
+        else:
+            result[base_name] = genes
+        return result
+
+    # dict case
+    for cname, df in de_results.items():
+        if df is None or (hasattr(df, "empty") and df.empty):
+            continue
+        base = str(cname)
+        if name_prefix:
+            base = f"{name_prefix}_{base}"
+        if separate_directions:
+            # split up/down for this contrast
+            work = df
+            if "p_adj" in work.columns:
+                padj = pd.to_numeric(work["p_adj"], errors="coerce")
+            elif "p_val" in work.columns:
+                padj = pd.to_numeric(work["p_val"], errors="coerce")
+            else:
+                padj = pd.Series(
+                    1.0, index=work.index if hasattr(work, "index") else range(len(work))
+                )
+            lfc = (
+                pd.to_numeric(work.get("logFC", 0), errors="coerce")
+                if hasattr(work, "get") and "logFC" in getattr(work, "columns", [])
+                else pd.Series(0, index=getattr(work, "index", range(len(work))))
+            )
+            sig = padj < float(pval_cutoff)
+            lc = float(logfc_cutoff)
+            genes_idx = (
+                work.index.astype(str).tolist()
+                if hasattr(work, "index")
+                else [str(i) for i in range(len(work))]
+            )
+            up = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf > lc]
+            down = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf < -lc]
+            result[f"{base}_up"] = _clean_and_validate_gene_list_for_compare(up, gene_case)
+            result[f"{base}_down"] = _clean_and_validate_gene_list_for_compare(down, gene_case)
+        else:
+            genes = _get_genes_from_df(df)
+            result[base] = genes
+    return result
+
+
+def concat_compare_results(
+    results: Union[Mapping[str, pd.DataFrame], List[Tuple[str, pd.DataFrame]]],
+    cluster_col: str = "Cluster",
+) -> pd.DataFrame:
+    """
+    Combine already-computed per-group enrichment results into a compare-style DataFrame.
+
+    Each input must be a result from run_enrichment / run_kegg / run_go / run_gsea (or similar).
+    The keys (or first element of tuple) become the "Cluster" value.
+
+    This lets users who manually looped over contrasts easily get a single table
+    with "Cluster" column for plotting.
+    """
+    items = list(results.items()) if isinstance(results, Mapping) else list(results)
+
+    frames = []
+    per_cluster_attrs = {}
+    for name, df in items:
+        if df is None or (hasattr(df, "empty") and df.empty):
+            continue
+        out = df.copy()
+        if cluster_col not in out.columns:
+            out.insert(0, cluster_col, str(name))
+        frames.append(out)
+        if hasattr(df, "attrs"):
+            per_cluster_attrs[str(name)] = dict(df.attrs)
+
+    if not frames:
+        empty = _empty_ora_result()
+        empty.attrs["method"] = "compare_concat"
+        empty.attrs["cluster_col"] = cluster_col
+        return empty
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    # Put Cluster first if present
+    if cluster_col in combined.columns:
+        cols = [cluster_col] + [c for c in combined.columns if c != cluster_col]
+        combined = combined[cols]
+
+    combined.attrs["method"] = "compare_concat"
+    combined.attrs["cluster_col"] = cluster_col
+    combined.attrs["per_cluster_attrs"] = per_cluster_attrs
+    combined.attrs["n_clusters"] = len(frames)
+    combined.attrs["clusters"] = [
+        str(n)
+        for n, _ in items
+        if not (getattr(_, "empty", False) if hasattr(_, "empty") else False)
+    ]
+    return combined
+
+
+def compare_enrichment(
+    gene_clusters: Mapping[str, Iterable[Any]],
+    *,
+    fun: Optional[Callable] = None,
+    pval_cutoff: float = 0.05,
+    padj_cutoff: Optional[float] = None,
+    min_size: int = 5,
+    max_size: int = 500,
+    restrict_background_to_gene_sets: bool = True,
+    force_universe: bool = False,
+    organism: str = "mouse",
+    gene_sets: Any = "GO_Biological_Process",
+    universe: Optional[Iterable[Any]] = None,
+    adata: Optional[Any] = None,
+    gene_set_source: str = "scatrans",
+    gene_case: Optional[str] = None,
+    verbose: bool = True,
+    return_all: bool = False,
+    raise_on_error: bool = False,
+    adjust_across_clusters: bool = False,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """
+    Run enrichment analysis across multiple named groups/clusters/contrasts
+    (clusterProfiler::compareCluster style).
+
+    The main entry point for multi-group enrichment in scATrans.
+
+    Biological comparability notes (inspired by clusterProfiler best practices):
+    - When `adata=` or `universe=` is supplied, the **same background** is used for every cluster.
+      This is critical for fair comparison across groups.
+    - Term filtering (min_size etc.) and p-adjustment are done per-cluster (standard and
+      conservative). You can post-filter the returned table.
+    - A 'Cluster' column is always added as the first column.
+    - Rich per-cluster metadata (including failures and empty) is stored under
+      `.attrs["per_cluster"]` and also under `.attrs["scatrans"]["per_cluster"]`.
+
+    Parameters
+    ----------
+    ...
+    raise_on_error : bool, default False
+        If True, any exception from a per-cluster enrichment call will be re-raised
+        immediately (good for debugging). If False (default), the cluster is recorded
+        as failed and execution continues (good for large batch runs).
+
+    Returns
+    -------
+    pd.DataFrame
+        Concatenated results with a leading "Cluster" column.
+        Compatible with the enhanced `scat.pl.enrich_dotplot(..., cluster_col="Cluster")`
+        and `scat.pl.enrich_upsetplot(...)` / `enrich_vennplot`.
+
+    Example
+    -------
+    ...
+    """
+    if not isinstance(gene_clusters, Mapping) or len(gene_clusters) == 0:
+        raise ValueError("gene_clusters must be a non-empty dict-like {name: gene_list}")
+
+    if fun is None:
+        fun = run_enrichment
+
+    # Resolve a shared universe once if possible (key for biological comparability)
+    shared_universe = universe
+    shared_adata = adata
+
+    # If user gave adata but no explicit universe, we let the subcalls use the smart default,
+    # which is the desired "same background" behavior when the same adata object is passed.
+    if shared_universe is None and shared_adata is None and verbose:
+        # Nothing shared provided - each cluster will use its own default (usually gene set genes).
+        _log_info(
+            "compare_enrichment: no shared `universe` or `adata` provided. "
+            "Each cluster will determine its own background. "
+            "For best cross-cluster comparability, pass the same adata (after store_raw_counts) or explicit universe."
+        )
+
+    frames = []
+    per_cluster: Dict[str, Any] = {}
+    cluster_names = list(gene_clusters.keys())
+
+    for cname in cluster_names:
+        cname_str = str(cname)
+        genes = gene_clusters[cname]
+        genes = _clean_and_validate_gene_list_for_compare(genes, gene_case=gene_case)
+        n_raw = len(list(gene_clusters[cname])) if hasattr(gene_clusters[cname], "__len__") else -1
+        n_clean = len(genes)
+
+        if not genes:
+            per_cluster[cname_str] = {
+                "n_input_genes_raw": n_raw,
+                "n_input_genes_clean": 0,
+                "skipped": "no genes after cleaning",
+            }
+            if verbose:
+                _log_info(
+                    f"compare_enrichment: cluster '{cname}' has no genes after cleaning; skipping"
+                )
+            continue
+
+        try:
+            res = fun(
+                gene_list=genes,
+                pval_cutoff=pval_cutoff,
+                padj_cutoff=padj_cutoff,
+                min_size=min_size,
+                max_size=max_size,
+                restrict_background_to_gene_sets=restrict_background_to_gene_sets,
+                force_universe=force_universe,
+                organism=organism,
+                gene_sets=gene_sets,
+                universe=shared_universe,
+                adata=shared_adata,
+                gene_set_source=gene_set_source,
+                gene_case=gene_case,
+                return_all=return_all,
+                verbose=verbose,
+                **kwargs,
+            )
+        except Exception as e:
+            per_cluster[cname_str] = {
+                "n_input_genes_raw": n_raw,
+                "n_input_genes_clean": n_clean,
+                "failed": True,
+                "error": str(e),
+            }
+            if raise_on_error:
+                raise
+            _warn_user(f"compare_enrichment: failed on cluster '{cname}': {e}")
+            continue
+
+        if res is None or (hasattr(res, "empty") and res.empty):
+            per_cluster[cname_str] = {
+                "n_input_genes_raw": n_raw,
+                "n_input_genes_clean": n_clean,
+                "empty": True,
+                "attrs": getattr(res, "attrs", {}) if res is not None else {},
+            }
+            if verbose:
+                _log_info(f"compare_enrichment: cluster '{cname}' returned empty result")
+            continue
+
+        out = res.copy()
+        if "Cluster" not in out.columns:
+            out.insert(0, "Cluster", cname_str)
+
+        frames.append(out)
+        per_cluster[cname_str] = {
+            "n_input_genes_raw": n_raw,
+            "n_input_genes_clean": n_clean,
+            "n_terms": len(out),
+            "attrs": dict(getattr(res, "attrs", {})),
+        }
+
+    if not frames:
+        # Return a properly attributed empty (consistent columns when possible)
+        empty = _empty_ora_result()
+        empty.insert(0, "Cluster", pd.Series(dtype=str))  # keep Cluster column for API stability
+        empty.attrs.update(
+            {
+                "method": "compare_enrichment",
+                "cluster_col": "Cluster",
+                "n_clusters_attempted": len(cluster_names),
+                "per_cluster": per_cluster,
+                "shared_universe_used": bool(shared_universe or shared_adata),
+                "clusterprofiler_aligned": True,
+            }
+        )
+        empty.attrs.setdefault("scatrans", {})
+        empty.attrs["scatrans"].update(
+            {
+                "method": "compare_enrichment",
+                "per_cluster": per_cluster,
+                "n_clusters_attempted": len(cluster_names),
+                "adjust_across_clusters": bool(adjust_across_clusters),
+                "multiple_testing": {"scope": "per_cluster", "method": "BH", "n_tests": 0},
+            }
+        )
+        return empty
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+
+    # Ensure Cluster is the very first column for convenience
+    if "Cluster" in combined.columns:
+        other_cols = [c for c in combined.columns if c != "Cluster"]
+        combined = combined[["Cluster"] + other_cols]
+
+    # Rich metadata
+    combined.attrs["method"] = "compare_enrichment"
+    combined.attrs["cluster_col"] = "Cluster"
+    combined.attrs["n_clusters"] = len(frames)
+    combined.attrs["clusters"] = [str(c) for c in cluster_names if str(c) in per_cluster]
+    combined.attrs["per_cluster"] = per_cluster
+    combined.attrs["shared_universe_used"] = bool(shared_universe or shared_adata)
+    combined.attrs["clusterprofiler_aligned"] = True
+
+    # Multi-cluster multiple testing (new, analogous to adjust_across_all in run_go)
+    multiple_testing_scope = "per_cluster"
+    if adjust_across_clusters and not combined.empty and "pvalue" in combined.columns:
+        if "p.adjust" in combined.columns:
+            combined["p.adjust.within_cluster"] = combined["p.adjust"]
+        combined["p.adjust"] = _bh_p_adjust(combined["pvalue"].values)
+        combined["neg_log10_padj"] = -np.log10(
+            combined["p.adjust"].astype(float).clip(lower=1e-300)
+        )
+        multiple_testing_scope = "all_clusters"
+        if verbose:
+            _log_info(
+                "compare_enrichment: p.adjust re-computed across all clusters (adjust_across_clusters=True)"
+            )
+
+    # Structured under scatrans (fixed from previous "scatans" note)
+    combined.attrs.setdefault("scatrans", {})
+    combined.attrs["scatrans"].update(
+        {
+            "method": "compare_enrichment",
+            "per_cluster": per_cluster,
+            "n_clusters_attempted": len(cluster_names),
+            "raise_on_error": raise_on_error,
+            "adjust_across_clusters": bool(adjust_across_clusters),
+            "multiple_testing": {
+                "scope": multiple_testing_scope,
+                "method": "BH",
+                "n_tests": len(combined) if "pvalue" in combined.columns else 0,
+            },
+        }
+    )
+    # Also keep flat for compatibility
+    combined.attrs["multiple_testing_scope"] = multiple_testing_scope
+
+    if verbose:
+        _log_info(
+            f"compare_enrichment: {len(frames)} clusters, total {len(combined)} rows. "
+            f"Shared background: {bool(shared_universe or shared_adata)}"
+        )
+
+    return combined

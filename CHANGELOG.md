@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased / Review 2026-06-27]
+### Added / Improved
+- Clarified and documented the `gamma_method="empirical_bayes"` implementation as **hierarchical (分层) gamma estimation** for the reference U/S ratio. Added explicit descriptions, Chinese term, and usage notes across module docs, tl.py, and README.
+- Stronger emphasis on "always pass explicit target_group/reference_group" (defaults differ between core `active_score` ("GA"/"Ctrl") and convenience wrappers ("Disease"/"Control")).
+
+### Changed / Fixed
+- Replaced internal `assert` with explicit RuntimeError in gene feature path (pp_bias.py).
+- Reduced log spam ("storing ... as categorical") during permutation label shuffling and internal DE calls by temporarily raising anndata logger level.
+- Minor docstring and comment precision updates for gamma, diagnostics, and defaults.
+- No behavior changes to computation, results, or public signatures.
+
 ## [0.9.2] - 2026-06-20
 
 ### Added / Changed

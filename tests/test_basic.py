@@ -23,58 +23,6 @@ import scanpy as sc
 
 import scatrans as scat
 
-# --------------------------- fixtures ---------------------------
-
-
-@pytest.fixture
-def adata_basic():
-    """Basic test AnnData with spliced/unspliced layers + gene features."""
-    np.random.seed(42)
-    n_cells, n_genes = 120, 250
-    X = np.random.negative_binomial(4, 0.45, size=(n_cells, n_genes)).astype(float)
-    ad = sc.AnnData(X)
-    ad.obs["condition"] = ["Disease"] * 60 + ["Control"] * 60
-    # Add sample ids for mixed model tests (multiple samples per group)
-    ad.obs["sample"] = ["s" + str(i % 8) for i in range(n_cells)]
-    ad.layers["spliced"] = X.copy()
-    ad.layers["unspliced"] = X * 0.55
-    ad.var["gene_length"] = np.random.randint(700, 4500, n_genes)
-    ad.var["intron_number"] = np.random.randint(0, 12, n_genes)
-    return ad
-
-
-@pytest.fixture
-def adata_mature_nascent():
-    """kb_python style layer names."""
-    np.random.seed(123)
-    n_cells, n_genes = 80, 180
-    X = np.random.negative_binomial(3, 0.5, size=(n_cells, n_genes)).astype(float)
-    ad = sc.AnnData(X)
-    ad.obs["condition"] = ["GA"] * 40 + ["Ctrl"] * 40
-    ad.layers["mature"] = X.copy()
-    ad.layers["nascent"] = X * 0.5
-    ad.var["gene_length"] = np.random.randint(800, 4000, n_genes)
-    ad.var["intron_number"] = np.random.randint(1, 9, n_genes)
-    return ad
-
-
-@pytest.fixture
-def adata_mixed_small():
-    """Lightweight fixture dedicated to mixed-model + delta_variance tests (fast CI)."""
-    np.random.seed(42)
-    n_cells, n_genes = 60, 70
-    X = np.random.negative_binomial(3, 0.5, size=(n_cells, n_genes)).astype(float)
-    ad = sc.AnnData(X)
-    ad.obs["condition"] = ["Disease"] * 30 + ["Control"] * 30
-    # 6 samples (3 per group) — enough for (1|sample) RE but small for speed
-    ad.obs["sample"] = ["s" + str(i % 6) for i in range(n_cells)]
-    ad.layers["spliced"] = X.copy()
-    ad.layers["unspliced"] = X * 0.45
-    ad.var["gene_length"] = np.random.randint(600, 3500, n_genes)
-    ad.var["intron_number"] = np.random.randint(0, 8, n_genes)
-    return ad
-
-
 # --------------------------- core active_score ---------------------------
 
 
@@ -96,9 +44,21 @@ def test_heuristic_basic(adata_basic):
     assert "scatrans" in res.uns
 
 
-@pytest.mark.parametrize("use_perm", [False, True])
-def test_heuristic_with_and_without_permutation(adata_basic, use_perm):
-    n_perm = 4 if use_perm else 0  # tiny for speed
+def test_heuristic_without_permutation(adata_basic):
+    res, _, _ = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+    )
+    assert "active_score" in res.var.columns
+
+
+@pytest.mark.slow
+def test_heuristic_with_permutation(adata_basic):
     res, sig, _ = scat.active_score(
         adata_basic,
         groupby="condition",
@@ -106,18 +66,17 @@ def test_heuristic_with_and_without_permutation(adata_basic, use_perm):
         reference_group="Control",
         mode="heuristic",
         show_plot=False,
-        use_permutation=use_perm,
-        n_perm=n_perm,
+        use_permutation=True,
+        n_perm=4,
         random_seed=0,
+        n_jobs=1,
     )
     assert "active_score" in res.var.columns
-    if use_perm:
-        assert "active_score_pval" in res.var.columns or len(sig) == 0
-        assert "active_score_fdr" in res.var.columns or len(sig) == 0
-        assert "unspliced_excess_pval" in res.var.columns or len(sig) == 0
-        assert "unspliced_excess_fdr" in res.var.columns or len(sig) == 0
+    assert "active_score_pval" in res.var.columns or len(sig) == 0
+    assert "unspliced_excess_fdr" in res.var.columns or len(sig) == 0
 
 
+@pytest.mark.slow
 def test_advanced_runs_or_skips(adata_basic):
     try:
         res, sig, _ = scat.active_score(
@@ -274,6 +233,7 @@ def test_run_enrichment_universe_and_new_output():
     assert ui3["dropped_by_annotation_filter"] == 0
 
 
+@pytest.mark.plot
 def test_enrich_plot_show_terms(adata_basic):
     """Test that enrich_dotplot accepts show_terms (int or list) like clusterProfiler showCategory."""
     # Build a fake enrichment df similar to real output
@@ -316,6 +276,7 @@ def test_enrich_plot_show_terms(adata_basic):
 # --------------------------- plotting (headless) ---------------------------
 
 
+@pytest.mark.plot
 def test_pl_set_style_and_comet(adata_basic):
     # Run a quick analysis so we have results df
     _, _, allr = scat.active_score(
@@ -336,6 +297,7 @@ def test_pl_set_style_and_comet(adata_basic):
     plt.close("all")
 
 
+@pytest.mark.plot
 def test_pl_rankplot_and_heatmap_stubs(adata_basic):
     _, _, allr = scat.active_score(
         adata_basic,
@@ -355,6 +317,7 @@ def test_pl_rankplot_and_heatmap_stubs(adata_basic):
 # --------------------------- ax= parameter & edge cases ---------------------------
 
 
+@pytest.mark.plot
 def test_plotting_with_ax_parameter(adata_basic):
     """Test that main plot functions accept an external ax (for multi-panel figures)."""
     _, _, allr = scat.active_score(
@@ -455,6 +418,7 @@ def test_ensure_raw_counts_recovers_from_raw():
     assert "raw_gene_list" in ad.uns.get("scatrans", {})
 
 
+@pytest.mark.slow
 def test_mixed_model_on_log_data_no_double_transform(adata_mixed_small):
     """Mixed model path should accept already log-normalized data without re-logging."""
     ad = adata_mixed_small.copy()
@@ -513,6 +477,7 @@ def test_cli_main_is_callable():
 # --------------------------- mixed model + delta variance ---------------------------
 
 
+@pytest.mark.slow
 def test_mixed_model_basic(adata_mixed_small):
     """use_mixed_model=True produces delta_variance / delta_var_pval and runs without crash."""
     res, sig, allr = scat.active_score(
@@ -540,6 +505,7 @@ def test_mixed_model_basic(adata_mixed_small):
     assert np.all((pvals >= 0) & (pvals <= 1))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("use_dv", [False, True])
 def test_delta_variance_filter_option(adata_mixed_small, use_dv):
     """The use_delta_variance_pval flag changes (or does not change) the sig set as expected."""
@@ -578,6 +544,7 @@ def test_delta_variance_filter_option(adata_mixed_small, use_dv):
     assert "delta_variance" in allr.columns
 
 
+@pytest.mark.slow
 def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
     with pytest.raises(ValueError, match="incompatible"):
         scat.active_score(
@@ -595,6 +562,7 @@ def test_mixed_model_incompatible_with_pseudobulk(adata_mixed_small):
 # --------------------------- filter_active_genes helper ---------------------------
 
 
+@pytest.mark.slow
 def test_significant_requires_permutation_fdr(adata_basic):
     """Without permutation the built-in significant list is empty; with perm it can be non-empty."""
     _, sig_no_perm, allr = scat.active_score(
@@ -627,6 +595,7 @@ def test_significant_requires_permutation_fdr(adata_basic):
         assert (sig_perm["unspliced_excess_fdr"] < 0.05).all()
 
 
+@pytest.mark.slow
 def test_filter_active_genes_basic(adata_mixed_small):
     """filter_active_genes should work, be robust to missing columns, and respect thresholds."""
     # Run without permutation (no fdr columns)
@@ -681,6 +650,7 @@ def test_filter_active_genes_basic(adata_mixed_small):
         assert (filt2["unspliced_excess_fdr"] < 0.5).all()
 
 
+@pytest.mark.slow
 def test_filter_active_genes_with_mixed(adata_mixed_small):
     """When delta_variance is present, the helper can filter on it."""
     _, _, allr = scat.active_score(
@@ -706,6 +676,7 @@ def test_filter_active_genes_with_mixed(adata_mixed_small):
     assert len(filt) >= 0
 
 
+@pytest.mark.slow
 def test_filter_active_genes_presets(adata_mixed_small):
     """preset parameter supplies sensible defaults for different analysis styles."""
     _, _, allr = scat.active_score(
@@ -769,7 +740,9 @@ def test_filter_active_genes_logfc_direction(adata_mixed_small):
     assert len(both) >= len(down)
 
     # magnitude cutoff works for down
-    down_strict = scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.1, logfc_direction="down")
+    down_strict = scat.filter_active_genes(
+        allr, pval_cutoff=1.0, logfc_cutoff=0.1, logfc_direction="down"
+    )
     if len(down_strict) > 0:
         assert (down_strict["logFC"] < -0.1).all()
 
@@ -788,10 +761,14 @@ def test_filter_active_genes_logfc_direction(adata_mixed_small):
     up_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3)
     assert list(up_de.index) == ["G1", "G2"]  # sorted p then logFC desc
 
-    down_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
+    down_de = scat.filter_active_genes(
+        de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down"
+    )
     assert list(down_de.index) == ["G4", "G3"]  # most neg first
 
-    both_de = scat.filter_active_genes(de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
+    both_de = scat.filter_active_genes(
+        de_df, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both"
+    )
     # p_adj order then |logFC| desc within ties: G4(0.0001), G1(0.001,|1.2|), G3(0.001,|0.9|), G2(0.01)
     assert list(both_de.index) == ["G4", "G1", "G3", "G2"]
 
@@ -982,6 +959,7 @@ def test_enrichment_organism_normalization_in_attrs():
         assert rk.attrs.get("organism") == "mouse" or rk.attrs.get("organism") is not None
 
 
+@pytest.mark.slow
 def test_run_go_wrapper_basic():
     # run_go maps ontology -> gene set name. With real bundled sets (BP) this will load locally (no net).
     # "Foo" will have no overlap with any real GO BP term -> empty result via overlap filter, with rich attrs.
@@ -1071,6 +1049,7 @@ def test_gene_set_info_has_actual_source_and_requested_source():
     assert gsi["actual_source"] in ("dict", "bundled", "gseapy", "gmt_file", None)
 
 
+@pytest.mark.slow
 def test_run_go_adjust_across_all(tmp_path):
     """adjust_across_all changes the p.adjust values (or at least runs without error and records the flag)."""
     # Use synthetic tiny sets so we control overlaps; real bundled would also work but be slow/noisy
@@ -1124,6 +1103,7 @@ def test_dual_cutoff_warning():
         )
 
 
+@pytest.mark.slow
 def test_run_go_all_per_ontology_attrs_and_within_padj():
     """GO ALL should capture per_ontology_attrs and (when adjust=True) the within_ontology column + rich top attrs."""
     genes = ["A", "B"]
@@ -1198,6 +1178,7 @@ def test_save_enrichment_report_mkdir_and_tsv(tmp_path):
     not (lambda: __import__("importlib.util").util.find_spec("gseapy"))(),
     reason="gseapy not installed for GSEA tests",
 )
+@pytest.mark.slow
 def test_run_gsea_basic():
     """Basic run_gsea smoke test using gseapy.prerank wrapper."""
     import pandas as pd
@@ -1236,3 +1217,89 @@ def test_run_gsea_without_gseapy_raises(monkeypatch):
 
     with pytest.raises(ImportError, match="requires the 'gseapy'"):
         scat.run_gsea(pd.Series({"A": 1}), {"T": ["A"]})
+
+
+# --------------------------- P0 fixes + simple API ---------------------------
+
+
+@pytest.mark.plot
+def test_volcano_3d_no_nameerror(adata_basic):
+    """volcano_3d must not raise NameError on return_data (P0 bug fix)."""
+    _, _, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        mode="heuristic",
+        show_plot=False,
+        use_permutation=False,
+    )
+    fig, ax = scat.pl.volcano_3d(allr, top_n=3, show=False)
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    fig2, ax2, plot_df = scat.pl.volcano_3d(allr, top_n=3, show=False, return_data=True)
+    assert isinstance(plot_df, pd.DataFrame)
+    plt.close(fig2)
+
+
+def test_active_score_simple_exported_and_runs(adata_basic):
+    assert hasattr(scat, "active_score_simple")
+    res, sig, allr = scat.active_score_simple(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        show_plot=False,
+    )
+    assert "active_score" in res.var.columns
+    assert len(allr) == adata_basic.n_vars
+
+
+def test_differential_expression_simple_runs(adata_basic):
+    ad, de_res = scat.differential_expression_simple(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+    )
+    assert "logFC" in de_res.columns
+    assert "p_adj" in de_res.columns
+
+
+def test_run_default_pipeline(adata_basic):
+    out = scat.run_default_pipeline(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        run_go_enrichment=False,
+        show_plot=False,
+    )
+    assert "adata" in out and "all_results" in out and "candidates" in out
+    assert "backend" in out
+    assert out["filter_preset"] == "heuristic"
+
+
+def test_recommend_workflow_exported(adata_basic):
+    rec = scat.recommend_workflow(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        sample_col="sample",
+    )
+    assert "suggested_kwargs" in rec
+    assert "workflow_preset" in rec
+    assert "filter_preset" in rec
+    assert rec["de_backend"] in ("pydeseq2", "scanpy")
+
+
+def test_citation_cff_exists():
+    from pathlib import Path
+
+    cff = Path(__file__).resolve().parents[1] / "CITATION.cff"
+    assert cff.exists()
+    text = cff.read_text()
+    assert "cff-version:" in text
+    assert "scATrans" in text

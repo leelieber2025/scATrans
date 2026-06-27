@@ -288,7 +288,11 @@ def add_gene_features(
             ) from exc
 
     # At this point final_path is always a real Path we can read
-    assert final_path is not None
+    if final_path is None:
+        raise RuntimeError(
+            "Internal error resolving gene features path. "
+            "This should not happen; please report with your add_gene_features call."
+        )
 
     try:
         gf = pd.read_parquet(final_path).set_index("gene_name")

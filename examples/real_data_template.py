@@ -62,9 +62,10 @@ scat.store_raw_counts(adata, layer="counts", save_raw=False)
 # ------------------------------------------------------------------
 # 3. Attach gene features (length + intron count) for bias correction
 # ------------------------------------------------------------------
-# The package ships mouse tables. For human or custom annotations use:
-#   scat.add_gene_features(adata, gene_features_path="my_features.parquet")
-# or the CLI: generate-gene-features --gtf genes.gtf --output features.parquet
+# The package ships mouse tables by default.
+# For human or custom annotations:
+#   1. generate-gene-features --gtf genes.gtf --output my_features.parquet --organism human
+#   2. adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
 adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
 # ------------------------------------------------------------------

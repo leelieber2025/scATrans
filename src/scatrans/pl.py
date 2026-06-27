@@ -30,7 +30,7 @@ and shared environments.
 """
 
 import logging
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from typing import Any, Iterable, List, Mapping, Optional, Tuple, Union
 
 import matplotlib as mpl
@@ -166,6 +166,117 @@ def style_context(**kwargs):
         sns.set_style(original_sns)
 
 
+def _style_context_if(use_style: bool):
+    """Safe context (nullcontext when not using style)."""
+    return style_context() if use_style else nullcontext()
+
+
+def _maybe_repel_labels(
+    texts: list,
+    x: np.ndarray,
+    y: np.ndarray,
+    ax,
+    *,
+    label_repel: bool = True,
+) -> None:
+    """Apply adjustText when available; optional fallback with overlap warning."""
+    if not texts:
+        return
+    if not label_repel:
+        return
+    try:
+        from adjustText import adjust_text
+    except ImportError:
+        logger.warning(
+            "adjustText is not installed; gene labels may overlap. "
+            "Install with: pip install adjustText — or pass label_repel=False."
+        )
+        return
+    adjust_text(
+        texts,
+        x=x,
+        y=y,
+        arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
+        ax=ax,
+    )
+
+
+@contextmanager
+def figure_export_context(
+    directory: str,
+    *,
+    dpi: int = 300,
+    fmt: str = "pdf",
+    bbox_inches: str = "tight",
+):
+    """
+    Context manager for batch-saving figures in multi-panel workflows.
+
+    Example::
+
+        with scat.pl.figure_export_context("figures/out") as export:
+            fig, ax = scat.pl.comet_plot(all_results, show=False)
+            export.save(fig, "comet")
+            fig2, ax2 = scat.pl.volcano_plot(all_results, show=False)
+            export.save(fig2, "volcano")
+    """
+    from pathlib import Path
+
+    out_dir = Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+
+    class _Exporter:
+        def save(self, fig, name: str) -> str:
+            path = out_dir / f"{name}.{fmt}"
+            fig.savefig(path, dpi=dpi, bbox_inches=bbox_inches)
+            saved.append(str(path))
+            return str(path)
+
+    exporter = _Exporter()
+    try:
+        yield exporter
+    finally:
+        if saved:
+            logger.info("figure_export_context: saved %d file(s) to %s", len(saved), out_dir)
+
+
+def save_all_figures(
+    figures: dict,
+    directory: str,
+    *,
+    dpi: int = 300,
+    fmt: str = "pdf",
+    bbox_inches: str = "tight",
+    close: bool = True,
+) -> list[str]:
+    """
+    Batch-save a mapping of ``name -> matplotlib Figure``.
+
+    Convenience wrapper around :func:`figure_export_context` for notebooks that
+    already hold figure objects.
+
+    Example::
+
+        paths = scat.pl.save_all_figures(
+            {"comet": fig1, "volcano": fig2},
+            "figures/out",
+        )
+    """
+    import matplotlib.pyplot as plt
+
+    saved: list[str] = []
+    with figure_export_context(directory, dpi=dpi, fmt=fmt, bbox_inches=bbox_inches) as export:
+        for name, fig in figures.items():
+            if fig is None:
+                logger.warning("save_all_figures: skipping None figure for %r", name)
+                continue
+            saved.append(export.save(fig, name))
+            if close:
+                plt.close(fig)
+    return saved
+
+
 # -----------------------------------------------------------------------------
 # Internal helpers for robust plotting (column validation, safe math, parsing)
 # -----------------------------------------------------------------------------
@@ -269,6 +380,10 @@ def comet_plot(
     show: bool = True,
     use_style: bool = False,
     positive_logfc_only: bool = True,
+    return_data: bool = False,
+    label_repel: bool = True,
+    label_fontsize: Optional[float] = None,
+    min_label_score: Optional[float] = None,
 ):
     """
     Comet plot of log fold change vs. bias-corrected unspliced residual.
@@ -300,11 +415,6 @@ def comet_plot(
         If provided, plot into this axes instead of creating a new figure.
         Useful for embedding in multi-panel publication figures.
     """
-    try:
-        from adjustText import adjust_text
-    except ImportError:
-        adjust_text = None
-
     logger.info("Generating comet plot...")
     _style_ctx = None
     if use_style:
@@ -394,33 +504,31 @@ def comet_plot(
     ax.axhline(0, color="#999999", linestyle="--", linewidth=1, alpha=0.5, zorder=1)
     ax.axvline(0, color="#999999", linestyle="--", linewidth=1, alpha=0.5, zorder=1)
 
-    top_genes = plot_df.nlargest(top_n, "active_score")
+    label_pool = plot_df
+    if min_label_score is not None and "active_score" in label_pool.columns:
+        label_pool = label_pool[label_pool["active_score"] >= float(min_label_score)]
+    top_genes = label_pool.nlargest(top_n, "active_score")
+    lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 2)
     texts = []
     for idx, row in top_genes.iterrows():
         txt = ax.text(
             row["logFC"],
             row[residual_col],
             f"{idx}",
-            fontsize=max(8, fontsize - 2),
+            fontsize=lbl_fs,
             fontweight="bold",
             color="#111111",
             bbox={"boxstyle": "square,pad=0.1", "fc": "none", "ec": "none"},
         )
         texts.append(txt)
 
-    if texts:
-        if adjust_text is not None:
-            adjust_text(
-                texts,
-                x=plot_df["logFC"].values,
-                y=plot_df[residual_col].values,
-                arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
-                ax=ax,
-            )
-        else:
-            logger.warning(
-                "adjustText is not installed; gene labels may overlap. pip install adjustText"
-            )
+    _maybe_repel_labels(
+        texts,
+        plot_df["logFC"].values,
+        plot_df[residual_col].values,
+        ax,
+        label_repel=label_repel,
+    )
 
     ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
     ax.set_ylabel("Bias-corrected Unspliced Residual", fontsize=fontsize, fontweight="bold")
@@ -441,6 +549,8 @@ def comet_plot(
     # (avoid tight_layout after colorbar)
 
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    if return_data:
+        return fig, ax, plot_df
     return fig, ax
 
 
@@ -461,6 +571,7 @@ def volcano_3d(
     ax=None,
     show: bool = True,
     use_style: bool = False,
+    return_data: bool = False,
 ):
     """
     3D volcano-style view (logFC, -log10(p_adj), velocity residual).
@@ -599,6 +710,8 @@ def volcano_3d(
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    if return_data:
+        return fig, ax, plot_df
     return fig, ax
 
 
@@ -621,6 +734,9 @@ def enrich_dotplot(
     ax=None,
     show: bool = True,
     use_style: bool = False,
+    cluster_col: Optional[str] = None,
+    facet_by_cluster: bool = False,
+    return_data: bool = False,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -650,6 +766,16 @@ def enrich_dotplot(
         order of the list is respected when possible). This is analogous to
         `dotplot(..., showCategory = c("term1", "term2"))`.
 
+    Multi-group / compare support (new):
+      - If the input df contains a "Cluster" column (or you pass `cluster_col="Cluster"`),
+        terms are automatically prefixed with "[Cluster] " so groups are visually distinct.
+      - `show_terms="auto"` (and int) now collects top terms intelligently across clusters
+        when a Cluster column is present (union of interesting terms per cluster).
+      - `facet_by_cluster=True` will produce a grid of subplots (one per cluster) using
+        the same rich dotplot logic. Excellent for publication multi-panel figures.
+      - The returned df from `scat.compare_enrichment(...)` or `concat_compare_results(...)`
+        works directly.
+
     `top_n` is still supported for the common "top N" case (when show_terms is None).
     Supports `ax` for embedding in publication multi-panel figures.
     """
@@ -667,6 +793,67 @@ def enrich_dotplot(
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
         return fig, ax
 
+    # --- Multi-cluster detection (compareCluster style) ---
+    if cluster_col is None:
+        for cand in ("Cluster", "cluster", "Group", "group"):
+            if cand in enrich_df.columns:
+                cluster_col = cand
+                break
+
+    has_cluster = bool(
+        cluster_col and cluster_col in enrich_df.columns and enrich_df[cluster_col].nunique() > 1
+    )
+
+    # Facet support: delegate to subplots (reuses full logic, avoids code duplication)
+    if facet_by_cluster and has_cluster:
+        clusters = [str(x) for x in pd.Series(enrich_df[cluster_col]).dropna().unique().tolist()]
+        n = len(clusters)
+        if n > 1:
+            import math as _math
+
+            ncols = min(3, n)
+            nrows = _math.ceil(n / ncols)
+            fig_w = figsize[0] * min(ncols, 2.5)
+            fig_h = figsize[1] * max(0.7, nrows * 0.85)
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=(fig_w, fig_h), constrained_layout=True, dpi=dpi
+            )
+            axes = np.asarray(axes).ravel().tolist() if hasattr(axes, "ravel") else [axes]
+            _created_fig = True
+            for i, cl in enumerate(clusters):
+                ax_i = axes[i] if i < len(axes) else axes[-1]
+                sub = enrich_df[enrich_df[cluster_col].astype(str) == cl].copy()
+                # recurse without facet to fill the ax
+                enrich_dotplot(
+                    sub,
+                    top_n=top_n,
+                    show_terms=show_terms,
+                    title=f"{title} — {cl}" if title else str(cl),
+                    save_path=None,
+                    figsize=(fig_w / ncols * 0.95, fig_h / nrows * 0.9),
+                    dpi=dpi,
+                    fontsize=fontsize,
+                    x=x,
+                    color_by=color_by,
+                    size_by=size_by,
+                    cmap=cmap,
+                    dot_max=dot_max,
+                    dot_min=dot_min,
+                    smallest_dot=smallest_dot,
+                    ax=ax_i,
+                    show=False,
+                    use_style=use_style,
+                    cluster_col=cluster_col,
+                    facet_by_cluster=False,
+                )
+            # hide unused axes
+            for j in range(n, len(axes)):
+                axes[j].axis("off")
+            if _style_ctx is not None:
+                _style_ctx.__exit__(None, None, None)
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, axes[0] if axes else fig
+
     if dot_min is not None and dot_max is not None and dot_min > dot_max:
         raise ValueError("dot_min must be <= dot_max.")
     if smallest_dot < 0 or smallest_dot > 1:
@@ -679,10 +866,8 @@ def enrich_dotplot(
         logger.warning("dot_max < 0 may produce unexpected dot sizes.")
 
     logger.info("Generating enrichment dotplot...")
-    _style_ctx = None
-    if use_style:
-        _style_ctx = style_context()
-        _style_ctx.__enter__()
+    _style_ctx = style_context() if use_style else nullcontext()
+    _style_ctx.__enter__() if use_style else None
 
     # Auto defaults for GSEA results (NES present)
     is_gsea = ("NES" in enrich_df.columns) or ("ES" in enrich_df.columns)
@@ -694,53 +879,89 @@ def enrich_dotplot(
     # clusterProfiler-style term selection (show_terms takes precedence)
     if show_terms is not None:
         if isinstance(show_terms, int):
-            plot_df = enrich_df.head(show_terms).copy()
+            if has_cluster:
+                # Collect top N per cluster, then take union (preserves diversity across groups)
+                parts = []
+                for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
+                    parts.append(sub.head(show_terms))
+                plot_df = (
+                    pd.concat(parts)
+                    .drop_duplicates()
+                    .head(show_terms * max(1, enrich_df[cluster_col].nunique() // 2 + 1))
+                )
+            else:
+                plot_df = enrich_df.head(show_terms).copy()
         elif isinstance(show_terms, str) and show_terms.lower() == "auto":
             # Auto: prefer statistically interesting terms (p.adjust + count)
-            # Try common column names for adjusted p
+            # When multi-cluster, collect interesting terms per cluster then union
             padj_col = None
             for cand in ("p.adjust", "Adjusted P-value", "p_adj", "padj"):
                 if cand in enrich_df.columns:
                     padj_col = cand
                     break
             if padj_col is None:
-                padj_col = "p.adjust"  # will produce all-False mask if missing -> fallback
-            # Build mask: significant + has count
-            try:
-                padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(1.0)
-            except Exception:
-                padj = pd.Series(1.0, index=enrich_df.index)
+                padj_col = "p.adjust"
             count_col = "Count" if "Count" in enrich_df.columns else None
-            cnt = (
-                pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0)
-                if count_col
-                else pd.Series(0, index=enrich_df.index)
-            )
-            auto_mask = (padj < 0.05) & (cnt >= 2)
-            if auto_mask.sum() == 0:
-                # fallback to top by -log padj or head
-                if padj_col in enrich_df.columns:
-                    tmp = enrich_df.copy()
-                    tmp["_key"] = -np.log10(
-                        pd.to_numeric(tmp[padj_col], errors="coerce").fillna(1) + 1e-300
+
+            if has_cluster:
+                selected_idx = []
+                for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
+                    try:
+                        padj = pd.to_numeric(sub.get(padj_col, 1.0), errors="coerce").fillna(1.0)
+                    except Exception:
+                        padj = pd.Series(1.0, index=sub.index)
+                    cnt = (
+                        pd.to_numeric(sub.get(count_col, 0), errors="coerce").fillna(0)
+                        if count_col
+                        else pd.Series(0, index=sub.index)
                     )
-                    plot_df = (
-                        tmp.sort_values("_key", ascending=False)
-                        .head(top_n)
-                        .drop(columns=["_key"], errors="ignore")
-                        .copy()
-                    )
-                else:
-                    plot_df = enrich_df.head(top_n).copy()
+                    auto_mask = (padj < 0.05) & (cnt >= 2)
+                    if auto_mask.any():
+                        sub_cand = sub[auto_mask].copy()
+                        if padj_col in sub_cand.columns:
+                            sub_cand = sub_cand.sort_values(
+                                by=[padj_col, count_col or sub_cand.columns[0]],
+                                ascending=[True, False],
+                            )
+                        selected_idx.extend(sub_cand.head(top_n).index.tolist())
+                    else:
+                        selected_idx.extend(sub.head(top_n).index.tolist())
+                plot_df = (
+                    enrich_df.loc[list(dict.fromkeys(selected_idx))].head(top_n * 2).copy()
+                )  # union, cap later
             else:
-                cand = enrich_df[auto_mask].copy()
-                # sort by significance then count
-                if padj_col in cand.columns:
-                    cand = cand.sort_values(
-                        by=[padj_col, "Count" if "Count" in cand.columns else cand.columns[0]],
-                        ascending=[True, False],
-                    )
-                plot_df = cand.head(top_n).copy()
+                try:
+                    padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(1.0)
+                except Exception:
+                    padj = pd.Series(1.0, index=enrich_df.index)
+                cnt = (
+                    pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0)
+                    if count_col
+                    else pd.Series(0, index=enrich_df.index)
+                )
+                auto_mask = (padj < 0.05) & (cnt >= 2)
+                if auto_mask.sum() == 0:
+                    if padj_col in enrich_df.columns:
+                        tmp = enrich_df.copy()
+                        tmp["_key"] = -np.log10(
+                            pd.to_numeric(tmp[padj_col], errors="coerce").fillna(1) + 1e-300
+                        )
+                        plot_df = (
+                            tmp.sort_values("_key", ascending=False)
+                            .head(top_n)
+                            .drop(columns=["_key"], errors="ignore")
+                            .copy()
+                        )
+                    else:
+                        plot_df = enrich_df.head(top_n).copy()
+                else:
+                    cand = enrich_df[auto_mask].copy()
+                    if padj_col in cand.columns:
+                        cand = cand.sort_values(
+                            by=[padj_col, "Count" if "Count" in cand.columns else cand.columns[0]],
+                            ascending=[True, False],
+                        )
+                    plot_df = cand.head(top_n).copy()
         else:
             # list/tuple of explicit terms
             wanted = {
@@ -770,7 +991,15 @@ def enrich_dotplot(
                     columns=["_sel_order"], errors="ignore"
                 )
     else:
-        plot_df = enrich_df.head(top_n).copy()
+        if has_cluster:
+            # default: take a reasonable number across clusters
+            parts = []
+            per_cl = max(3, top_n // max(1, enrich_df[cluster_col].nunique()))
+            for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
+                parts.append(sub.head(per_cl))
+            plot_df = pd.concat(parts).drop_duplicates().head(top_n * 2)
+        else:
+            plot_df = enrich_df.head(top_n).copy()
 
     plot_df = plot_df.iloc[::-1]  # visual: top at top of y axis for horizontal dotplot
 
@@ -797,6 +1026,13 @@ def enrich_dotplot(
 
     plot_df = plot_df.copy()  # ensure writable
     plot_df["Term_Clean"] = plot_df[term_col].astype(str).apply(clean_term)
+
+    # Prefix with cluster for visual grouping (compareCluster style) when not faceting
+    if has_cluster and cluster_col in plot_df.columns and not facet_by_cluster:
+        cl_str = plot_df[cluster_col].astype(str)
+        # avoid double prefix if user already has it
+        if not plot_df["Term_Clean"].str.contains(r"^\[.*\]").any():
+            plot_df["Term_Clean"] = "[" + cl_str + "] " + plot_df["Term_Clean"]
 
     pval_candidates = ["p.adjust", "Adjusted P-value", "p_adj", "padj", "FDR_qval", "pvalue"]
     pval_col = next((c for c in pval_candidates if c in plot_df.columns), None)
@@ -1106,7 +1342,447 @@ def enrich_dotplot(
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+
+    if return_data:
+        return fig, ax, plot_df
     return fig, ax
+
+
+def enrich_upsetplot(
+    enrich_df,
+    cluster_col: Optional[str] = None,
+    pval_cutoff: float = 0.05,
+    min_count: int = 1,
+    max_terms: int = 40,
+    title: str = "Enriched Term Overlap (UpSet-style)",
+    figsize: Tuple[float, float] = (11, 6.5),
+    dpi: int = 300,
+    fontsize: int = 10,
+    save_path: Optional[str] = None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    UpSet-style plot for term overlap across clusters/groups (compareCluster style).
+
+    Works directly on the output of:
+      - scat.compare_enrichment(...)
+      - scat.concat_compare_results(...)
+      - or any df that has a "Cluster" (or cluster_col) + "Term"/"p.adjust"
+
+    It shows:
+    - Which enriched terms (padj < cutoff) are shared between different clusters/contrasts.
+    - Set sizes (number of significant terms per cluster).
+    - Intersection sizes (classic UpSet matrix + bars).
+
+    This is especially powerful when you used `extract_gene_lists(..., separate_directions=True)`
+    so that "up" and "down" from different contrasts appear as separate sets.
+
+    If no 'Cluster' column is present, the whole table is treated as a single set (degrades
+    gracefully to a simple bar of top terms).
+
+    Parameters
+    ----------
+    cluster_col : str or None
+        Column that defines the groups. Auto-detected if None.
+    pval_cutoff : float
+        Only terms with p.adjust (or similar) < cutoff are considered "enriched" for this plot.
+    min_count : int
+        Minimum gene count in the enrichment row to include the term.
+    max_terms : int
+        Cap on total unique terms considered (keeps plot readable).
+    """
+    _style_ctx = None
+    if use_style:
+        _style_ctx = style_context()
+        _style_ctx.__enter__()
+
+    if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
+        fig, ax = _empty_placeholder_fig("No enrichment data for upset")
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        return fig, ax
+
+    df = enrich_df.copy()
+
+    # detect cluster
+    if cluster_col is None:
+        for cand in ("Cluster", "cluster", "Group", "group"):
+            if cand in df.columns:
+                cluster_col = cand
+                break
+
+    # p-value column
+    p_col = None
+    for c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue"):
+        if c in df.columns:
+            p_col = c
+            break
+    if p_col is None:
+        p_col = df.columns[0]
+    df[p_col] = pd.to_numeric(df[p_col], errors="coerce").fillna(1.0)
+
+    # count filter
+    cnt_col = "Count" if "Count" in df.columns else None
+    if cnt_col:
+        df = df[pd.to_numeric(df[cnt_col], errors="coerce").fillna(0) >= min_count]
+
+    # significant terms per cluster
+    sig = df[df[p_col] < pval_cutoff].copy()
+    if sig.empty:
+        fig, ax = _empty_placeholder_fig("No significant terms at current cutoff")
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        if _style_ctx:
+            _style_ctx.__exit__(None, None, None)
+        return fig, ax
+
+    # term column
+    term_c = None
+    for c in ["Term", "Description", "term", "description", "ID"]:
+        if c in sig.columns:
+            term_c = c
+            break
+    if term_c is None:
+        term_c = sig.columns[0]
+
+    if cluster_col and cluster_col in sig.columns:
+        groups = sig[cluster_col].astype(str).unique().tolist()
+        term_sets = {}
+        for g in groups:
+            terms = sig.loc[sig[cluster_col].astype(str) == g, term_c].astype(str).unique().tolist()
+            term_sets[g] = set(terms)
+    else:
+        # single group fallback
+        terms = sig[term_c].astype(str).unique().tolist()[:max_terms]
+        term_sets = {"all": set(terms)}
+
+    # limit total terms shown for clarity
+    all_terms = set()
+    for s in term_sets.values():
+        all_terms.update(s)
+    if len(all_terms) > max_terms:
+        # keep the most frequent across sets
+        from collections import Counter
+
+        freq = Counter()
+        for s in term_sets.values():
+            for t in s:
+                freq[t] += 1
+        keep = {t for t, _ in freq.most_common(max_terms)}
+        for g in list(term_sets.keys()):
+            term_sets[g] = term_sets[g] & keep
+        all_terms = keep
+
+    if not all_terms:
+        fig, ax = _empty_placeholder_fig("No terms after filtering")
+        if _style_ctx:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax
+
+    # Build membership matrix (for UpSet)
+    term_list = sorted(all_terms)
+    clusters_sorted = sorted(term_sets.keys())
+    membership = pd.DataFrame(0, index=term_list, columns=clusters_sorted, dtype=int)
+    for cl, terms in term_sets.items():
+        for t in terms:
+            if t in membership.index:
+                membership.loc[t, cl] = 1
+
+    # Intersection sizes
+    # We group by the exact combination pattern
+    combo = membership.apply(lambda r: tuple(r.values), axis=1)
+    inter_sizes = combo.value_counts().sort_values(ascending=False)
+    # Only show intersections with size >=1 (all do) and limit
+    inter_sizes = inter_sizes.head(20)
+
+    # Create figure layout
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    # Grid: left set-size bars, top intersection bars, matrix
+    gs = fig.add_gridspec(
+        2,
+        2,
+        width_ratios=[1.6, 3.5],
+        height_ratios=[1.2, 3.5],
+        hspace=0.25,
+        wspace=0.08,
+    )
+    ax_set = fig.add_subplot(gs[1, 0])  # set size horizontal bars (left)
+    ax_inter = fig.add_subplot(gs[0, 1])  # intersection sizes (top)
+    ax_mat = fig.add_subplot(gs[1, 1])  # matrix
+
+    # 1. Set sizes (horizontal bars)
+    set_sizes = {cl: len(term_sets[cl]) for cl in clusters_sorted}
+    y_pos = np.arange(len(clusters_sorted))
+    ax_set.barh(
+        y_pos,
+        [set_sizes[c] for c in clusters_sorted],
+        color="#4477AA",
+        edgecolor="black",
+        height=0.6,
+    )
+    ax_set.set_yticks(y_pos)
+    ax_set.set_yticklabels(clusters_sorted, fontsize=fontsize - 1)
+    ax_set.invert_yaxis()
+    ax_set.set_xlabel("Terms per group", fontsize=fontsize)
+    ax_set.set_title("Set size", fontsize=fontsize + 1, fontweight="bold", pad=4)
+    for i, v in enumerate([set_sizes[c] for c in clusters_sorted]):
+        ax_set.text(v + 0.3, i, str(v), va="center", fontsize=fontsize - 2)
+    sns.despine(ax=ax_set, top=True, right=True, left=False)
+
+    # 2. Intersection size bars (top)
+    inter_labels = []
+    inter_vals = []
+    for pattern, size in inter_sizes.items():
+        # pattern is tuple of 0/1
+        names = [clusters_sorted[i] for i, v in enumerate(pattern) if v == 1]
+        inter_labels.append("\n".join(names) if names else "∅")
+        inter_vals.append(size)
+    x = np.arange(len(inter_vals))
+    ax_inter.bar(x, inter_vals, color="#44AA77", edgecolor="black")
+    ax_inter.set_ylabel("Intersection size", fontsize=fontsize)
+    ax_inter.set_xticks([])
+    ax_inter.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=6)
+    for xi, v in zip(x, inter_vals):
+        ax_inter.text(xi, v + 0.15, str(int(v)), ha="center", fontsize=fontsize - 2)
+    sns.despine(ax=ax_inter, top=True, right=True)
+
+    # 3. Matrix (lower right)
+    ax_mat.set_xlim(-0.5, len(inter_sizes) - 0.5)
+    ax_mat.set_ylim(-0.5, len(clusters_sorted) - 0.5)
+    ax_mat.set_yticks(np.arange(len(clusters_sorted)))
+    ax_mat.set_yticklabels(clusters_sorted, fontsize=fontsize - 1)
+    ax_mat.set_xticks([])
+
+    # Draw dots and lines for each shown intersection
+    for col_idx, (pattern, _) in enumerate(inter_sizes.items()):
+        active = [i for i, v in enumerate(pattern) if v == 1]
+        # vertical line connecting active sets for this intersection
+        if active:
+            ax_mat.plot(
+                [col_idx, col_idx], [min(active), max(active)], color="#555555", lw=1.5, zorder=1
+            )
+        for row_idx in range(len(clusters_sorted)):
+            if pattern[row_idx] == 1:
+                ax_mat.scatter(
+                    col_idx,
+                    row_idx,
+                    s=140,
+                    c="#CC3311",
+                    zorder=2,
+                    edgecolors="black",
+                    linewidths=0.5,
+                )
+            else:
+                ax_mat.scatter(
+                    col_idx,
+                    row_idx,
+                    s=40,
+                    c="#DDDDDD",
+                    zorder=1,
+                    edgecolors="#AAAAAA",
+                    linewidths=0.3,
+                )
+
+    ax_mat.set_xlabel("Intersections (sorted by size)", fontsize=fontsize)
+    ax_mat.invert_yaxis()
+    sns.despine(ax=ax_mat, top=True, right=True, bottom=True, left=True)
+    ax_mat.tick_params(left=False, bottom=False)
+
+    plt.tight_layout()
+
+    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+    return fig, ax_mat
+
+
+def enrich_vennplot(
+    enrich_df,
+    cluster_col: Optional[str] = None,
+    pval_cutoff: float = 0.05,
+    min_count: int = 1,
+    max_terms: int = 200,
+    title: Optional[str] = None,
+    figsize: Tuple[float, float] = (8, 6),
+    dpi: int = 300,
+    fontsize: int = 11,
+    colors: Optional[list] = None,
+    save_path: Optional[str] = None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Simple multi-group Venn diagram for significant enriched terms across clusters.
+
+    Useful companion to enrich_upsetplot when you have 2-3 (max 4) groups and
+    want a classic overlapping-circles view of shared vs unique terms.
+
+    Works on the DataFrame returned by compare_enrichment / concat_compare_results
+    (must have a Cluster column and p.adjust / Term).
+
+    For >4 groups it gracefully degrades to a warning + the first 4.
+
+    Pure matplotlib (no extra deps).
+    """
+    ctx = _style_context_if(use_style)
+    with ctx:
+        if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
+            fig, ax = _empty_placeholder_fig("No data for Venn")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        df = enrich_df.copy()
+
+        if cluster_col is None:
+            for cand in ("Cluster", "cluster", "Group"):
+                if cand in df.columns:
+                    cluster_col = cand
+                    break
+        if not cluster_col or cluster_col not in df.columns:
+            # single set fallback
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+            ax.text(
+                0.5, 0.5, "No Cluster column - nothing to Venn", ha="center", transform=ax.transAxes
+            )
+            ax.axis("off")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        # p col
+        p_col = next(
+            (c for c in ("p.adjust", "Adjusted P-value", "p_adj", "padj") if c in df.columns), None
+        )
+        if p_col is None:
+            p_col = df.columns[0]
+        df[p_col] = pd.to_numeric(df[p_col], errors="coerce").fillna(1)
+
+        if "Count" in df.columns:
+            df = df[pd.to_numeric(df["Count"], errors="coerce").fillna(0) >= min_count]
+
+        sig = df[df[p_col] < float(pval_cutoff)].copy()
+        if sig.empty:
+            fig, ax = _empty_placeholder_fig("No significant terms")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        term_col = next(
+            (c for c in ["Term", "Description", "term", "ID"] if c in sig.columns), sig.columns[0]
+        )
+
+        clusters = [str(x) for x in sig[cluster_col].dropna().unique().tolist()]
+        if len(clusters) > 4:
+            logger.warning("enrich_vennplot supports up to 4 groups; using first 4.")
+            clusters = clusters[:4]
+
+        term_sets = {}
+        for cl in clusters:
+            terms = set(sig.loc[sig[cluster_col].astype(str) == cl, term_col].astype(str).tolist())
+            term_sets[cl] = terms
+
+        all_terms = set.union(*term_sets.values()) if term_sets else set()
+        if len(all_terms) > max_terms:
+            logger.info("Limiting Venn to %d most frequent terms", max_terms)
+            # keep most recurrent
+            from collections import Counter
+
+            freq = Counter(t for s in term_sets.values() for t in s)
+            keep = {t for t, _ in freq.most_common(max_terms)}
+            for k in list(term_sets):
+                term_sets[k] = term_sets[k] & keep
+
+        # Draw
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        if title:
+            ax.set_title(title, fontsize=fontsize + 2, fontweight="bold")
+
+        n = len(clusters)
+        if n == 0:
+            ax.text(0.5, 0.5, "No groups", ha="center", transform=ax.transAxes)
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        # Simple circle positions for 2-3-4 sets
+        default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+        cols = colors or default_colors[:n]
+
+        positions = {
+            1: [(0, 0, 0.9)],
+            2: [(-0.35, 0.15, 0.75), (0.35, 0.15, 0.75)],
+            3: [(-0.45, 0.25, 0.7), (0.45, 0.25, 0.7), (0.0, -0.45, 0.7)],
+            4: [(-0.5, 0.4, 0.6), (0.5, 0.4, 0.6), (-0.5, -0.35, 0.6), (0.5, -0.35, 0.6)],
+        }[n]
+
+        from matplotlib.patches import Circle
+
+        for (cx, cy, r), col, name in zip(positions, cols, clusters):
+            circ = Circle((cx, cy), r, facecolor=col, alpha=0.25, edgecolor=col, linewidth=2)
+            ax.add_patch(circ)
+            ax.text(cx, cy + r + 0.12, name, ha="center", fontsize=fontsize - 1, fontweight="bold")
+
+        # Labels for unique + pairwise counts (simple text placement)
+        if n >= 2:
+            # compute sizes for labels
+            sets_list = [term_sets[c] for c in clusters]
+            # For 2-3 sets we place approximate numbers
+            ax.text(
+                0,
+                0.15,
+                str(len(sets_list[0] & sets_list[1])),
+                ha="center",
+                va="center",
+                fontsize=fontsize,
+            )
+            if n == 2:
+                ax.text(
+                    -0.7,
+                    0.15,
+                    str(len(sets_list[0] - sets_list[1])),
+                    ha="center",
+                    fontsize=fontsize - 1,
+                    color="#333",
+                )
+                ax.text(
+                    0.7,
+                    0.15,
+                    str(len(sets_list[1] - sets_list[0])),
+                    ha="center",
+                    fontsize=fontsize - 1,
+                    color="#333",
+                )
+            if n >= 3:
+                ax.text(
+                    0,
+                    -0.1,
+                    str(len(set.intersection(*sets_list))),
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                    fontweight="bold",
+                )
+                ax.text(
+                    -0.7,
+                    0.55,
+                    str(len(sets_list[0] - sets_list[1] - sets_list[2])),
+                    ha="center",
+                    fontsize=fontsize - 2,
+                )
+                # (full 3-set intersections left as exercise; the counts above are the main signal)
+
+        ax.text(
+            0.5,
+            -1.35,
+            f"Venn of significant enriched terms (padj < {pval_cutoff:.2g})",
+            ha="center",
+            transform=ax.transAxes,
+            fontsize=fontsize - 2,
+        )
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax
 
 
 def gseaplot(
@@ -1165,6 +1841,8 @@ def gseaplot(
     if len(ranked) == 0:
         logger.warning("No ranked genes for gseaplot")
         fig, ax = _empty_placeholder_fig("No ranked genes")
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
         return fig, ax
 
     # Try to get precomputed data from gsea_result.attrs
@@ -1263,6 +1941,11 @@ def gseaplot(
             RES = [(r - min_es) / (max_es - min_es) if (max_es - min_es) > 0 else 0 for r in RES]
 
     # Now plot
+    if ax is not None:
+        logger.warning(
+            "gseaplot creates a 3-panel figure and does not support single `ax`. "
+            "Returning a new figure. For embedding, pass `axes=(ax1, ax2, ax3)` in future or use subplots externally."
+        )
     if ax is None:
         fig, axes = plt.subplots(
             3,
@@ -1276,7 +1959,6 @@ def gseaplot(
         _created = True
     else:
         fig = ax.figure
-        # user provided ax not supported for 3-panel easily, fallback to new
         fig, axes = plt.subplots(3, 1, figsize=figsize, dpi=dpi, sharex=True)
         ax1, ax2, ax3 = axes
         _created = True
@@ -1360,6 +2042,10 @@ def volcano_plot(
     ax=None,
     show: bool = True,
     use_style: bool = False,
+    return_data: bool = False,
+    label_repel: bool = True,
+    label_fontsize: Optional[float] = None,
+    min_label_score: Optional[float] = None,
 ):
     """
     2D volcano plot with ggVolcano-inspired flexibility and style options.
@@ -1385,11 +2071,6 @@ def volcano_plot(
     Style reference: https://github.com/BioSenior/ggVolcano (label control,
     clean up/down distinction, readable labels with repel).
     """
-    try:
-        from adjustText import adjust_text
-    except ImportError:
-        adjust_text = None
-
     logger.info("Generating 2D volcano plot...")
     _style_ctx = None
     if use_style:
@@ -1538,10 +2219,13 @@ def volcano_plot(
         genes_to_label.update(str(g).strip() for g in label_genes if str(g).strip())
 
     # Always include the top_n (by active_score when available)
-    if "active_score" in plot_df.columns:
-        top_df = plot_df.nlargest(top_n, "active_score")
+    label_pool = plot_df
+    if min_label_score is not None and "active_score" in label_pool.columns:
+        label_pool = label_pool[label_pool["active_score"] >= float(min_label_score)]
+    if "active_score" in label_pool.columns:
+        top_df = label_pool.nlargest(top_n, "active_score")
     else:
-        top_df = plot_df.nsmallest(top_n, "p_adj")
+        top_df = label_pool.nsmallest(top_n, "p_adj")
     for g in top_df.index:
         genes_to_label.add(str(g))
 
@@ -1551,32 +2235,27 @@ def volcano_plot(
         else pd.DataFrame()
     )
 
+    lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 2)
     texts = []
     for idx, row in label_df.iterrows():
         txt = ax.text(
             row["logFC"],
             row["neg_log_pval"],
             str(idx),
-            fontsize=max(8, fontsize - 2),
+            fontsize=lbl_fs,
             fontweight="bold",
             color="#111111",
             bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
         )
         texts.append(txt)
 
-    if texts:
-        if adjust_text is not None:
-            adjust_text(
-                texts,
-                x=plot_df["logFC"].values,
-                y=plot_df["neg_log_pval"].values,
-                arrowprops={"arrowstyle": "-", "color": "#888888", "lw": 0.7, "alpha": 0.7},
-                ax=ax,
-            )
-        else:
-            logger.warning(
-                "adjustText is not installed; gene labels may overlap. pip install adjustText"
-            )
+    _maybe_repel_labels(
+        texts,
+        plot_df["logFC"].values,
+        plot_df["neg_log_pval"].values,
+        ax,
+        label_repel=label_repel,
+    )
 
     ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
     ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize, fontweight="bold")
@@ -1602,6 +2281,8 @@ def volcano_plot(
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    if return_data:
+        return fig, ax, plot_df
     return fig, ax
 
 
@@ -1764,7 +2445,9 @@ def active_score_rankplot(
 
     if results_df is None or results_df.empty:
         logger.warning("No results to plot.")
-        return None, None
+        fig, ax = _empty_placeholder_fig("No results to plot")
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax
 
     _require_columns(results_df, ["active_score"], "active_score_rankplot")
 
@@ -2070,3 +2753,102 @@ def velocity_phase_portraits(
 
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
     return fig, axes
+
+
+def gamma_shrinkage_plot(
+    results_df,
+    *,
+    x_col: str = "total_us_counts",
+    save_path=None,
+    title: str = "Empirical Bayes gamma shrinkage",
+    figsize=(7, 5),
+    dpi: int = 300,
+    ax=None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Visualize per-gene shrinkage strength vs expression depth (empirical Bayes gamma).
+
+    Requires ``gamma_shrinkage_weight`` in the results table (produced when
+    ``gamma_method='empirical_bayes'``). Optionally colors by ``effective_gamma``
+    when present.
+
+    Returns
+    -------
+    (fig, ax)
+    """
+    logger.info("Generating gamma shrinkage plot...")
+    _style_ctx = None
+    if use_style:
+        _style_ctx = style_context()
+        _style_ctx.__enter__()
+
+    if results_df is None or results_df.empty:
+        fig, ax = _empty_placeholder_fig("No results to plot")
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax
+
+    _require_columns(results_df, ["gamma_shrinkage_weight"], "gamma_shrinkage_plot")
+
+    plot_df = results_df.copy()
+    plot_df["gamma_shrinkage_weight"] = pd.to_numeric(
+        plot_df["gamma_shrinkage_weight"], errors="coerce"
+    )
+    if x_col in plot_df.columns:
+        plot_df[x_col] = pd.to_numeric(plot_df[x_col], errors="coerce")
+    else:
+        x_col = None
+
+    plot_df = plot_df.dropna(subset=["gamma_shrinkage_weight"])
+    if plot_df.empty:
+        fig, ax = _empty_placeholder_fig("No valid gamma_shrinkage_weight values")
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+        _created = True
+    else:
+        fig = ax.figure
+        _created = False
+
+    x_vals = np.log1p(plot_df[x_col].values) if x_col is not None else np.arange(len(plot_df))
+    y_vals = plot_df["gamma_shrinkage_weight"].values
+
+    c_vals = None
+    if "effective_gamma" in plot_df.columns:
+        c_vals = pd.to_numeric(plot_df["effective_gamma"], errors="coerce").values
+
+    scatter = ax.scatter(
+        x_vals,
+        y_vals,
+        c=c_vals,
+        cmap="viridis" if c_vals is not None else None,
+        s=12,
+        alpha=0.65,
+        edgecolors="none",
+    )
+    if c_vals is not None:
+        cbar = fig.colorbar(scatter, ax=ax, shrink=0.75, pad=0.02)
+        cbar.set_label("effective_gamma", fontsize=9)
+
+    ax.set_xlabel(
+        f"log1p({x_col})" if x_col is not None else "gene index",
+        fontsize=11,
+        fontweight="bold",
+    )
+    ax.set_ylabel("Shrinkage weight (w)", fontsize=11, fontweight="bold")
+    ax.set_ylim(-0.02, 1.02)
+    if title:
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
+    sns.despine(ax=ax)
+
+    if _style_ctx is not None:
+        _style_ctx.__exit__(None, None, None)
+    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
+    return fig, ax

@@ -53,6 +53,7 @@ def _single_permutation_task(
     gamma_method: str,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
+    eb_prior: dict[str, Any] | None = None,
     bias_correction: str = "huber_length_intron",
     # Memento support for permutation (advanced, usually False for speed)
     use_memento_de: bool = False,
@@ -107,8 +108,14 @@ def _single_permutation_task(
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _, _gamma_ref = _compute_velocity_delta(
-        uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
+    delta_velocity, _, _gamma_ref, _ = _compute_velocity_delta(
+        uns_layer,
+        spl_layer,
+        t_mask,
+        r_mask,
+        prior_weight,
+        gamma_method=gamma_method,
+        eb_prior=eb_prior,
     )
 
     total_us_for_filter = np.asarray(total_us_for_filter)
@@ -169,6 +176,7 @@ def run_permutation_test(
     strict_pydeseq2_counts: bool,
     real_score: np.ndarray,
     real_residual: np.ndarray,
+    eb_prior: dict[str, Any] | None = None,
     bias_correction: str = "huber_length_intron",
     # Memento forwarding for advanced consistent permutation
     use_memento_de: bool = False,
@@ -214,6 +222,7 @@ def run_permutation_test(
                 gamma_method,
                 de_preprocess,
                 strict_pydeseq2_counts,
+                eb_prior,
                 bias_correction=bias_correction,
                 use_memento_de=use_memento_de,
                 memento_capture_rate=memento_capture_rate,

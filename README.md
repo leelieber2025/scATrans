@@ -4,6 +4,52 @@ scATrans is a Python toolkit for single-cell differential analysis. It is primar
 
 It also supports conventional differential expression workflows (no velocity data required) using scanpy, PyDESeq2 pseudobulk, linear mixed models, or optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG) uses bundled gene sets with consistent universe handling, and a set of visualization functions is provided.
 
+## Statistical interpretation and reporting boundaries
+
+**Read this before writing a paper or supplement.** scATrans combines several heuristics; not every output column is a calibrated statistical claim.
+
+| Output | Safe use | Do **not** use it for |
+|--------|----------|------------------------|
+| `active_score` (0–100) | **Ranking** and visualization within one analysis | p-values, FDR, or “statistically significant activation” on its own |
+| `unspliced_excess_delta` / `unspliced_excess_residual` | Exploratory signal for **group-contrast** nascent excess (after reference γ) | Literal transcription rates, causal claims, or equivalence to dynamical RNA velocity |
+| `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats) | — |
+| `unspliced_excess_fdr` (with `use_permutation=True`) | **Primary** active-gene significance filter (one-sided, conditional null) | Claims without inspecting diagnostics and replicate structure |
+
+**Reporting checklist**
+
+1. Rank genes with `active_score`; state clearly that it is a **composite heuristic**, not a test statistic.
+2. For significance, use DE `p_adj` and/or `unspliced_excess_fdr` (permutation). The built-in `significant` list is intentionally strict and often empty.
+3. Describe the unspliced excess term as a **reference-gamma group contrast**, not full stochastic velocity inference.
+4. When `use_permutation=True`, note the **conditional permutation** (labels shuffled; layers and γ fixed) in methods — see diagnostics `permutation_approximation_note`.
+5. Cross-check top hits with raw spliced/unspliced counts, phase portraits, and (when possible) orthogonal DE or replicate-aware models.
+
+The simple wrappers (`active_score_simple`, `run_default_pipeline`) keep permutation off by default so new users explore ranked tables first; enable `use_permutation=True` explicitly when you need FDR on unspliced excess.
+
+## Quick Reference + Reporting Checklist (one page)
+
+| Step | Function | Key outputs |
+|------|----------|-------------|
+| 0. Pre-flight | `recommend_workflow(adata, groupby, target, ref, sample_col=...)` | `workflow_preset`, `suggested_kwargs`, `filter_preset`, `power_summary` |
+| 1. Score | `active_score(..., **rec["suggested_kwargs"])` or `active_score_simple(...)` | `all_results` (rank by `active_score`), `adata.uns["scatrans"]` |
+| 2. Filter | `filter_active_genes(all_results, preset=rec["filter_preset"])` | candidate gene list for plots / enrichment |
+| 3. Enrich | `run_enrichment(candidates, gene_sets="GO_Biological_Process", adata=adata)` | ORA table; cite `attrs["gene_set_info"]["provenance"]` |
+| 4. Plot | `scat.pl.comet_plot(...)`, `volcano_plot(..., label_repel=True)` | `(fig, ax)`; batch export via `scat.pl.figure_export_context` or `save_all_figures` |
+
+**Workflow presets** (via `recommend_workflow` → `WORKFLOW_PRESETS`):
+
+- `explore` — ranking only, no permutation (fast)
+- `report` — `use_permutation=True`, `n_perm=500`, `perm_de_backend="same"`
+- `pseudobulk_report` — multi-replicate pseudobulk + permutation
+- `nascent_focus` — `ranking_mode="nascent_excess"` (residual-only ranking)
+
+**Paper checklist (minimal):**
+
+1. State that `active_score` is a **composite heuristic rank**, not a p-value.
+2. Report DE with `p_adj`; report nascent excess significance with `unspliced_excess_fdr` when `use_permutation=True`.
+3. Describe unspliced excess as a **reference-gamma group contrast** (not full dynamical velocity).
+4. Enrichment: name bundled library (`Hs/Mm_*_2026`) and `p_adjust_method`; see `src/scatrans/data/README.md`.
+5. Plots: note `adjustText` is optional (`label_repel=False` to skip); label density via `min_label_score` / `label_fontsize`.
+
 ## Installation
 
 ```bash
@@ -45,6 +91,41 @@ ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
 ```
 
 `active_score` automatically runs this check and records the value in diagnostics.
+
+## Quick Start for New Users (Minimal API)
+
+If you want the **recommended default path** without dozens of parameters, use the simple wrappers:
+
+```python
+import scatrans as scat
+
+# One-liner pipeline: score → filter → GO enrichment
+result = scat.run_default_pipeline(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    sample_col="sample",   # optional; auto-selects pseudobulk when >=3 replicates/group
+    organism="mouse",
+)
+print(result["candidates"].head())
+print(result["enrichment"].head())
+
+# Or just the core scoring step:
+adata_res, significant, all_results = scat.active_score_simple(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    sample_col="sample",
+)
+```
+
+`active_score_simple` / `run_default_pipeline` auto-attach gene features, pick Wilcoxon (single-cell) or
+pseudobulk+PyDESeq2 (when replicates allow), and keep permutation off by default.
+Use `active_score(...)` directly for advanced options (permutation, mixed models, Memento, etc.).
+
+---
 
 ## Quick Start (Complete End-to-End Example)
 
@@ -582,6 +663,7 @@ kegg_res = scat.run_kegg(
     # Defaults to the organism-specific built-in (Hs/Mm_KEGG_2026).
     # To use a historical Enrichr version: kegg_library="KEGG_2021"
 )
+```
 
 ### run_gsea (pre-ranked GSEA)
 
@@ -637,6 +719,7 @@ simplified = scat.simplify_enrichment(
     pval_threshold=0.05,
     to_test_threshold=0.0,
 )
+```
 
 See 3.3 for usage examples and parameters.
 
@@ -705,20 +788,41 @@ Inspect the corresponding diagnostics after enabling any advanced option.
 Adds:
 
 - `unspliced_excess_pval` / `unspliced_excess_fdr` — permutation significance on the bias-corrected unspliced excess residual (one-sided, positive direction). **Use these for active-gene calls.**
-- `active_score_pval` / `active_score_fdr` — permutation on the composite heuristic score (ranking aid only).
+- `active_score_pval` / `active_score_fdr` — permutation on the composite heuristic score (**ranking aid only; do not report as primary significance**).
 
 The permutation shuffles only group labels; unspliced/spliced layers and the reference gamma are fixed from the original labeling for speed. **This is a conditional permutation** (conditioned on the observed velocity structure and gamma). It is a speed/tractability tradeoff and **not an unconditional permutation of the full data**. In small reference groups or strong batch effects, interpret the resulting FDR with extra caution; always inspect diagnostics and consider biological replicates.
 
-See diagnostics["velocity"] for the actual gamma_method and prior_weight used.
+**`perm_de_backend` (default: `"same"`)** — controls which DE method builds the permutation null:
+
+| Value | Behavior | When to use |
+|-------|----------|-------------|
+| `"same"` (**default**) | Each permutation uses the **same** DE backend and `de_method` as the main analysis | **Recommended for manuscripts** — null and observed statistics match |
+| `"fast"` | Always uses scanpy `t-test_overestim_var` inside permutations (faster) | Large screens / exploration only; **may bias FDR** if main analysis uses Wilcoxon, Memento, or PyDESeq2 |
 
 ```python
 adata_res, significant, all_results = scat.active_score(
     adata,
     use_permutation=True,
     n_perm=500,
+    perm_de_backend="same",   # default; matches main de_method
     unspliced_excess_fdr_cutoff=0.05,
 )
+
+# Faster exploration (not recommended for final FDR claims):
+# ..., perm_de_backend="fast"
 ```
+
+See diagnostics["velocity"] for the actual gamma_method and prior_weight used.
+
+**Realistic runtimes (heuristic mode, rough guide):** `diagnose_design` / `recommend_workflow` return `power_summary` with an estimated duration. Rule of thumb on a 8-core workstation:
+
+| Genes | `n_perm` | ~Time (heuristic, parallel) |
+|-------|----------|----------------------------|
+| ~5k | 100 | 2–8 min |
+| ~20k | 100 | 5–20 min |
+| ~20k | 500 | 25–90 min |
+
+Pseudobulk designs with few samples cap exact permutations (`auto_adjust_n_perm=True`). `perm_de_backend="same"` with PyDESeq2 or Memento, and `mode="advanced"`, can be **several times slower**. Use `n_perm=100` for exploration; reserve `n_perm≥500` for final FDR claims.
 
 ### bias_correction
 
@@ -732,16 +836,21 @@ The core unspliced excess uses a per-gene reference gamma = U_ref / S_ref (shrun
 
 - Default: `gamma_method="heuristic_shrink"` + `prior_weight=5.0` (additive pseudo-count shrinkage toward a global ratio).
 - For small reference groups, try `gamma_method="robust_median"`: uses the **median** ratio across reference genes as the anchor. This reduces sensitivity to a few outlier genes in the reference and can yield more stable residuals.
+- **`gamma_method="empirical_bayes"`** (optional, recommended for small reference): **hierarchical (分层) gamma estimation** using robust log-ratio empirical Bayes shrinkage. Prior hyperparameters are estimated once from the reference group (trimmed median + MAD); per-gene gammas are shrunk toward the shared prior on the log-ratio scale (hierarchical model across genes). During permutation, the **same fixed prior** is reused while observed ratios are recomputed from shuffled labels (conditional permutation preserved). This is the main "分层 γ 估计" addition.
 - `gamma_method="raw"` disables most shrinkage (exploratory only).
 
-The chosen method, prior_weight, and summary stats of the realized effective_gamma are **always** written to diagnostics:
-
 ```python
+adata_res, _, all_results = scat.active_score(
+    adata,
+    gamma_method="empirical_bayes",
+    show_effective_gamma=True,  # optional: expose per-gene gamma
+)
 v = adata_res.uns["scatrans"]["diagnostics"]["velocity"]
-print(v["gamma_method"], v["prior_weight"], v["effective_gamma_stats"])
+print(v["gamma_prior_mean"], v["shrinkage_summary"], v["effective_gamma_stats"])
+scat.pl.gamma_shrinkage_plot(all_results)  # needs gamma_shrinkage_weight column
 ```
 
-Shrinkage strength and stability are now visible without `show_effective_gamma`.
+`diagnose_design` recommends `empirical_bayes` (the hierarchical gamma estimator) when the reference group is small (<80 cells).
 
 ### show_effective_gamma=True
 
@@ -800,14 +909,14 @@ These are the common "free switches" for the basic pipeline (including pseudobul
 | `sample_col`               | `None`                   | Required when `use_pseudobulk=True` (biological replicate identifier) |
 | `pseudobulk_de_backend`    | `"pydeseq2"`             | `"pydeseq2"` or `"scanpy"` (when `use_pseudobulk=True`) |
 | `de_method`                | `"t-test_overestim_var"` | DE method for scanpy path (e.g. `"wilcoxon"`, `"t-test"`, ...) |
-| `show_plot`                | `True`                   | Show a comet plot at the end |
+| `show_plot`                | `False`                  | Show a comet plot at the end |
 | `min_total_counts`         | `50`                     | Minimum total (S+U) counts to consider a gene expressed |
 
 ### Opt-in advanced / exploration parameters (see "Optional Advanced Features")
 
-- `use_permutation`, `n_perm`, `unspliced_excess_fdr_cutoff` (and deprecated `active_fdr_cutoff`)
+- `use_permutation`, `n_perm`, `perm_de_backend` (default `"same"`), `unspliced_excess_fdr_cutoff` (and deprecated `active_fdr_cutoff`)
 - `bias_correction` ("huber_length_intron" or "none")
-- `show_effective_gamma`, `gamma_method`, `prior_weight`
+- `show_effective_gamma`, `gamma_method` (including "empirical_bayes" hierarchical), `prior_weight`
 - `use_mixed_model`, `use_delta_variance_pval`, `mixed_model_pval`
 - `mode` ("heuristic" or "advanced")
 

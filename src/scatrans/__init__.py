@@ -15,7 +15,10 @@ Other internal modules are not part of the stable public surface.
 
 from . import pl, qc
 from .enrich import (
+    compare_enrichment,
+    concat_compare_results,
     expand_enrichment_genes,
+    extract_gene_lists,
     list_bundled_gene_sets,
     run_enrichment,
     run_go,
@@ -31,19 +34,29 @@ from .pp_bias import (
     list_available_gene_features,
 )
 from .tl import (
+    WORKFLOW_PRESETS,
     active_score,
+    active_score_simple,
     diagnose_design,
     differential_expression,
+    differential_expression_simple,
     ensure_raw_counts,
     filter_active_genes,
+    recommend_workflow,
     restore_raw_counts,
+    run_default_pipeline,
     store_raw_counts,
 )
 
 __all__ = [
     "active_score",
+    "active_score_simple",
     "differential_expression",
+    "differential_expression_simple",
     "diagnose_design",
+    "recommend_workflow",
+    "WORKFLOW_PRESETS",
+    "run_default_pipeline",
     "filter_active_genes",
     "ensure_raw_counts",
     "restore_raw_counts",
@@ -59,6 +72,9 @@ __all__ = [
     "save_enrichment_report",
     "expand_enrichment_genes",
     "list_bundled_gene_sets",
+    "compare_enrichment",
+    "extract_gene_lists",
+    "concat_compare_results",
     "pl",
     "qc",
     "generate_gene_features_main",

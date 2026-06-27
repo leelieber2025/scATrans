@@ -59,11 +59,6 @@ def _run_de_wrapper(
 
     Internal function: type hints strengthened for mypy/pyright.
     """
-    """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
-
-    When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
-    This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
-    """
     if use_mixed_model:
         if sample_col is None:
             raise ValueError("sample_col must be provided when use_mixed_model=True")
@@ -101,9 +96,16 @@ def _run_de_wrapper(
 
     if labels is not None:
         use_groupby = "_de_temp_group"
-        ad_temp.obs[use_groupby] = pd.Categorical(
-            np.asarray(labels).astype(str), categories=[reference_group, target_group]
-        )
+        # Quiet anndata "storing ... as categorical" note during internal label injection (perm + shuffle)
+        _ann_log = logging.getLogger("anndata")
+        _prev_ann = _ann_log.level
+        _ann_log.setLevel(logging.WARNING)
+        try:
+            ad_temp.obs[use_groupby] = pd.Categorical(
+                np.asarray(labels).astype(str), categories=[reference_group, target_group]
+            )
+        finally:
+            _ann_log.setLevel(_prev_ann)
 
     if is_pseudobulk and pb_backend == "pydeseq2":
         try:
@@ -111,8 +113,11 @@ def _run_de_wrapper(
             from pydeseq2.ds import DeseqStats
         except ImportError as e:
             raise ImportError(
-                "pydeseq2 is required when pseudobulk_de_backend='pydeseq2'. "
-                "Install with: pip install pydeseq2 or 'scatrans[pseudobulk]'"
+                "PyDESeq2 backend requested but 'pydeseq2' is not installed.\n"
+                "Install with:\n"
+                '    pip install "scatrans[pseudobulk]"\n'
+                "or\n"
+                "    pip install pydeseq2"
             ) from e
 
         n_t = (ad_temp.obs[use_groupby] == target_group).sum()
@@ -417,8 +422,11 @@ def _run_memento_de(
         import memento
     except ImportError as e:
         raise ImportError(
-            "memento-de is required when use_memento_de=True. "
-            'Install with: pip install "scatrans[memento]" (or pip install memento-de)'
+            "Memento backend requested but 'memento-de' is not installed.\n"
+            "Install with:\n"
+            '    pip install "scatrans[memento]"\n'
+            "or\n"
+            "    pip install memento-de"
         ) from e
 
     ad_temp = adata.copy() if labels is not None else adata

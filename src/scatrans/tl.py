@@ -141,6 +141,8 @@ def _coerce_memento_de_preprocess(use_memento_de: bool, de_preprocess: str) -> s
 def active_score(
     adata_input: Any,
     groupby: str = "condition",
+    # Note: historical defaults "GA"/"Ctrl". Always supply explicit target/reference
+    # matching your adata.obs[groupby] values to avoid silent mismatches.
     target_group: str = "GA",
     reference_group: str = "Ctrl",
     subset_col: str | None = None,
@@ -155,7 +157,7 @@ def active_score(
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
     use_permutation: bool = False,
-    perm_de_backend: str = "fast",
+    perm_de_backend: str = "same",
     n_perm: int = 100,
     n_jobs: int = -1,
     de_preprocess: str = "auto",
@@ -203,10 +205,12 @@ def active_score(
     # Gamma estimation method for reference group unspliced/spliced ratio.
     # "heuristic_shrink": classic global-ratio + prior_weight shrinkage (default, prior_weight=5.0)
     # "robust_median": use median ratio from reference for better stability with small reference groups
+    # "empirical_bayes": robust log-ratio empirical Bayes shrinkage (recommended for small reference)
     # "raw": minimal shrinkage (use observed ratios directly)
     gamma_method: str = "heuristic_shrink",
     # Advanced convenience for users primarily interested in nascent RNA excess
     prioritize_velocity: bool = False,
+    ranking_mode: str = "composite",
     copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
@@ -229,10 +233,13 @@ def active_score(
     "Optional advanced features"):
     - show_effective_gamma
     - gamma_method="robust_median" (improved stability for small reference groups)
+    - gamma_method="empirical_bayes" (hierarchical/分层 empirical Bayes log-ratio shrinkage; recommended for small reference groups)
     - bias_correction="none"
     - use_mixed_model
     - use_permutation
-    - prioritize_velocity (convenience for analyses focused on the unspliced excess term)
+    - prioritize_velocity (deprecated convenience; prefer ``ranking_mode="nascent_excess"``)
+    - ranking_mode: ``"composite"`` (default) or ``"nascent_excess"`` (rank from
+      unspliced_excess_residual only)
 
     Diagnostics (including global unspliced fraction and bias fit details) are stored
     under adata.uns["scatrans"]["diagnostics"]. The full ranked table (all_results)
@@ -242,16 +249,28 @@ def active_score(
     A separate function diagnose_design is available to summarize the experimental
     design and surface relevant warnings before analysis.
 
+    **Important statistical note (reporting boundaries)**:
+    - `active_score` is a **heuristic ranking score only**. It is NOT a p-value,
+      effect size with calibrated uncertainty, or evidence of causal transcriptional activation.
+    - `unspliced_excess_*` columns are **group-contrast proxies** (reference-gamma excess),
+      not outputs of a stochastic/dynamical RNA velocity model. Do not treat them as
+      literal nascent transcription rates without independent validation.
+    - For significance claims use DE ``p_adj`` and/or permutation ``unspliced_excess_fdr``
+      (when ``use_permutation=True``). Cross-check with orthogonal methods when possible.
+    - The built-in ``significant`` list is a strict conjunction and is frequently empty —
+      this is intentional. Use ``all_results`` + ``filter_active_genes`` for exploration.
+
     Full usage, recommended workflow, and result interpretation are documented in
-    the package README.
+    the package README ("Statistical interpretation and reporting boundaries").
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
         raise ValueError("mode must be either 'heuristic' or 'advanced'")
 
-    if gamma_method not in {"heuristic_shrink", "robust_median", "raw"}:
+    if gamma_method not in {"heuristic_shrink", "robust_median", "empirical_bayes", "raw"}:
         raise ValueError(
-            "gamma_method must be one of {'heuristic_shrink', 'robust_median', 'raw'}."
+            "gamma_method must be one of "
+            "{'heuristic_shrink', 'robust_median', 'empirical_bayes' (hierarchical), 'raw'}."
         )
 
     if not isinstance(advanced_fallback, bool):
@@ -314,16 +333,34 @@ def active_score(
     if perm_de_backend not in {"fast", "same"}:
         raise ValueError("perm_de_backend must be 'fast' or 'same'.")
 
-    # Apply prioritize_velocity convenience (only if user left the default equal weights)
-    if prioritize_velocity and weight_fc == 1.0 and weight_unspliced == 1.0 and weight_pval == 1.0:
+    if ranking_mode not in {"composite", "nascent_excess"}:
+        raise ValueError(
+            "ranking_mode must be 'composite' (default) or 'nascent_excess' "
+            "(active_score from unspliced_excess_residual only)."
+        )
+
+    default_weights = weight_fc == 1.0 and weight_unspliced == 1.0 and weight_pval == 1.0
+    if ranking_mode == "nascent_excess":
+        if prioritize_velocity:
+            logger.warning("prioritize_velocity is ignored when ranking_mode='nascent_excess'.")
+        if default_weights:
+            weight_fc, weight_pval, weight_unspliced = 0.0, 0.0, 1.0
+            logger.info(
+                "ranking_mode='nascent_excess': active_score ranks genes by "
+                "bias-corrected unspliced_excess_residual only (DE weights set to 0)."
+            )
+    elif prioritize_velocity and default_weights:
         weight_unspliced = 3.0
         weight_fc = 0.5
         weight_pval = 0.5
         logger.info(
-            "prioritize_velocity=True (advanced option): emphasizing the nascent RNA excess / "
-            "unspliced_excess_residual component in the active_score. "
-            "This is intended for users whose primary interest is condition-wise differences "
-            "in unspliced abundance after reference correction."
+            "prioritize_velocity=True (deprecated): emphasizing nascent excess in composite "
+            "active_score. Prefer ranking_mode='nascent_excess' for pure residual ranking."
+        )
+
+    if weight_fc + weight_unspliced + weight_pval <= 0:
+        raise ValueError(
+            "At least one of weight_fc, weight_unspliced, weight_pval must be positive."
         )
 
     if mode == "advanced" and use_pseudobulk and not allow_advanced_pseudobulk:
@@ -541,13 +578,20 @@ def active_score(
 
     # DE preprocess
     if de_preprocess == "normalize_log1p":
+        logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
         sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
     elif de_preprocess == "auto" and not (is_pseudobulk and pseudobulk_de_backend == "pydeseq2"):
         if "log1p" not in adata.uns:
+            logger.info(
+                "DE preprocessing: 'auto' detected no log1p; applying normalize_total + log1p."
+            )
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
+        else:
+            logger.debug("DE preprocessing: 'auto' — log1p already present, skipping.")
     elif de_preprocess == "none":
+        logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
         pass
 
     X_features = (
@@ -640,9 +684,10 @@ def active_score(
     velocity_layer_for_perm_uns = uns_layer
     velocity_layer_for_perm_spl = spl_layer
     gamma_ref = np.full(adata.n_vars, np.nan)  # will be overwritten in all branches
+    gamma_info: dict[str, Any] = {}
 
     if mode == "heuristic":
-        delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
+        delta_velocity, total_us_velocity, gamma_ref, gamma_info = _compute_velocity_delta(
             uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
         )
         velocity_source = "heuristic_global_ratio"
@@ -672,14 +717,45 @@ def active_score(
             velocity_layer_for_perm_uns = adata_comp.layers["Mu"].copy()
             velocity_layer_for_perm_spl = adata_comp.layers["Ms"].copy()
             moments_info["advanced_failed"] = False
-        except Exception as e:
+            gamma_info = moments_info.get("gamma_info", {})
+        except (ValueError, RuntimeError, KeyError, TypeError, AttributeError) as e:
             if advanced_fallback:
-                logger.warning("Advanced mode failed: %s. Falling back to heuristic.", e)
-                delta_velocity, total_us_velocity, gamma_ref = _compute_velocity_delta(
+                import traceback
+
+                tb = traceback.format_exc()
+                logger.warning(
+                    "Advanced mode failed (%s). Falling back to heuristic. "
+                    "Set advanced_fallback=False (or use mode='heuristic') to see the full traceback.",
+                    e,
+                )
+                logger.debug("Advanced mode full traceback:\n%s", tb)
+                delta_velocity, total_us_velocity, gamma_ref, gamma_info = _compute_velocity_delta(
                     uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
                 )
                 velocity_source = "heuristic_fallback_from_advanced"
-                moments_info = {"advanced_failed": True, "failure_reason": str(e)}
+                moments_info = {
+                    "advanced_failed": True,
+                    "failure_reason": str(e),
+                    "traceback": tb,
+                }
+            else:
+                raise
+        except Exception as e:
+            # For completely unexpected errors, still respect fallback but be more explicit
+            if advanced_fallback:
+                import traceback
+
+                tb = traceback.format_exc()
+                logger.warning(
+                    "Advanced mode hit an unexpected error. Falling back. "
+                    "Please report this if it persists. Full traceback is in diagnostics.",
+                )
+                logger.debug("Unexpected advanced error:\n%s", tb)
+                delta_velocity, total_us_velocity, gamma_ref, gamma_info = _compute_velocity_delta(
+                    uns_layer, spl_layer, t_mask, r_mask, prior_weight, gamma_method=gamma_method
+                )
+                velocity_source = "heuristic_fallback_from_advanced"
+                moments_info = {"advanced_failed": True, "failure_reason": str(e), "traceback": tb}
             else:
                 raise
 
@@ -716,22 +792,59 @@ def active_score(
     if show_effective_gamma:
         adata.var["effective_gamma"] = gamma_ref
 
+    if gamma_method == "empirical_bayes" and "shrinkage_weights" in gamma_info:
+        adata.var["gamma_shrinkage_weight"] = gamma_info["shrinkage_weights"]
+
+    eb_prior_for_perm: dict[str, Any] | None = None
+    if gamma_method == "empirical_bayes":
+        eb_prior_for_perm = gamma_info.get("eb_prior")
+
     # ==================== DIAGNOSTICS (high priority for usability & paper rigor) ====================
-    # (bias fit info is now recorded in diagnostics and passed to the finalizer)
-    # Compute simple shrinkage strength summary (fraction of prior influence per gene on average)
-    # Approximate: higher value => stronger shrinkage toward reference prior
-    try:
-        # S_r not directly available here; use summary from effective_gamma + prior
-        # Record key params + stats on realized gamma_ref for user inspection of stability
-        gamma_stats = {
-            "median": float(np.nanmedian(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
-            "mean": float(np.nanmean(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
-            "min": float(np.nanmin(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
-            "max": float(np.nanmax(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
-            "n_finite": int(np.isfinite(gamma_ref).sum()),
-        }
-    except Exception:
-        gamma_stats = {"median": np.nan, "mean": np.nan, "min": np.nan, "max": np.nan}
+    gamma_stats = gamma_info.get("effective_gamma_stats")
+    if not gamma_stats:
+        try:
+            gamma_stats = {
+                "median": float(np.nanmedian(gamma_ref))
+                if np.any(np.isfinite(gamma_ref))
+                else np.nan,
+                "mean": float(np.nanmean(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+                "min": float(np.nanmin(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+                "max": float(np.nanmax(gamma_ref)) if np.any(np.isfinite(gamma_ref)) else np.nan,
+                "n_finite": int(np.isfinite(gamma_ref).sum()),
+            }
+        except Exception:
+            gamma_stats = {"median": np.nan, "mean": np.nan, "min": np.nan, "max": np.nan}
+
+    velocity_diag: dict[str, Any] = {
+        "source": velocity_source,
+        "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
+        "effective_gamma_exposed": bool(show_effective_gamma),
+        "gamma_method": gamma_method,
+        "prior_weight": float(prior_weight),
+        "effective_gamma_stats": gamma_stats,
+        "gamma_method_detailed": gamma_info.get("gamma_method_detailed"),
+        "shrinkage_note": (
+            "per-gene shrinkage applied using prior_weight (higher = stronger pull toward reference ratio)"
+            if gamma_method in ("heuristic_shrink", "robust_median")
+            else (
+                "log-ratio empirical Bayes shrinkage with robust trimmed prior"
+                if gamma_method == "empirical_bayes"
+                else "minimal/no shrinkage"
+            )
+        ),
+    }
+    for _gk in (
+        "gamma_prior_mean",
+        "gamma_prior_scale",
+        "gamma_prior_tau_squared",
+        "n_genes_used_for_prior",
+        "shrinkage_summary",
+        "fallback_triggered",
+        "count_pseudocount",
+        "used_fixed_prior",
+    ):
+        if _gk in gamma_info:
+            velocity_diag[_gk] = gamma_info[_gk]
 
     diagnostics: dict[str, Any] = {
         "n_cells": int(adata.n_obs),
@@ -741,19 +854,7 @@ def active_score(
         if unspliced_fraction is not None
         else np.nan,
         "bias_correction": bias_info,
-        "velocity": {
-            "source": velocity_source,
-            "n_genes_with_finite_delta": int(np.isfinite(delta_velocity).sum()),
-            "effective_gamma_exposed": bool(show_effective_gamma),
-            "gamma_method": gamma_method,
-            "prior_weight": float(prior_weight),
-            "effective_gamma_stats": gamma_stats,
-            "shrinkage_note": (
-                "per-gene shrinkage applied using prior_weight (higher = stronger pull toward reference ratio)"
-                if gamma_method in ("heuristic_shrink", "robust_median")
-                else "minimal/no shrinkage"
-            ),
-        },
+        "velocity": velocity_diag,
         "mixed_model": {
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
@@ -806,8 +907,20 @@ def active_score(
 
         if perm_de_backend == "fast":
             perm_pb_backend, perm_de_method = "scanpy", "t-test_overestim_var"
+            logger.warning(
+                "perm_de_backend='fast': permutations use scanpy t-test regardless of the "
+                "main analysis DE backend (%s). Null and observed statistics may be "
+                "mismatched — prefer the default perm_de_backend='same' for reporting.",
+                de_method,
+            )
         elif perm_de_backend == "same":
             perm_pb_backend, perm_de_method = pseudobulk_de_backend, de_method
+            logger.info(
+                "perm_de_backend='same': permutations use the same DE backend as the "
+                "main analysis (%s / pseudobulk=%s).",
+                de_method,
+                is_pseudobulk,
+            )
         else:
             raise ValueError("perm_de_backend must be 'fast' or 'same'")
 
@@ -859,6 +972,7 @@ def active_score(
                     gamma_method,
                     de_preprocess,
                     strict_pydeseq2_counts,
+                    eb_prior_for_perm,
                     bias_correction=bias_correction,
                     use_memento_de=perm_memento_de,
                     memento_capture_rate=memento_capture_rate,
@@ -931,6 +1045,7 @@ def active_score(
         use_mixed_model=use_mixed_model,
         sample_col=sample_col if use_mixed_model else None,
         prioritize_velocity=prioritize_velocity,
+        ranking_mode=ranking_mode,
         weight_fc=weight_fc,
         weight_unspliced=weight_unspliced,
         weight_pval=weight_pval,
@@ -993,6 +1108,8 @@ def _finalize_active_score_results(
     for mc in ["memento_de_se", "memento_dv_coef", "memento_dv_se", "memento_dv_pval"]:
         if mc in adata.var.columns and mc not in cols:
             cols.append(mc)
+    if "gamma_shrinkage_weight" in adata.var.columns:
+        cols.append("gamma_shrinkage_weight")
     cols = [c for c in cols if c in adata.var.columns]
 
     # Built-in significant list: DE significance + positive unspliced excess + permutation FDR.
@@ -1056,6 +1173,21 @@ def _finalize_active_score_results(
     )
 
     existing = dict(adata.uns.get("scatrans", {}))
+    # Keep a lightweight history so multiple calls don't completely overwrite previous runs
+    history = existing.get("history", [])
+    if "analysis" in existing:
+        # save previous run summary (lightweight)
+        prev = {
+            k: existing.get(k)
+            for k in ("analysis", "mode", "target_group", "reference_group", "timestamp")
+            if k in existing
+        }
+        if prev:
+            history.append(prev)
+            if len(history) > 5:
+                history = history[-5:]
+    existing["history"] = history
+
     meta = {
         "version": VERSION,
         "analysis": "active_score",
@@ -1089,6 +1221,7 @@ def _finalize_active_score_results(
         "use_delta_variance_pval": extra_metadata.get("use_delta_variance_pval"),
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
         "de_method": extra_metadata.get("de_method"),
+        "use_pseudobulk": extra_metadata.get("is_pseudobulk", False),
         "pseudobulk_de_backend": extra_metadata.get("pseudobulk_de_backend"),
         "perm_de_backend": extra_metadata.get("perm_de_backend"),
         "use_memento_de": extra_metadata.get("use_memento_de"),
@@ -1101,6 +1234,7 @@ def _finalize_active_score_results(
         "use_mixed_model": extra_metadata.get("use_mixed_model"),
         "sample_col": extra_metadata.get("sample_col"),
         "prioritize_velocity": extra_metadata.get("prioritize_velocity"),
+        "ranking_mode": extra_metadata.get("ranking_mode", "composite"),
         "weight_fc": extra_metadata.get("weight_fc"),
         "weight_unspliced": extra_metadata.get("weight_unspliced"),
         "weight_pval": extra_metadata.get("weight_pval"),
@@ -1175,6 +1309,8 @@ def _finalize_active_score_results(
 def differential_expression(
     adata_input: Any,
     groupby: str = "condition",
+    # Note: historical defaults "GA"/"Ctrl" (same as active_score).
+    # Convenience wrappers use "Disease"/"Control".
     target_group: str = "GA",
     reference_group: str = "Ctrl",
     subset_col: str | None = None,
@@ -1199,12 +1335,6 @@ def differential_expression(
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
-    # Advanced permutation support (rarely needed for pure DE)
-    use_permutation: bool = False,
-    perm_de_backend: str = "fast",
-    n_perm: int = 100,
-    active_fdr_cutoff: float = 0.05,  # reserved for API compat with active_score; ignored here
-    random_seed: int = 42,  # reserved for API compat
     n_jobs: int = -1,
     gene_type_filter: str | None = None,
     # Allow providing raw counts separately when adata.X is already HVG+log (very common)
@@ -1230,7 +1360,9 @@ def differential_expression(
         scat.pl.enrich_dotplot(enrich, ...)
 
     All DE-related options from `active_score` are supported here
-    (pseudobulk, mixed models, Memento, etc.).
+    (pseudobulk, mixed models, Memento, etc.), except permutation-based FDR
+    (use ``active_score(..., use_permutation=True)`` when velocity layers are available).
+    For a minimal-parameter entry point see ``active_score_simple`` or ``run_default_pipeline``.
 
     Returns
     -------
@@ -1299,8 +1431,8 @@ def differential_expression(
         de_preprocess=de_preprocess,
         pseudobulk_de_backend=pseudobulk_de_backend,
         n_jobs=n_jobs,
-        use_permutation=use_permutation,
-        n_perm=n_perm,
+        use_permutation=False,
+        n_perm=0,
         use_mixed_model=use_mixed_model,
         mixed_model_pval=mixed_model_pval,
         use_memento_de=use_memento_de,
@@ -1352,13 +1484,20 @@ def differential_expression(
         de_preprocess = "none"
 
     if de_preprocess == "normalize_log1p":
+        logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
         sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
     elif de_preprocess == "auto" and not (use_pseudobulk and pseudobulk_de_backend == "pydeseq2"):
         if "log1p" not in adata.uns:
+            logger.info(
+                "DE preprocessing: 'auto' detected no log1p; applying normalize_total + log1p."
+            )
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
+        else:
+            logger.debug("DE preprocessing: 'auto' — log1p already present, skipping.")
     elif de_preprocess == "none":
+        logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
         pass
 
     effective_n_jobs = joblib.cpu_count() if n_jobs == -1 else max(1, n_jobs)
@@ -1429,17 +1568,21 @@ def differential_expression(
     results = adata.var[cols].copy()
     results = results.sort_values("p_adj", ascending=True)
 
-    # Optional permutation-based FDR on the DE p-values themselves
-    if use_permutation:
-        raise NotImplementedError(
-            "use_permutation=True is not supported in differential_expression(). "
-            "Permutation FDR on pure DE is not implemented. "
-            "Use active_score(..., use_permutation=True) for composite permutation-based FDR "
-            "when you have velocity layers, or compute your own permutation test on the p-values."
-        )
-
     # Metadata — merge to preserve raw_gene_list etc. from store_raw_counts()
     existing = dict(adata.uns.get("scatrans", {}))
+    history = existing.get("history", [])
+    if "analysis" in existing:
+        prev = {
+            k: existing.get(k)
+            for k in ("analysis", "mode", "target_group", "reference_group")
+            if k in existing
+        }
+        if prev:
+            history.append(prev)
+            if len(history) > 5:
+                history = history[-5:]
+    existing["history"] = history
+
     existing.update(
         {
             "mode": "differential_expression",
@@ -1453,8 +1596,6 @@ def differential_expression(
             "memento_capture_rate": memento_capture_rate if use_memento_de else None,
             "de_method": de_method,
             "pseudobulk_de_backend": pseudobulk_de_backend,
-            "use_permutation": use_permutation,
-            "n_perm": n_perm if use_permutation else 0,
             "de_preprocess": de_preprocess,
             "strict_pydeseq2_counts": strict_pydeseq2_counts,
             "min_cells": min_cells,
@@ -1468,9 +1609,6 @@ def differential_expression(
             "mixed_model_pval": mixed_model_pval if use_mixed_model else None,
             "memento_num_boot": memento_num_boot if use_memento_de else None,
             "memento_n_cpus": memento_n_cpus if use_memento_de else None,
-            "perm_de_backend": perm_de_backend if use_permutation else None,
-            "active_fdr_cutoff": active_fdr_cutoff if use_permutation else None,
-            "random_seed": random_seed,
             "n_jobs": n_jobs,
             "gene_type_filter": gene_type_filter,
         }
@@ -1904,8 +2042,7 @@ def filter_active_genes(
         direction = "both"
     else:
         raise ValueError(
-            f"logfc_direction={logfc_direction!r} not recognized. "
-            'Use one of: "up", "down", "both".'
+            f'logfc_direction={logfc_direction!r} not recognized. Use one of: "up", "down", "both".'
         )
     active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
     unspliced_excess_fdr_cutoff = _resolve(
@@ -2032,6 +2169,108 @@ def filter_active_genes(
     return filtered
 
 
+WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
+    "explore": {
+        "label": "Quick exploration (ranking only, no permutation)",
+        "active_score_kwargs": {
+            "use_permutation": False,
+            "mode": "heuristic",
+            "ranking_mode": "composite",
+        },
+        "filter_preset": "heuristic",
+    },
+    "report": {
+        "label": "Manuscript reporting with permutation FDR on unspliced excess",
+        "active_score_kwargs": {
+            "use_permutation": True,
+            "n_perm": 500,
+            "perm_de_backend": "same",
+            "mode": "heuristic",
+            "ranking_mode": "composite",
+        },
+        "filter_preset": "heuristic",
+    },
+    "pseudobulk_report": {
+        "label": "Multi-replicate pseudobulk DE + permutation FDR",
+        "active_score_kwargs": {
+            "use_pseudobulk": True,
+            "pseudobulk_de_backend": "pydeseq2",
+            "use_permutation": True,
+            "n_perm": 200,
+            "perm_de_backend": "same",
+            "mode": "heuristic",
+            "ranking_mode": "composite",
+        },
+        "filter_preset": "pseudobulk",
+    },
+    "nascent_focus": {
+        "label": "Rank by bias-corrected nascent excess residual only",
+        "active_score_kwargs": {
+            "ranking_mode": "nascent_excess",
+            "use_permutation": False,
+            "mode": "heuristic",
+        },
+        "filter_preset": "heuristic",
+    },
+}
+
+
+def _permutation_power_guidance(
+    n_cells_target: int,
+    n_cells_reference: int,
+    n_genes: int,
+    *,
+    n_samples_target: int | None = None,
+    n_samples_reference: int | None = None,
+    n_perm: int = 100,
+    n_jobs: int = -1,
+) -> dict[str, Any]:
+    """Rough runtime / permutation-space guidance for diagnose_design."""
+    import os
+
+    is_pseudobulk = (
+        n_samples_target is not None
+        and n_samples_reference is not None
+        and min(n_samples_target, n_samples_reference) >= 2
+    )
+    max_exact: int | None = None
+    if is_pseudobulk:
+        n_t = max(1, int(n_samples_target or 1))
+        n_r = max(1, int(n_samples_reference or 1))
+        if n_t + n_r <= 30:
+            max_exact = max(1, comb(n_t + n_r, n_t) - 1)
+
+    cpu = os.cpu_count() or 4
+    effective_cores = cpu if n_jobs == -1 else max(1, min(n_jobs, cpu))
+    sec_per_perm = max(0.03, (n_genes / 5000.0) * 0.10)
+    est_minutes = n_perm * sec_per_perm / effective_cores / 60.0
+
+    notes: list[str] = [
+        "Estimates assume heuristic mode on a typical laptop/workstation; "
+        "advanced mode, Memento, or perm_de_backend='same' with PyDESeq2 can be slower.",
+    ]
+    if is_pseudobulk and max_exact is not None and max_exact < n_perm:
+        notes.append(
+            f"Pseudobulk design allows at most {max_exact} exact label permutations; "
+            f"auto_adjust_n_perm=True will cap n_perm accordingly."
+        )
+    if min(n_cells_target, n_cells_reference) < 50:
+        notes.append(
+            "Very small cell counts: permutation FDR on unspliced excess will have low power "
+            "even if runtime is acceptable."
+        )
+
+    return {
+        "n_genes": int(n_genes),
+        "default_n_perm": int(n_perm),
+        "is_pseudobulk_context": is_pseudobulk,
+        "max_exact_permutations_pseudobulk": max_exact,
+        "estimated_runtime_minutes_heuristic": round(est_minutes, 1),
+        "effective_cores_assumed": effective_cores,
+        "notes": notes,
+    }
+
+
 def diagnose_design(
     adata_input: Any,
     groupby: str,
@@ -2053,7 +2292,9 @@ def diagnose_design(
       - unspliced_global_fraction
       - recommendations: list of human-readable strings
       - warnings: list of human-readable strings
-      - suggested_preset: "heuristic", "pseudobulk", or None
+      - suggested_preset: filter_active_genes preset ("heuristic" or "pseudobulk")
+      - power_summary: permutation runtime / power guidance dict
+      - workflow_preset: recommended entry from WORKFLOW_PRESETS
     """
     adata = adata_input.copy()
 
@@ -2075,6 +2316,8 @@ def diagnose_design(
         "recommendations": [],
         "warnings": [],
         "suggested_preset": None,
+        "workflow_preset": "explore",
+        "power_summary": None,
     }
 
     # Global unspliced fraction (important technical QC)
@@ -2134,12 +2377,37 @@ def diagnose_design(
             "Velocity delta estimation and any downstream permutation testing will have low power."
         )
 
-    # Suggest preset
+    if n_r < 80:
+        result["recommendations"].append(
+            f"Reference group has {n_r} cells — consider gamma_method='empirical_bayes' "
+            "for more stable per-gene reference gamma (robust log-ratio shrinkage)."
+        )
+
+    # Suggest filter_active_genes preset
     if result["suggested_preset"] is None:
         if sample_col and result.get("n_samples_target", 0) >= 5:
             result["suggested_preset"] = "pseudobulk"
         else:
             result["suggested_preset"] = "heuristic"
+
+    # Workflow preset (ties to WORKFLOW_PRESETS for active_score kwargs)
+    if (
+        sample_col
+        and min(result.get("n_samples_target") or 0, result.get("n_samples_reference") or 0) >= 3
+    ):
+        result["workflow_preset"] = "pseudobulk_report"
+    elif min(n_t, n_r) >= 100 and not result["warnings"]:
+        result["workflow_preset"] = "report"
+    else:
+        result["workflow_preset"] = "explore"
+
+    result["power_summary"] = _permutation_power_guidance(
+        n_t,
+        n_r,
+        adata.n_vars,
+        n_samples_target=result.get("n_samples_target"),
+        n_samples_reference=result.get("n_samples_reference"),
+    )
 
     # General advice
     result["recommendations"].append(
@@ -2166,4 +2434,274 @@ def diagnose_design(
     for r in result["recommendations"]:
         logger.info("  [RECOMMENDATION] %s", r)
 
+    ps = result.get("power_summary") or {}
+    if ps.get("estimated_runtime_minutes_heuristic") is not None:
+        logger.info(
+            "  Permutation runtime (heuristic, n_perm=%d): ~%.1f min on %d cores",
+            ps.get("default_n_perm", 100),
+            ps["estimated_runtime_minutes_heuristic"],
+            ps.get("effective_cores_assumed", 1),
+        )
+
     return result
+
+
+def recommend_workflow(
+    adata_input: Any,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+    sample_col: str | None = None,
+) -> dict[str, Any]:
+    """
+    High-level recommendation for analysis path based on experimental design.
+
+    This is a thin, user-friendly wrapper around diagnose_design that returns
+    actionable preset + backend suggestions.
+
+    Returns keys:
+      - workflow_preset: key into ``WORKFLOW_PRESETS`` (e.g. ``"pseudobulk_report"``)
+      - preset_config: full preset dict (label, active_score_kwargs, filter_preset)
+      - recommended_preset: ``filter_active_genes`` preset name
+      - de_backend: ``"scanpy"`` | ``"pydeseq2"`` | ...
+      - suggested_kwargs: merged kwargs for :func:`active_score`
+      - warnings, recommendations, power_summary
+      - full_diagnosis: raw dict from :func:`diagnose_design`
+
+    Example:
+        rec = scat.recommend_workflow(adata, "condition", "GA", "Ctrl", sample_col="sample")
+        adata, sig, res = scat.active_score(
+            adata, groupby="condition", target_group="GA", reference_group="Ctrl",
+            **rec["suggested_kwargs"],
+        )
+        candidates = scat.filter_active_genes(res, preset=rec["filter_preset"])
+    """
+    diag = diagnose_design(
+        adata_input,
+        groupby=groupby,
+        target_group=target_group,
+        reference_group=reference_group,
+        sample_col=sample_col,
+    )
+
+    workflow_key = diag.get("workflow_preset") or "explore"
+    preset_config = WORKFLOW_PRESETS.get(workflow_key, WORKFLOW_PRESETS["explore"])
+    filter_preset = preset_config.get("filter_preset", diag.get("suggested_preset") or "heuristic")
+
+    suggested_kwargs: dict[str, Any] = dict(preset_config.get("active_score_kwargs", {}))
+    if sample_col and sample_col in getattr(adata_input, "obs", pd.DataFrame()).columns:
+        suggested_kwargs.setdefault("sample_col", sample_col)
+    if suggested_kwargs.get("use_pseudobulk"):
+        de_backend = "pydeseq2"
+        suggested_kwargs.setdefault("pseudobulk_de_backend", "pydeseq2")
+    else:
+        de_backend = "scanpy"
+        suggested_kwargs.setdefault("de_method", "wilcoxon")
+
+    rec = {
+        "workflow_preset": workflow_key,
+        "preset_config": preset_config,
+        "recommended_preset": filter_preset,
+        "filter_preset": filter_preset,
+        "de_backend": de_backend,
+        "use_permutation": bool(suggested_kwargs.get("use_permutation", False)),
+        "suggested_kwargs": suggested_kwargs,
+        "warnings": diag.get("warnings", []),
+        "recommendations": diag.get("recommendations", []),
+        "power_summary": diag.get("power_summary"),
+        "full_diagnosis": diag,
+    }
+
+    logger.info(
+        "Workflow recommendation: workflow_preset=%s, filter_preset=%s, de_backend=%s",
+        rec["workflow_preset"],
+        rec["filter_preset"],
+        rec["de_backend"],
+    )
+    return rec
+
+
+def _maybe_add_gene_features(adata: Any, organism: str) -> Any:
+    """Attach bundled gene features when length/intron columns are missing."""
+    has_length = "gene_length" in adata.var.columns
+    has_intron = "intron_number" in adata.var.columns
+    needs = not has_length or not has_intron
+    if has_length and has_intron:
+        gl = pd.to_numeric(adata.var["gene_length"], errors="coerce")
+        intr = pd.to_numeric(adata.var["intron_number"], errors="coerce")
+        needs = not (gl.notna().any() and intr.notna().any())
+    if needs:
+        from .pp_bias import add_gene_features
+
+        add_gene_features(adata, organism=organism)
+        logger.info("Attached bundled gene features (organism=%s) for bias correction.", organism)
+    return adata
+
+
+def _resolve_simple_backend_kwargs(
+    adata: Any,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+    sample_col: str | None,
+) -> dict[str, Any]:
+    """Pick pseudobulk vs single-cell defaults from replicate structure."""
+    kwargs: dict[str, Any] = {
+        "de_method": "wilcoxon",
+        "use_pseudobulk": False,
+        "sample_col": None,
+        "pseudobulk_de_backend": "pydeseq2",
+    }
+    if sample_col and sample_col in adata.obs.columns:
+        t_mask = adata.obs[groupby].astype(str) == str(target_group)
+        r_mask = adata.obs[groupby].astype(str) == str(reference_group)
+        n_s_t = int(adata.obs.loc[t_mask, sample_col].nunique())
+        n_s_r = int(adata.obs.loc[r_mask, sample_col].nunique())
+        if min(n_s_t, n_s_r) >= 3:
+            kwargs.update(
+                {
+                    "use_pseudobulk": True,
+                    "sample_col": sample_col,
+                    "de_method": "t-test_overestim_var",
+                }
+            )
+            logger.info(
+                "Simple path: detected >=3 samples per group — using pseudobulk + PyDESeq2."
+            )
+        else:
+            logger.info(
+                "Simple path: few samples per group (target=%d, reference=%d) — "
+                "using single-cell Wilcoxon DE.",
+                n_s_t,
+                n_s_r,
+            )
+    return kwargs
+
+
+def active_score_simple(
+    adata_input: Any,
+    groupby: str = "condition",
+    target_group: str = "Disease",
+    reference_group: str = "Control",  # convenience defaults (distinct from core active_score)
+    sample_col: str | None = None,
+    organism: str = "mouse",
+    *,
+    show_plot: bool = False,
+    copy_input: bool = True,
+) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
+    """
+    Recommended entry point for new users (minimal parameters).
+
+    Wraps :func:`active_score` with sensible defaults:
+    - Uses "Disease"/"Control" as group defaults (unlike core active_score which defaults
+      to the historical "GA"/"Ctrl").
+    - heuristic mode, no permutation (inspect ``all_results`` + ``filter_active_genes``)
+    - auto-attaches bundled gene features when missing
+    - pseudobulk + PyDESeq2 when ``sample_col`` has >=3 replicates per group;
+      otherwise single-cell Wilcoxon DE
+
+    For full control (permutation, advanced mode, mixed models, etc.) use
+    :func:`active_score` directly.
+    """
+    ad = adata_input.copy() if copy_input else adata_input
+    _maybe_add_gene_features(ad, organism)
+    backend = _resolve_simple_backend_kwargs(ad, groupby, target_group, reference_group, sample_col)
+    return active_score(
+        ad,
+        groupby=groupby,
+        target_group=target_group,
+        reference_group=reference_group,
+        mode="heuristic",
+        use_permutation=False,
+        show_plot=show_plot,
+        copy_input=False,
+        **backend,
+    )
+
+
+def differential_expression_simple(
+    adata_input: Any,
+    groupby: str = "condition",
+    target_group: str = "Disease",
+    reference_group: str = "Control",
+    sample_col: str | None = None,
+    *,
+    copy_input: bool = True,
+) -> tuple[ad.AnnData, pd.DataFrame]:
+    """
+    Minimal-parameter differential expression (no velocity layers required).
+
+    Same backend auto-selection as :func:`active_score_simple`.
+    For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
+    """
+    ad = adata_input.copy() if copy_input else adata_input
+    backend = _resolve_simple_backend_kwargs(ad, groupby, target_group, reference_group, sample_col)
+    return differential_expression(
+        ad,
+        groupby=groupby,
+        target_group=target_group,
+        reference_group=reference_group,
+        copy_input=False,
+        **backend,
+    )
+
+
+def run_default_pipeline(
+    adata_input: Any,
+    groupby: str = "condition",
+    target_group: str = "Disease",
+    reference_group: str = "Control",  # convenience defaults; always prefer explicit values
+    sample_col: str | None = None,
+    organism: str = "mouse",
+    *,
+    run_go_enrichment: bool = True,
+    gene_sets: str = "GO_Biological_Process",
+    filter_preset: str = "heuristic",
+    show_plot: bool = False,
+) -> dict[str, Any]:
+    """
+    End-to-end recommended workflow for first-time users.
+
+    Steps: active scoring → ``filter_active_genes`` → optional GO enrichment.
+    Uses "Disease"/"Control" convenience defaults for target/reference.
+
+    Returns a dict with keys:
+      - ``adata``, ``significant``, ``all_results``, ``candidates``
+      - ``enrichment`` (DataFrame or None)
+      - ``filter_preset``, ``backend`` (kwargs used for DE)
+    """
+    adata_res, significant, all_results = active_score_simple(
+        adata_input,
+        groupby=groupby,
+        target_group=target_group,
+        reference_group=reference_group,
+        sample_col=sample_col,
+        organism=organism,
+        show_plot=show_plot,
+    )
+    candidates = filter_active_genes(all_results, preset=filter_preset)
+
+    enrichment = None
+    if run_go_enrichment and len(candidates) > 0:
+        from .enrich import run_enrichment
+
+        enrichment = run_enrichment(
+            candidates.index.tolist(),
+            gene_sets=gene_sets,
+            organism=organism,
+            adata=adata_res,
+            pval_cutoff=0.05,
+        )
+
+    backend = _resolve_simple_backend_kwargs(
+        adata_input, groupby, target_group, reference_group, sample_col
+    )
+    return {
+        "adata": adata_res,
+        "significant": significant,
+        "all_results": all_results,
+        "candidates": candidates,
+        "enrichment": enrichment,
+        "filter_preset": filter_preset,
+        "backend": backend,
+    }
