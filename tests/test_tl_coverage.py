@@ -272,6 +272,7 @@ def test_differential_expression_pseudobulk_on_de_only(adata_de_only):
         target_group="Disease",
         reference_group="Control",
         use_pseudobulk=True,
+        pseudobulk_de_backend="scanpy",
         sample_col="sample",
         de_method="wilcoxon",
         min_cells=1,
