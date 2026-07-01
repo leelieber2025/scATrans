@@ -21,6 +21,8 @@ sdist/
 var/
 wheels/
 *.egg-info/
+scatrans.egg-info/
+src/scatrans.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
