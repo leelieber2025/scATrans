@@ -8,6 +8,7 @@ include CHANGELOG.md
 include CITATION.cff
 include pyproject.toml
 include conftest.py
+include conftest_fixtures.py
 
 # Include the full test suite so that `pytest` can be run from sdist/unpacked source
 graft tests
