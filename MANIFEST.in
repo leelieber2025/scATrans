@@ -8,6 +8,9 @@ include CHANGELOG.md
 include CITATION.cff
 include pyproject.toml
 
+# Include the full test suite so that `pytest` can be run from sdist/unpacked source
+graft tests
+
 # Include the GitHub Actions workflows (requested)
 include .github/workflows/ci.yml
 include .github/workflows/publish.yml

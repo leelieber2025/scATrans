@@ -108,6 +108,9 @@ indent-style = "space"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+# Ensure the project root is on sys.path for fixture discovery and src-layout editable installs
+# (helps in CI, zip extractions, and when cwd differs slightly)
+pythonpath = ["src", "."]
 # Daily dev: skip plot + slow. Override examples:
 #   pytest -m "not plot"          # include slow integration tests
 #   pytest -m plot              # plotting only
