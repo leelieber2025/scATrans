@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 from scipy import sparse
@@ -18,21 +20,24 @@ def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", wa
     S = adata.layers[spliced_key]
     U = adata.layers[unspliced_key]
 
-    sum_s = S.sum() if not sparse.issparse(S) else S.sum()
-    sum_u = U.sum() if not sparse.issparse(U) else U.sum()
+    # Both numpy arrays and scipy sparse matrices support .sum(); no need for the branch.
+    sum_s = float(S.sum())
+    sum_u = float(U.sum())
 
     total = sum_s + sum_u
     if total == 0:
-        logger.warning("⚠️ Total counts in spliced and unspliced layers are zero.")
+        logger.warning("Total counts in spliced and unspliced layers are zero.")
         return 0.0
 
     unspliced_ratio = sum_u / total
 
-    logger.info(f"📊 Global Unspliced Fraction: {unspliced_ratio:.2%}")
+    logger.info("Global Unspliced Fraction: %.2f%%", unspliced_ratio * 100)
 
     if unspliced_ratio > warn_threshold:
         logger.warning(
-            f"⚠️ WARNING: The overall unspliced fraction ({unspliced_ratio:.2%}) is very high (> {warn_threshold:.0%})."
+            "WARNING: The overall unspliced fraction (%.2f%%) is very high (> %.0f%%).",
+            unspliced_ratio * 100,
+            warn_threshold * 100,
         )
         logger.warning(
             "   This may indicate technical issues such as nuclear RNA enrichment or genomic DNA contamination."

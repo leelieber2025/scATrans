@@ -11,10 +11,36 @@ This folder contains two kinds of data:
 
 - `mouse_2020A_gene_features.parquet`
 - `Mus_musculus.GRCm39.115_gene_features.parquet`
+- `human_GRCh38_2024A_gene_features.parquet`
 
-These provide `gene_length` + `intron_number` for mouse. Used by `add_gene_features()` / `active_score()`.
+These provide `gene_length` + `intron_number`. `add_gene_features(..., organism="mouse")` picks a mouse table; `organism="human"` picks the human table. Used by `add_gene_features()` / `active_score()`.
 
-You can generate similar files for other species using the CLI or `pp_bias.generate_gene_features_from_gtf`.
+You can generate similar files for other species or custom annotations using:
+
+CLI (recommended):
+```bash
+pip install "scatrans[gene_features]"
+generate-gene-features --gtf /path/to/genes.gtf \
+                       --output human_GRCh38_gene_features.parquet \
+                       --organism human
+```
+
+Programmatic:
+```python
+import scatrans as scat
+df = scat.generate_gene_features_from_gtf(
+    "/path/to/genes.gtf",
+    output_name="my_features.parquet",
+    organism="human"
+)
+```
+
+Then attach to your data:
+```python
+adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
+```
+
+The resulting table must have columns `gene_name`, `gene_length`, `intron_number` (and optionally `gene_type`).
 
 ---
 
@@ -92,3 +118,25 @@ TERM_ID<TAB>description<TAB>GENE1<TAB>GENE2<TAB>...
 ```
 
 This is the same format Enrichr/gseapy GMTs use, so any existing GMT tooling will work.
+
+### Provenance of bundled `*_2026.txt` libraries (for Methods / reproducibility)
+
+The four default organism-specific libraries shipped with scATrans 0.9.x are:
+
+| File | Species | Terms (approx.) | Source pipeline |
+|------|---------|-----------------|-----------------|
+| `Hs_GO_Biological_Process_2026.txt` | Human | 14,208 | clusterProfiler GO map (`org.Hs.eg.db` + `GO.db`) |
+| `Mm_GO_Biological_Process_2026.txt` | Mouse | 14,956 | clusterProfiler GO map (`org.Mm.eg.db` + `GO.db`) |
+| `Hs_KEGG_2026.txt` | Human | 222 | clusterProfiler KEGG cache (organism `hsa`) |
+| `Mm_KEGG_2026.txt` | Mouse | 218 | clusterProfiler KEGG cache (organism `mmu`) |
+
+- **Extracted:** June 2026 (`extracted_date: 2026-06` in enrichment attrs).
+- **Gene ID type:** gene symbols (same convention as clusterProfiler ORA output).
+- **Format:** GMT-like tab-separated `.txt` (term, optional empty description column, genes).
+- **Runtime access:** `run_enrichment` / `run_go` / `run_kegg` write `gene_set_info.provenance` into result `.attrs` when a bundled library is loaded.
+
+**Suggested Methods sentence:**
+
+> Functional enrichment used scATrans bundled GO Biological Process and KEGG gene sets (clusterProfiler-derived mappings, June 2026 release; `Hs_*/Mm_*_2026` libraries), with Benjamini–Hochberg FDR across tested terms (`p_adjust_method='fdr_bh'`).
+
+For Enrichr historical versions, cite the exact library name passed to `gene_sets=` (e.g. `GO_Biological_Process_2021`) and note `actual_source: gseapy` in `gene_set_info`.

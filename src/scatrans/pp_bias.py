@@ -5,7 +5,13 @@ This module provides functions to attach per-gene length and intron number
 information (used for bias correction) and to generate such tables from GTF
 annotation files. Package data access uses importlib.resources for robustness
 across installation methods.
+
+Note on precision:
+- gene_length uses full exon interval union per gene.
+- intron_number uses a max-exons-per-transcript heuristic (see generate_gene_features_from_gtf).
 """
+
+from __future__ import annotations
 
 import logging
 import sys
@@ -33,10 +39,14 @@ def _open_package_data(filename: str) -> Iterator[Path]:
 
     This is the recommended way to access package data resources and is
     safe for installed packages (wheel/sdist) and editable installs.
+    Raises FileNotFoundError (wrapped) if the resource does not exist.
     """
     ref = files("scatrans.data") / filename
     with as_file(ref) as concrete:
-        yield Path(concrete)
+        p = Path(concrete)
+        if not p.exists():
+            raise FileNotFoundError(f"scatrans/data/{filename} not found in package resources")
+        yield p
 
 
 def list_available_gene_features(verbose: bool = False) -> List[str]:
@@ -53,10 +63,11 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
     list of str
         Filenames of .parquet files available via the package data.
     """
-    # Known files (used as fallback)
+    # Known files (used as fallback when discovery fails)
     known = [
         "mouse_2020A_gene_features.parquet",
         "Mus_musculus.GRCm39.115_gene_features.parquet",
+        "human_GRCh38_2024A_gene_features.parquet",
     ]
 
     discovered: List[str] = []
@@ -67,8 +78,9 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
             name = getattr(item, "name", str(item))
             if name.endswith(".parquet"):
                 discovered.append(name)
-    except Exception:
+    except Exception as exc:
         # Best-effort fallback for unusual environments
+        logger.debug("list_available_gene_features discovery failed (best-effort): %s", exc)
         discovered = []
 
     files_list = sorted(set(discovered)) if discovered else known
@@ -86,7 +98,25 @@ def generate_gene_features_from_gtf(
     organism: str = "mouse",
 ):
     """
-    Generate gene features parquet from a GTF file (for developers/maintainers and CLI).
+    Generate a gene features parquet (gene_length + intron_number) from a GTF.
+
+    This is the recommended way to create custom tables for human or non-standard
+    annotations so that bias correction in active_score() can be used.
+
+    **gene_length**: proper union of all exon intervals of the gene (fixed from an
+    earlier "sum all transcripts" bug).
+
+    **intron_number**: heuristic = (max number of exons among any transcript of the gene) - 1.
+    This is only an approximation:
+    - Uses the "most exon-rich" transcript as a proxy for the gene.
+    - Does not perform coordinate-level union of intron intervals across isoforms.
+    - The main/canonical transcript may differ from the max-exon one.
+    See source comments in generate_gene_features_from_gtf for details.
+
+    Requires the `gtfparse` package (installed via `pip install "scatrans[gene_features]"`).
+
+    After generation, attach the result with:
+        adata = scat.add_gene_features(adata, gene_features_path="your_output.parquet")
 
     Long-running step (GTF parsing). Progress is emitted via the 'scatrans' logger.
     When used from the CLI entrypoint, the CLI configures logging so messages appear.
@@ -94,11 +124,11 @@ def generate_gene_features_from_gtf(
     Parameters
     ----------
     gtf_path : str
-        Path to the 10X Genomics or GENCODE genes.gtf file.
+        Path to a 10X Genomics or GENCODE genes.gtf file (must contain "exon" and "gene" features).
     output_name : str, optional
-        Output parquet filename. If None, auto-generated as {organism}_gene_features.parquet
+        Output parquet filename. If None, auto-generated as {organism}_gene_features.parquet.
     organism : str, default "mouse"
-        Used only for default naming (you can use any name you want).
+        Only used for default output naming; the generated table itself is generic.
     """
     try:
         import gtfparse
@@ -108,8 +138,14 @@ def generate_gene_features_from_gtf(
             "Install with: pip install 'scatrans[gene_features]' or pip install gtfparse"
         ) from None
 
+    gtf_path = Path(gtf_path).expanduser()
+    if not gtf_path.exists():
+        raise FileNotFoundError(f"GTF file not found: {gtf_path}")
+
     if output_name is None:
         output_name = f"{organism}_gene_features.parquet"
+    else:
+        output_name = str(Path(output_name).expanduser())
 
     logger.info("Parsing GTF file (may take 30-60 seconds)... %s", gtf_path)
     df = gtfparse.read_gtf(gtf_path)
@@ -118,12 +154,46 @@ def generate_gene_features_from_gtf(
         df = df.to_pandas()
         logger.info("Converted to Pandas DataFrame")
 
-    # 1. gene_length (sum of all exons)
+    # 1. gene_length: proper union of exon intervals per gene (critical!)
+    # Previous code summed lengths across all transcripts → massive overcount for multi-isoform genes.
     exon = df[df["feature"] == "exon"].copy()
-    exon["length"] = exon["end"] - exon["start"] + 1
-    gene_length = exon.groupby("gene_id")["length"].sum().rename("gene_length")
+    exon["start"] = pd.to_numeric(exon["start"], errors="coerce")
+    exon["end"] = pd.to_numeric(exon["end"], errors="coerce")
+    exon = exon.dropna(subset=["gene_id", "start", "end"])
 
-    # 2. intron_number (max exons per transcript - 1)
+    def _exon_union_length(grp):
+        if len(grp) == 0:
+            return 0
+        # Collect (start, end) pairs (GTF is 1-based, inclusive)
+        ivs = sorted(
+            (int(s), int(e)) for s, e in zip(grp["start"], grp["end"])
+            if pd.notna(s) and pd.notna(e)
+        )
+        if not ivs:
+            return 0
+        merged = [list(ivs[0])]
+        for s, e in ivs[1:]:
+            last = merged[-1]
+            if s <= last[1] + 1:  # overlap or adjacent (inclusive)
+                last[1] = max(last[1], e)
+            else:
+                merged.append([s, e])
+        return sum(e - s + 1 for s, e in merged)
+
+    gene_length = exon.groupby("gene_id").apply(_exon_union_length, include_groups=False).rename("gene_length")
+
+    # 2. intron_number: a *proxy* using the transcript with the largest exon count.
+    #    intron_number ≈ max_exons_over_transcripts - 1
+    #
+    #    Limitations (documented for users of bias correction):
+    #    - "Longest" by exon count is only a heuristic; the canonical/main isoform may have
+    #      fewer exons or different structure.
+    #    - Unlike gene_length (which now does a proper interval *union* across *all* exons
+    #      of the gene), this does *not* attempt a cross-transcript "union" of intron regions
+    #      (that would require coordinate-aware intron interval calculation).
+    #    - Therefore gene_length and intron_number have different levels of precision.
+    #    - This value is only used as a numeric feature for Huber regression bias correction
+    #      of velocity delta. Small errors are usually tolerated by the robust fit.
     transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
     intron_number = (
         (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
@@ -179,8 +249,8 @@ def add_gene_features(
     Add gene features (length, intron number) to adata.var for bias correction.
 
     The function looks for files in three ways (priority order):
-    1. gene_features_path (full user-provided path)
-    2. gene_feature_file (filename that must exist inside the package data/)
+    1. gene_features_path (full user-provided path; ~ expanded)
+    2. gene_feature_file (bare filename inside package data/; path-like values auto-treated as custom)
     3. Default filename chosen from `organism`
 
     Uses robust importlib.resources access so it works whether the package
@@ -192,9 +262,11 @@ def add_gene_features(
     organism : str, default "mouse"
         Used only as fallback when gene_feature_file is not provided.
     gene_feature_file : str, optional
-        Filename in the package data/ directory.
+        Bare filename inside the package data/ directory (e.g. one of the files from
+        list_available_gene_features()). If you pass a path containing / or ~ here,
+        it will be treated as a custom file (like gene_features_path) for convenience.
     gene_features_path : str, optional
-        Full custom path to a parquet file (highest priority).
+        Full custom path to a parquet file (highest priority). ~ is expanded to $HOME.
     """
     logger.info("Loading gene features for bias correction...")
 
@@ -203,30 +275,61 @@ def add_gene_features(
 
     # Priority 1: Full custom path (user file, do not touch package resources)
     if gene_features_path is not None:
-        final_path = Path(gene_features_path)
+        final_path = Path(gene_features_path).expanduser()
         logger.info("Using custom path: %s", final_path)
 
     # Priority 2: explicit filename inside package data/
     elif gene_feature_file is not None:
-        using_package_data = True
-        pkg_filename = gene_feature_file
+        gf_val = str(gene_feature_file)
+        p = Path(gf_val)
+        # Detect if user passed a path (~/..., /abs, rel/dir, or with /) to the "filename" arg by mistake.
+        # In that case treat it as custom path for convenience (and to avoid prepending package data dir).
+        if (
+            p.is_absolute()
+            or gf_val.startswith("~")
+            or "/" in gf_val
+            or "\\" in gf_val
+            or len(p.parts) > 1
+        ):
+            final_path = p.expanduser()
+            logger.warning(
+                "gene_feature_file received a path-like value (%s). "
+                "Treating as custom file path (prefer the gene_features_path= parameter for this).",
+                gf_val,
+            )
+        else:
+            using_package_data = True
+            pkg_filename = gf_val
 
     # Priority 3: Default based on organism (backward compatible)
     else:
         using_package_data = True
-        pkg_filename = (
-            f"{organism}_gene_features.parquet"
-            if organism == "human"
-            else "mouse_2020A_gene_features.parquet"
-        )
+        avail = list_available_gene_features(verbose=False)
+        if organism == "human":
+            # Prefer any human-named file present in the package data
+            human_cands = [
+                f
+                for f in avail
+                if "human" in f.lower() or "grch" in f.lower() or "hg38" in f.lower()
+            ]
+            pkg_filename = (
+                human_cands[0] if human_cands else "human_GRCh38_2024A_gene_features.parquet"
+            )
+        else:
+            mouse_cands = [f for f in avail if "mouse" in f.lower() or f.startswith("Mus")]
+            pkg_filename = mouse_cands[0] if mouse_cands else "mouse_2020A_gene_features.parquet"
         logger.info("Using default for %s: %s", organism, pkg_filename)
 
-    # For package data we resolve via resources (context ensures the file is available)
+    # Load the gene features table.
+    # CRITICAL for wheel installs: when using_package_data, pd.read_parquet MUST be
+    # performed inside the _open_package_data() context. as_file() extracts to a
+    # temp path that is deleted on __exit__ of the with block.
+    gf = None
     if using_package_data:
         try:
             with _open_package_data(pkg_filename) as resolved:
-                final_path = resolved
-                logger.info("Resolved package data file: %s", pkg_filename)
+                logger.info("Resolved package data file: %s", resolved)
+                gf = pd.read_parquet(resolved).set_index("gene_name")
         except Exception as exc:
             available = list_available_gene_features(verbose=False)
             raise FileNotFoundError(
@@ -236,16 +339,19 @@ def add_gene_features(
                 "  1. Use the CLI to generate it:\n"
                 f"     generate-gene-features --gtf /path/to/genes.gtf --output {pkg_filename}\n"
                 "  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
-                f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
+                "  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
             ) from exc
+    else:
+        if final_path is None:
+            raise RuntimeError(
+                "Internal error resolving gene features path. "
+                "This should not happen; please report with your add_gene_features call."
+            )
+        gf = pd.read_parquet(final_path).set_index("gene_name")
 
-    # At this point final_path is always a real Path we can read
-    assert final_path is not None
+    gf = gf[~gf.index.duplicated(keep="first")]
 
     try:
-        gf = pd.read_parquet(final_path).set_index("gene_name")
-        gf = gf[~gf.index.duplicated(keep="first")]
-
         adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
         adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
 

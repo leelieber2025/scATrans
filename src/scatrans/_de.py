@@ -30,6 +30,31 @@ from ._utils import (
 logger = logging.getLogger(__name__)
 
 
+def _pydeseq2_uses_design_factors() -> bool:
+    """Detect whether the installed PyDESeq2 supports the modern design_factors= API.
+
+    Uses version parsing instead of blind except TypeError to avoid swallowing
+    unrelated future errors.
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+
+        vstr = version("pydeseq2")
+    except Exception:
+        # If we cannot determine (e.g. not installed or metadata issue), prefer the
+        # modern path and let the try/except in caller be a last resort.
+        return True
+    # pydeseq2 0.4+ standardized on design_factors; earlier used design=
+    # Be defensive: parse major.minor
+    try:
+        parts = vstr.split(".")
+        major = int(parts[0]) if parts else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor) >= (0, 4)
+    except Exception:
+        return True
+
+
 def _run_de_wrapper(
     adata: ad.AnnData,
     groupby: str,
@@ -51,11 +76,21 @@ def _run_de_wrapper(
     memento_n_cpus: int = -1,
     # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
     counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+    # Minimum total counts (across observations) to keep a gene for PyDESeq2.
+    # The original hard-coded 10 can be too aggressive for very small pseudobulk
+    # (few samples) or low-depth data, and too lenient for huge datasets.
+    min_counts_per_gene: int = 10,
 ) -> pd.DataFrame:
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
 
     When use_memento_de=True, Memento is used for the primary DE statistics (logFC/p_adj).
     This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
+
+    logFC is normalized toward log2 scale for cross-backend comparability of logfc_cutoff:
+      - PyDESeq2 + t-test family: native log2
+      - wilcoxon, mixedlm, memento: converted from natural/log1p scale (/ log(2))
+
+    Internal function: type hints strengthened for mypy/pyright.
     """
     if use_mixed_model:
         if sample_col is None:
@@ -94,9 +129,16 @@ def _run_de_wrapper(
 
     if labels is not None:
         use_groupby = "_de_temp_group"
-        ad_temp.obs[use_groupby] = pd.Categorical(
-            np.asarray(labels).astype(str), categories=[reference_group, target_group]
-        )
+        # Quiet anndata "storing ... as categorical" note during internal label injection (perm + shuffle)
+        _ann_log = logging.getLogger("anndata")
+        _prev_ann = _ann_log.level
+        _ann_log.setLevel(logging.WARNING)
+        try:
+            ad_temp.obs[use_groupby] = pd.Categorical(
+                np.asarray(labels).astype(str), categories=[reference_group, target_group]
+            )
+        finally:
+            _ann_log.setLevel(_prev_ann)
 
     if is_pseudobulk and pb_backend == "pydeseq2":
         try:
@@ -104,8 +146,11 @@ def _run_de_wrapper(
             from pydeseq2.ds import DeseqStats
         except ImportError as e:
             raise ImportError(
-                "pydeseq2 is required when pseudobulk_de_backend='pydeseq2'. "
-                "Install with: pip install pydeseq2 or 'scatrans[pseudobulk]'"
+                "PyDESeq2 backend requested but 'pydeseq2' is not installed.\n"
+                "Install with:\n"
+                '    pip install "scatrans[pseudobulk]"\n'
+                "or\n"
+                "    pip install pydeseq2"
             ) from e
 
         n_t = (ad_temp.obs[use_groupby] == target_group).sum()
@@ -127,7 +172,8 @@ def _run_de_wrapper(
                     X_check_arr = np.asarray(ad_temp.X)
                 X_check_arr = np.clip(np.round(np.nan_to_num(X_check_arr)), 0, None)
                 is_count_like = _is_integer_counts_like(X_check_arr)
-            except Exception:
+            except Exception as _e:
+                logger.debug("Count-like check fallback: %s", _e)
                 is_count_like = _is_integer_counts_like(ad_temp.X)
         else:
             is_count_like = _is_integer_counts_like(ad_temp.X)
@@ -147,9 +193,9 @@ def _run_de_wrapper(
 
         if sparse.issparse(ad_temp.X):
             gene_sums = np.asarray(ad_temp.X.sum(axis=0)).ravel()
-            gene_keep = gene_sums >= 10
+            gene_keep = gene_sums >= min_counts_per_gene
             if gene_keep.sum() == 0:
-                raise ValueError("No genes passed the DESeq2 count filter (sum(counts) >= 10).")
+                raise ValueError(f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene}).")
             X_filtered = ad_temp.X[:, gene_keep].toarray()
             X_filtered = np.clip(np.round(np.nan_to_num(X_filtered)), 0, None).astype(int)
             counts_use = pd.DataFrame(
@@ -159,11 +205,11 @@ def _run_de_wrapper(
             X = np.asarray(ad_temp.X)
             X = np.clip(np.round(np.nan_to_num(X)), 0, None).astype(int)
             counts_df = pd.DataFrame(X, index=ad_temp.obs_names, columns=ad_temp.var_names)
-            gene_keep = counts_df.sum(axis=0) >= 10
+            gene_keep = counts_df.sum(axis=0) >= min_counts_per_gene
             counts_use = counts_df.loc[:, gene_keep].copy()
 
         if counts_use.shape[1] == 0:
-            raise ValueError("No genes passed the DESeq2 count filter (sum(counts) >= 10).")
+            raise ValueError(f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene}).")
 
         condition = ad_temp.obs[use_groupby].astype(str).values
         metadata = pd.DataFrame(
@@ -173,7 +219,7 @@ def _run_de_wrapper(
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            try:
+            if _pydeseq2_uses_design_factors():
                 dds = DeseqDataSet(
                     counts=counts_use,
                     metadata=metadata,
@@ -182,7 +228,7 @@ def _run_de_wrapper(
                     quiet=True,
                     n_cpus=n_jobs,
                 )
-            except TypeError:
+            else:
                 dds = DeseqDataSet(
                     counts=counts_use,
                     metadata=metadata,
@@ -193,14 +239,14 @@ def _run_de_wrapper(
                 )
             dds.deseq2()
 
-            try:
+            if _pydeseq2_uses_design_factors():
                 stat_res = DeseqStats(
                     dds,
                     contrast=[use_groupby, target_group, reference_group],
                     quiet=True,
                     n_cpus=n_jobs,
                 )
-            except TypeError:
+            else:
                 stat_res = DeseqStats(
                     dds,
                     contrast=[use_groupby, target_group, reference_group],
@@ -232,7 +278,11 @@ def _run_de_wrapper(
             "names"
         )
         de_df = pd.DataFrame(index=ad_temp.var_names)
-        de_df["logFC"] = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
+        raw_lfc = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
+        # scanpy rank_genes_groups always returns logfoldchanges on log2 scale:
+        # log2( (expm1(mean_t) + eps) / (expm1(mean_r) + eps) ), independent of the
+        # statistical method (wilcoxon / t-test / etc.). No secondary conversion needed.
+        de_df["logFC"] = raw_lfc
         de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names).fillna(1.0)
         de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names).fillna(1.0)
         return de_df
@@ -260,6 +310,11 @@ def _run_mixedlm_de(
     This provides a lightweight Python analogue to variancePartition/dream (fraction of variation explained)
     + LMM DE, suitable for cell-level data with sample-level random effects (addresses pseudoreplication).
     For full voom + precision weights + dreampy/dreamlet on pseudobulk, or NEBULA NB-GLMM, see external packages.
+
+    Performance note: fits a MixedLM (full + null) per gene via LRT (or Wald). This is
+    O(n_genes) non-linear optimizations; use n_jobs for parallelism, or prefer faster
+    backends (scanpy rank_genes or pydeseq2) for very large gene sets unless you need
+    the per-gene delta_variance and sample-aware modeling.
     """
     try:
         import statsmodels.formula.api as smf
@@ -289,12 +344,13 @@ def _run_mixedlm_de(
     n_genes = expr_mat.shape[1]
     var_names = ad_temp.var_names
 
-    # Per-gene worker (returns idx, logfc, wald_p, lrt_p, delta_var)
+    # Per-gene worker (returns idx, logfc, wald_p, lrt_p, delta_var, failed_fit_flag)
+    # The explicit flag avoids counting truly neutral (logFC~0, p~1, dvar~0) biological genes as "failed".
     def _fit_gene_mixed(idx: int):
         y = expr_mat[:, idx].astype(float)
         # guard against all-zero / constant (mixedlm will be singular)
         if np.allclose(y, y[0]):
-            return idx, 0.0, 1.0, 1.0, 0.0
+            return idx, 0.0, 1.0, 1.0, 0.0, True
         df = pd.DataFrame({"y": y, "condition": condition, "sample": samples})
         try:
             with warnings.catch_warnings():
@@ -346,10 +402,10 @@ def _run_mixedlm_de(
             total_v = var_fe + max(re_var, 0.0) + max(resid_var, 0.0)
             delta_var = var_fe / total_v if total_v > 1e-12 else 0.0
 
-            return idx, logfc, p_wald, lrt_p, float(np.clip(delta_var, 0.0, 1.0))
+            return idx, logfc, p_wald, lrt_p, float(np.clip(delta_var, 0.0, 1.0)), False
         except Exception:
             # Degenerate fit (few samples per group, collinear, etc.) -> non-informative
-            return idx, 0.0, 1.0, 1.0, 0.0
+            return idx, 0.0, 1.0, 1.0, 0.0, True
 
     # Parallel execution (loky or threading; mixedlm releases GIL-ish via numpy)
     effective_jobs = max(1, n_jobs) if n_jobs and n_jobs > 0 else 1
@@ -364,6 +420,7 @@ def _run_mixedlm_de(
     p_walds = np.array([r[2] for r in results], dtype=float)
     p_lrts = np.array([r[3] for r in results], dtype=float)
     dvars = np.array([r[4] for r in results], dtype=float)
+    failed_flags = np.array([r[5] for r in results], dtype=bool)
 
     # Choose which p-value to expose as the main "p_val" for active_score weighting and default filtering.
     # "wald": the coefficient test (standard for logFC-like effect)
@@ -380,11 +437,24 @@ def _run_mixedlm_de(
         p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
 
     de_df = pd.DataFrame(index=var_names)
-    de_df["logFC"] = pd.Series(logfcs, index=var_names)
+    # mixedlm coefficient is on log1p scale (natural log). Convert to log2 for comparability.
+    de_df["logFC"] = pd.Series(logfcs, index=var_names) / np.log(2)
     de_df["p_val"] = pd.Series(main_pvals, index=var_names)
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
     de_df["delta_var_pval"] = pd.Series(p_lrts, index=var_names)
+
+    # Use explicit failure flag returned from workers (avoids counting true biological
+    # neutral genes (logFC~0, p~1, dvar~0) as "failed fits").
+    n_failed = int(np.sum(failed_flags))
+    de_df.attrs["n_genes_failed_fit"] = n_failed
+    if n_failed > 0:
+        logger.warning(
+            "MixedLM: %d/%d genes had degenerate fits (e.g. small n per group, collinearity) "
+            "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
+            "See diagnostics['mixed_model']['n_genes_failed_fit'].",
+            n_failed, len(de_df)
+        )
     return de_df
 
 
@@ -409,8 +479,11 @@ def _run_memento_de(
         import memento
     except ImportError as e:
         raise ImportError(
-            "memento-de is required when use_memento_de=True. "
-            'Install with: pip install "scatrans[memento]" (or pip install memento-de)'
+            "Memento backend requested but 'memento-de' is not installed.\n"
+            "Install with:\n"
+            '    pip install "scatrans[memento]"\n'
+            "or\n"
+            "    pip install memento-de"
         ) from e
 
     ad_temp = adata.copy() if labels is not None else adata
@@ -477,10 +550,12 @@ def _run_memento_de(
         raw_counts is None
         and hasattr(ad_temp, "raw")
         and ad_temp.raw is not None
-        and ad_temp.raw.shape[1] >= ad_temp.shape[1]
+        and getattr(ad_temp.raw, "shape", (0, 0))[1] == ad_temp.n_vars
+        and hasattr(ad_temp.raw, "var_names")
+        and np.array_equal(ad_temp.raw.var_names, ad_temp.var_names)
     ):
         raw_counts = ad_temp.raw.X
-        logger.info("Memento: using counts from adata.raw.")
+        logger.info("Memento: using counts from adata.raw (exact match).")
         raw_counts = _to_csr(raw_counts)
 
     if raw_counts is None and _is_integer_counts_like(ad_temp.X):
@@ -525,13 +600,34 @@ def _run_memento_de(
         res_index = ad_temp.var_names
         result = pd.DataFrame(index=res_index)
 
+    # Schema guard: memento.binary_test_1d contract is not version-pinned strictly.
+    # Without this, missing 'de_coef'/'de_pval' leads to silent/wrong or crashing fallback.
+    if isinstance(result, pd.DataFrame):
+        expected_cols = {"de_coef", "de_pval"}
+        missing = expected_cols - set(result.columns)
+        if missing:
+            logger.warning(
+                "Memento result missing required columns %s (possible memento-de API/version drift). "
+                "logFC/p_val will fall back to neutral values (0/1). Results unreliable for use_memento_de=True. "
+                "Pin compatible version e.g. 'memento-de>=0.1.0,<0.3.0' if needed.",
+                sorted(missing),
+            )
+
     de_df = pd.DataFrame(index=res_index)
-    de_df["logFC"] = (
-        pd.to_numeric(result.get("de_coef", 0.0), errors="coerce").reindex(res_index).fillna(0.0)
-    )
-    pvals = (
-        pd.to_numeric(result.get("de_pval", 1.0), errors="coerce").reindex(res_index).fillna(1.0)
-    )
+    # Safe access to avoid scalar .reindex crash or silent zeroing on column absence
+    if isinstance(result, pd.DataFrame) and "de_coef" in result.columns:
+        m_lfc_raw = result["de_coef"]
+    else:
+        m_lfc_raw = 0.0
+    m_lfc = pd.to_numeric(m_lfc_raw, errors="coerce").reindex(res_index).fillna(0.0)
+    # memento de_coef is typically on natural log scale; convert to log2
+    de_df["logFC"] = m_lfc / np.log(2)
+
+    if isinstance(result, pd.DataFrame) and "de_pval" in result.columns:
+        pval_raw = result["de_pval"]
+    else:
+        pval_raw = 1.0
+    pvals = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index).fillna(1.0)
     de_df["p_val"] = pvals
 
     # BH adjustment (Memento may return raw p; we make p_adj consistent with other backends)

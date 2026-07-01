@@ -50,8 +50,10 @@ def _single_permutation_task(
     pb_backend: str,
     de_method: str,
     prior_weight: float,
+    gamma_method: str,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
+    eb_prior: dict[str, Any] | None = None,
     bias_correction: str = "huber_length_intron",
     # Memento support for permutation (advanced, usually False for speed)
     use_memento_de: bool = False,
@@ -73,7 +75,9 @@ def _single_permutation_task(
         if not np.array_equal(shuffled_labels, original_labels):
             break
     else:
-        logger.warning("Failed to generate a different permutation after 50 attempts.")
+        logger.warning("Failed to generate a different permutation after 50 attempts. Skipping this replicate.")
+        n = len(original_labels)
+        return np.full(n, np.nan), np.full(n, np.nan)
 
     ad_temp = adata_subset.copy()
 
@@ -106,8 +110,14 @@ def _single_permutation_task(
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _, _gamma_ref = _compute_velocity_delta(
-        uns_layer, spl_layer, t_mask, r_mask, prior_weight
+    delta_velocity, _, _gamma_ref, _ = _compute_velocity_delta(
+        uns_layer,
+        spl_layer,
+        t_mask,
+        r_mask,
+        prior_weight,
+        gamma_method=gamma_method,
+        eb_prior=eb_prior,
     )
 
     total_us_for_filter = np.asarray(total_us_for_filter)
@@ -163,16 +173,19 @@ def run_permutation_test(
     perm_pb_backend: str,
     perm_de_method: str,
     prior_weight: float,
+    gamma_method: str,
     de_preprocess: str,
     strict_pydeseq2_counts: bool,
     real_score: np.ndarray,
     real_residual: np.ndarray,
+    eb_prior: dict[str, Any] | None = None,
     bias_correction: str = "huber_length_intron",
     # Memento forwarding for advanced consistent permutation
     use_memento_de: bool = False,
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
+    valid_expr: np.ndarray | None = None,
 ) -> tuple:
     """Run parallel permutation and return score/residual p-values and FDR arrays.
 
@@ -180,7 +193,7 @@ def run_permutation_test(
     -------
     active_score_pval, active_score_fdr,
     unspliced_excess_pval, unspliced_excess_fdr,
-    use_fdr_for_significance, disabled_reason
+    use_fdr, disabled_reason
     """
     logger.info("Running parallel permutation testing (%d iterations)...", n_perm)
 
@@ -209,8 +222,10 @@ def run_permutation_test(
                 perm_pb_backend,
                 perm_de_method,
                 prior_weight,
+                gamma_method,
                 de_preprocess,
                 strict_pydeseq2_counts,
+                eb_prior,
                 bias_correction=bias_correction,
                 use_memento_de=use_memento_de,
                 memento_capture_rate=memento_capture_rate,
@@ -220,21 +235,45 @@ def run_permutation_test(
             for i in range(n_perm)
         )
 
-    perm_scores_matrix = np.vstack([r[0] for r in perm_results])
-    perm_residual_matrix = np.vstack([r[1] for r in perm_results])
+    # Filter out any replicates that failed to produce a distinct shuffle (returned NaNs).
+    # This prevents using original labels for the null (which would bias p-values upward).
+    valid_scores = []
+    valid_residuals = []
+    for r in perm_results:
+        s, res = r
+        if s is not None and res is not None and not np.any(np.isnan(np.asarray(s))):
+            valid_scores.append(s)
+            valid_residuals.append(res)
+    n_success = len(valid_scores)
+    if n_success == 0:
+        logger.warning("All %d permutation replicates failed to generate distinct shuffles.", n_perm)
+        # Fall back to non-informative p-values (no power to reject).
+        n_genes = adata.n_vars
+        return (
+            np.ones(n_genes),
+            np.ones(n_genes),
+            np.ones(n_genes),
+            np.ones(n_genes),
+            False,
+            "permutation_shuffle_failed",
+        )
+    perm_scores_matrix = np.vstack(valid_scores)
+    perm_residual_matrix = np.vstack(valid_residuals)
 
     exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
-    active_score_pval = (1.0 + exceed_count) / (n_perm + 1.0)
+    active_score_pval = (1.0 + exceed_count) / (n_success + 1.0)
 
     # One-sided test for positive unspliced excess (matches active-gene direction filter).
     exceed_res = np.sum(
         perm_residual_matrix >= np.asarray(real_residual, dtype=float).reshape(1, -1), axis=0
     )
-    unspliced_excess_pval = (1.0 + exceed_res) / (n_perm + 1.0)
+    unspliced_excess_pval = (1.0 + exceed_res) / (n_success + 1.0)
 
     active_score_fdr = np.ones(adata.n_vars)
     unspliced_excess_fdr = np.ones(adata.n_vars)
-    valid_expr = adata.var.get("valid_expr", np.ones(adata.n_vars, dtype=bool))
+    if valid_expr is None:
+        valid_expr = adata.var.get("valid_expr", np.ones(adata.n_vars, dtype=bool))
+    valid_expr = np.asarray(valid_expr, dtype=bool)
     if valid_expr.sum() > 0:
         active_score_fdr[valid_expr] = multipletests(
             active_score_pval[valid_expr], method="fdr_bh"
@@ -243,8 +282,13 @@ def run_permutation_test(
             unspliced_excess_pval[valid_expr], method="fdr_bh"
         )[1]
 
-    use_fdr = True
-    disabled_reason = None
+    # FDR decision and disabled_reason:
+    # - FDR is computed on valid_expr (always, for the pvals we have).
+    # - For very small permutation spaces (n_perm < 100, common in pseudobulk with few samples),
+    #   we mark use_fdr=False and provide reason so callers can avoid using FDR for significance
+    #   (p-values become coarse; BH adjustment less reliable). This eliminates vestigial logic in tl.py.
+    use_fdr = n_perm >= 100
+    disabled_reason = None if use_fdr else "small_permutation_space"
 
     return (
         active_score_pval,

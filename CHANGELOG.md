@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased / Review 2026-06-27]
+### Added / Improved
+- Clarified and documented the `gamma_method="empirical_bayes"` implementation as **hierarchical (分层) gamma estimation** for the reference U/S ratio (README keeps the CN term; source now English-only).
+- Stronger emphasis on "always pass explicit target_group/reference_group".
+
+### Changed / Fixed (critical)
+- **Bug 1**: Eliminated dead code — `tl.py` now calls the canonical `run_permutation_test(...)` in `_permutation.py` instead of duplicating the Parallel loop. Removed ~duplicated logic and the maintenance trap. `valid_expr` is passed explicitly for consistent behavior.
+- **Bug 2**: Fixed double normalization (double log1p) in permutations. When `de_preprocess="normalize_log1p"` (or auto that applies), the value passed to permutation tasks is forced to "none" so that perm copies of the already-transformed adata are not re-normalized. Prevents systematically biased FDR.
+- **Scientific Error 1**: Fixed EB gamma: `sigma2` in `_apply_empirical_bayes_gamma` now correctly includes the `n_ref` factor: `1.0 / (n_ref * U_r + c) + ...`. This was causing n_r-fold over-estimate of observation noise and excessive shrinkage (especially bad for the small-ref case EB is meant to help). `n_ref` is computed from r_mask in the caller.
+- **Scientific Error 2**: Clarified `robust_median` docs in code/README: it is a heuristic variant of `heuristic_shrink` (different base_gamma estimator) and is **not** Bayesian/EB/hierarchical. Renamed descriptions to prevent user confusion.
+- **Design fixes**:
+  - Tightened Memento raw counts check from `>=` to exact `== n_vars` + `var_names` equality (prevents misaligned HVG/raw usage).
+  - Renamed shadowing local `ad = ...` in `active_score_simple` / `differential_expression_simple` (avoids hiding `import anndata as ad`).
+  - Made `min_cells_per_sample` private (`_min_cells_per_sample`) + doc note (was public but did nothing).
+  - Removed all Chinese comments ("分层") from source (tl.py, _velocity.py); retained in README only.
+  - Replaced risky bare `except TypeError` for PyDESeq2 design_factors/design compat with explicit `_pydeseq2_uses_design_factors()` using `importlib.metadata` version check.
+
+- Reduced anndata category storage log noise during internal DE/perm (narrow logger level bump).
+- All tests + targeted EB/perm/explicit-norm cases pass after fixes.
+
+### Additional fixes (2026-06-27 round 2)
+- **Scientific Error 3**: `generate_gene_features_from_gtf()` now computes **true exon union length per gene** (merge overlapping intervals) instead of naively summing all exons across all transcripts. Prevents ~N_transcript-fold overestimation of gene_length for multi-isoform genes (affects only users who generate their own tables; bundled .parquet files are unaffected).
+- **Scientific Error 4**: `logFC` is now normalized toward consistent **log2 scale** across backends inside `_run_de_wrapper`:
+  - wilcoxon, mixedlm, memento: divided by ln(2)
+  - t-test / PyDESeq2: left as native log2
+  - Updated docstring. Makes `logfc_cutoff` semantically comparable.
+- **Bug 3**: `_pseudobulk_with_layers` now uses a **per-run UUID-based private separator** (instead of fragile "||") to build internal keys. Completely eliminates split errors when sample names contain "||".
+- **Bug 4**: Removed redundant `import warnings as _w` inside `with warnings.catch_warnings()` in `_fit_huber_bias_correction`.
+- **Design 6**: `pval_cutoff` deprecation warning now fires **on every use** of the legacy name (previously only when != 0.05).
+- **Design 7**: `run_go(ontology="CC"/"MF")` now emits a clear INFO log explaining that only BP is bundled and the others require gseapy + network.
+- **Design 8**: Made the "max > 50" heuristic in `_prepare_log_normalized_expression` (mixed model prep) more robust: checks for negatives, uses lower threshold (20), better warning message.
+- **Design 9**: `valid_expr` is now **explicitly passed** from `tl.py` into `run_permutation_test` (no more hidden reliance on adata.var after the fact).
+
+### Post-review hardening (2026-06-27)
+- **Fragility fix (high)**: Added explicit schema validation + safe column access + clear warning in `_run_memento_de` for expected 'de_coef'/'de_pval' from memento.binary_test_1d. Prevents silent fallback (or crash) if upstream memento-de changes column names/structure. Updated optional dep pin to "memento-de>=0.1.0,<0.3.0".
+- **Cleanup + consistency (high)**: `run_permutation_test` now owns the small-space FDR decision (use_fdr=False + disabled_reason="small_permutation_space" when n_perm < 100). Removed vestigial dead `if not perm_use_fdr` and useless max_perm check/assign in tl.py. `disabled_reason` (and `perm_disabled_reason`) now properly returned and stored in adata.uns["scatrans"] metadata.
+- **Diagnostics improvement**: MixedLM per-gene fits now count genes hitting the neutral-except fallback (`n_genes_failed_fit`). Recorded in diagnostics["mixed_model"] (active_score) and DE metadata (differential_expression). Warning emitted when >0 so users are not unaware of silent neutral (delta_var=0, p=1) genes.
+- Only confirmed high-impact issues from the review list were addressed; medium/nuance items (e.g. EB small-ref prior, advanced fallback diag completeness) were already mitigated by existing diagnostics/fallbacks or not correctness bugs.
+
+All new issues addressed. Full test suite green.
+
+## [0.9.2] - 2026-06-20
+
+### Added / Changed
+- `filter_active_genes` now accepts `logfc_direction="up"|"down"|"both"` (default remains `"up"` for backward compatibility and "active" semantics).
+  - `logfc_cutoff` is interpreted as a positive magnitude in all modes.
+  - `"down"`: selects logFC < -cutoff (downregulated genes from differential_expression results).
+  - `"both"`: selects |logFC| > cutoff.
+  - Sorting for pure-DE tables is now direction-aware (most-negative-first for down, largest |logFC| for both).
+  - This directly supports the common request for downregulated candidates in standalone DE workflows.
+- Updated docstrings, tests, and examples.
+
+## [0.9.0] - 2026-06-19
+
+### Added
+- `run_gsea(ranked_genes, gene_sets=..., nperm=..., ...)` — pre-ranked GSEA (via gseapy.prerank wrapper).
+  Reuses the same gene-set loading, `gene_case`, diagnostics, and `.attrs` system as ORA.
+  Returns DataFrame with `NES`, `ES`, `pvalue`, `p.adjust`, `leading_edge`, etc.
+  Optional dependency: `pip install "scatrans[gsea]"`.
+- `scat.pl.gseaplot(ranked_genes, gsea_result, term=...)` — classic GSEA running enrichment score plot.
+  Automatically uses pre-computed RES curves + hits stored in `run_gsea` results (`.attrs["gsea_details"]`).
+- `enrich_dotplot` now auto-detects GSEA results (defaults `x="NES"`, uses diverging colormap when `color_by="NES"`).
+- Added `gsea` extra in `pyproject.toml`.
+
+### Changed
+- Minor internal cleanups and test coverage for the new GSEA path.
+- All new functions follow the existing consistent signatures (`ax=`, `use_style=`, `save_path=`, etc.).
+
 ## [0.8.0] - 2026-06-14
 
 ### Added (enrichment module — major paper-readiness upgrade)

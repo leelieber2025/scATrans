@@ -8,6 +8,7 @@ to keep the core active_score readable and to enable reuse (esp. bias correction
 from __future__ import annotations
 
 import logging
+import uuid
 import warnings
 from math import comb  # re-exported for permutation use
 from typing import Any, Iterable
@@ -87,6 +88,10 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6)
     """Return True if the matrix contains non-negative values that are integer-valued
     (within tolerance). This is tolerant of float64 summed counts that are exactly
     (or very nearly) integers, which commonly occurs after pseudobulk aggregation.
+
+    For large matrices (> max_check elements), a fixed-seed (0) random subsample is
+    used for performance. This is a QC heuristic; it does not affect scientific results
+    of the main analysis. Subsampling is deterministic for reproducibility.
     """
     if sparse.issparse(X):
         data = X.data
@@ -189,7 +194,28 @@ def _resolve_aligned_raw_counts(
 
 
 def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
-    """Dense log1p library-size normalized matrix for mixed models (no double log1p)."""
+    """Dense log1p library-size normalized matrix for mixed models (no double log1p).
+
+    This is an internal helper for the LMM (mixedlm) DE path only.
+
+    Logic (best-effort):
+    1. If adata.uns has "log1p" marker (standard scanpy), trust and return X as-is.
+    2. Else if matrix looks like integer (non-neg) counts (via _is_integer_counts_like,
+       which tolerates float pseudobulk sums), run normalize_total + log1p.
+    3. Else fall back to a simple heuristic on the observed max value:
+       - has negative values or max <= 20  => assume already log-transformed (return raw)
+       - max > 20 => assume raw-ish, apply log1p (with warning)
+
+    Limitations / caveats (see issue analysis):
+    - The mx<=20 heuristic is fragile for non-integer data (e.g. already scaled floats with
+      small dynamic range, or very low-depth raw counts that failed integer detection).
+    - It only uses global max; does not inspect distribution or fractional parts deeply.
+    - For outer DE (rank_genes_groups, pydeseq2 etc) use the documented ``de_preprocess``
+      parameter ("auto" | "normalize_log1p" | "none") which has its own (more visible) logic.
+    - This function is deliberately silent on most paths; errors only surface in mixed model.
+
+    If you see surprising LMM results, pass explicit preprocessed data or use other DE backends.
+    """
     ad_work = ad_expr.copy()
     if "log1p" in ad_work.uns:
         X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
@@ -206,15 +232,31 @@ def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
     X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
     X = np.asarray(X, dtype=float)
     finite = X[np.isfinite(X)]
-    if finite.size and np.nanmax(finite) > 50:
-        logger.warning(
-            "Mixed model input is neither marked log1p nor integer counts; applying log1p."
-        )
-        return np.log1p(np.clip(X, 0, None))
+    if finite.size:
+        mx = np.nanmax(finite)
+        has_neg = np.any(finite < 0)
+        # Heuristic for already log-transformed data (e.g. log1p, scran, SCT residuals):
+        # - negatives or max <=20 : treat as already transformed (closes the 5<mx<=20 gap)
+        # - mx >20 on non-negative: likely raw-ish counts, apply log1p + warn
+        if has_neg or mx <= 20:
+            return X
+        if mx > 20:
+            logger.warning(
+                "Mixed model input is neither marked log1p nor integer counts; applying log1p "
+                "for stability (max value=%.1f). If this is already log-scale, set de_preprocess='none' "
+                "or pre-log the input.",
+                mx,
+            )
+            return np.log1p(np.clip(X, 0, None))
     return X
 
 
 def _warn_if_low_counts_matrix(X: Any, max_check: int = 100000) -> None:
+    """Warn if max rounded count looks suspiciously low for raw counts input to DE.
+
+    For very large matrices, inspects only a deterministic fixed-seed subsample
+    (see _is_integer_counts_like for rationale).
+    """
     vals = X.data if sparse.issparse(X) else np.asarray(X).ravel()
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
@@ -300,13 +342,18 @@ def _pseudobulk_with_layers(
     adata: ad.AnnData,
     sample_col: str,
     groupby: str,
-    layers: Iterable[str] = ("spliced", "unspliced"),
+    layers: Iterable[str] = (),
     x_layer: str | None = None,
     use_total_for_x: bool = False,
     min_cells: int = 10,
     min_counts: int = 1000,
 ) -> ad.AnnData:
-    """Aggregate to pseudobulk while preserving the requested layers."""
+    """Aggregate to pseudobulk while preserving the requested layers.
+
+    layers: which .layers to aggregate and carry through (e.g. velocity layers).
+            Default empty so pure-DE callers do not accidentally require spliced/unspliced.
+    use_total_for_x=True requires spliced+unspliced to exist (independent of layers list).
+    """
     if sample_col not in adata.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found.")
     if groupby not in adata.obs.columns:
@@ -316,6 +363,10 @@ def _pseudobulk_with_layers(
             raise ValueError(f"Layer '{layer}' not found in adata.layers")
 
     if use_total_for_x:
+        if "spliced" not in adata.layers or "unspliced" not in adata.layers:
+            raise ValueError(
+                "use_total_for_x=True requires both 'spliced' and 'unspliced' layers to be present."
+            )
         X_source = _safe_add_matrices(adata.layers["spliced"], adata.layers["unspliced"])
         x_source_name = "spliced + unspliced"
     else:
@@ -327,7 +378,12 @@ def _pseudobulk_with_layers(
     group_df = adata.obs[[sample_col, groupby]].copy()
     group_df[sample_col] = group_df[sample_col].astype(str)
     group_df[groupby] = group_df[groupby].astype(str)
-    pb_key = group_df[sample_col] + "||" + group_df[groupby]
+
+    # Use a per-run UUID separator (printable, no embedded NUL) that is vanishingly unlikely
+    # to appear in real sample/group names. Avoids pandas str-concat truncation with \0 and
+    # eliminates "||" injection / mis-split risk from earlier fragile separator.
+    _pb_sep = f"__scAT_PB_{uuid.uuid4().hex}__"
+    pb_key = group_df[sample_col] + _pb_sep + group_df[groupby]
     unique_keys = pd.Index(pb_key.unique())
 
     X_rows, obs_rows = [], []
@@ -346,7 +402,7 @@ def _pseudobulk_with_layers(
         if float(x_sum.sum()) < min_counts:
             continue
 
-        sample_id, group_value = key.split("||", 1)
+        sample_id, group_value = key.split(_pb_sep, 1)
         X_rows.append(sparse.csr_matrix(x_sum.reshape(1, -1)))
         obs_rows.append(
             {
@@ -471,9 +527,7 @@ def _fit_huber_bias_correction(
                 a_max=np.percentile(total_us_for_weights[fit_mask], 95),
             )
             with warnings.catch_warnings():
-                import warnings as _w
-
-                _w.simplefilter("ignore")
+                warnings.simplefilter("ignore")
                 model = HuberRegressor(epsilon=huber_epsilon, max_iter=huber_max_iter).fit(
                     X_fit, delta_velocity[fit_mask], sample_weight=weights
                 )
@@ -488,6 +542,9 @@ def _fit_huber_bias_correction(
                 bias_info["intercept"] = float(model.intercept_)
         except Exception as e:
             logger.warning("Bias correction failed. Falling back to median. Reason: %s", e)
+            bias_info["fallback_reason"] = (
+                f"huber_regression_failed: {type(e).__name__}: {str(e)[:200]}"
+            )
 
     if not regression_succeeded and valid_expr.sum() > 0:
         residual[valid_expr] = delta_velocity[valid_expr] - np.nanmedian(delta_velocity[valid_expr])
