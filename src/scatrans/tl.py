@@ -24,14 +24,11 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy.sparse as sparse  # for type hints in signatures (e.g. spmatrix)
-from joblib import Parallel, delayed
-from statsmodels.stats.multitest import multipletests
 
 # qc is imported lazily inside active_score to keep startup light, but exposed at package level
 from . import qc as _qc  # for unspliced_global integration
-from ._utils import _fit_huber_bias_correction as fit_huber_bias_correction
 from ._de import _run_de_wrapper
-from ._permutation import _single_permutation_task, run_permutation_test
+from ._permutation import run_permutation_test
 from ._utils import (
     LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
@@ -47,6 +44,7 @@ from ._utils import (
     _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
+from ._utils import _fit_huber_bias_correction as fit_huber_bias_correction
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
 
 try:
@@ -691,7 +689,9 @@ def active_score(
 
     n_mixed_failed = 0
     if use_mixed_model:
-        n_mixed_failed = int(de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0)
+        n_mixed_failed = int(
+            de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0
+        )
 
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
     unspliced_fraction = np.nan
@@ -1173,10 +1173,7 @@ def _finalize_active_score_results(
             )
         # Apply delta_variance pval filter only in the permutation path where a meaningful
         # significant mask can be produced (avoids dead-code application to the all-False mask).
-        if (
-            extra_metadata.get("use_delta_variance_pval")
-            and "delta_var_pval" in adata.var.columns
-        ):
+        if extra_metadata.get("use_delta_variance_pval") and "delta_var_pval" in adata.var.columns:
             mask = mask & (
                 adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
             )
@@ -1499,7 +1496,7 @@ def differential_expression(
 
     if use_pseudobulk:
         logger.info("Performing pseudobulk aggregation for DE...")
-        available_layers = [l for l in ("spliced", "unspliced") if l in adata.layers]
+        available_layers = [layer for layer in ("spliced", "unspliced") if layer in adata.layers]
         adata = _pseudobulk_with_layers(
             adata,
             sample_col,
@@ -1577,7 +1574,11 @@ def differential_expression(
         if extra in de_df.columns:
             adata.var[extra] = de_df[extra]
 
-    n_mixed_failed_de = int(de_df.attrs.get("n_genes_failed_fit", 0)) if (use_mixed_model and hasattr(de_df, "attrs")) else 0
+    n_mixed_failed_de = (
+        int(de_df.attrs.get("n_genes_failed_fit", 0))
+        if (use_mixed_model and hasattr(de_df, "attrs"))
+        else 0
+    )
 
     # Build clean results table (no velocity columns)
     cols = ["logFC", "p_val", "p_adj"]
@@ -2669,7 +2670,9 @@ def active_score_simple(
     """
     adata = adata_input.copy() if copy_input else adata_input
     _maybe_add_gene_features(adata, organism)
-    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
+    backend = _resolve_simple_backend_kwargs(
+        adata, groupby, target_group, reference_group, sample_col
+    )
     return active_score(
         adata,
         groupby=groupby,
@@ -2701,7 +2704,9 @@ def differential_expression_simple(
     For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
     """
     adata = adata_input.copy() if copy_input else adata_input
-    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
+    backend = _resolve_simple_backend_kwargs(
+        adata, groupby, target_group, reference_group, sample_col
+    )
     return differential_expression(
         adata,
         groupby=groupby,

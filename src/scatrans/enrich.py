@@ -11,7 +11,7 @@ import warnings
 from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 # Reproducibility metadata for bundled 2026 gene-set libraries (see data/README.md).
-BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
+BUNDLED_GENE_SET_PROVENANCE: dict[str, dict[str, Any]] = {
     "Hs_GO_Biological_Process_2026": {
         "bundled_file": "Hs_GO_Biological_Process_2026.txt",
         "species": "Homo sapiens",
@@ -89,16 +89,16 @@ def _open_package_data(filename: str) -> Iterator[Path]:
 
 
 def _parse_gmt_content(
-    content: str, gene_case: Optional[str] = None
-) -> Tuple[Dict[str, set], Dict[str, str]]:
+    content: str, gene_case: str | None = None
+) -> tuple[dict[str, set], dict[str, str]]:
     """Parse GMT text content (term<TAB>desc<TAB>gene1<TAB>gene2...).
 
     The second column (description) is retained when present and stored
     under the "Description" output column. Many bundled sets ship with an
     empty description column (two tabs); this is handled gracefully.
     """
-    term_to_genes: Dict[str, set] = {}
-    term_to_desc: Dict[str, str] = {}
+    term_to_genes: dict[str, set] = {}
+    term_to_desc: dict[str, str] = {}
     for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -123,7 +123,7 @@ def _parse_gmt_content(
     return term_to_genes, term_to_desc
 
 
-def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
+def list_bundled_gene_sets(verbose: bool = False) -> list[str]:
     """
     List gene set files (.gmt and similar) that are bundled inside the package
     under scatrans/data/.
@@ -141,7 +141,7 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
         res = scat.run_enrichment(genes, gene_sets="GO_Biological_Process", organism="mouse")
         # Legacy names are also accepted and mapped to the 2026 sets.
     """
-    discovered: List[str] = []
+    discovered: list[str] = []
     try:
         data_traversable = files("scatrans.data")
         for item in data_traversable.iterdir():
@@ -174,7 +174,7 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
     return files_list
 
 
-def _bundled_provenance_for(resolved_name: str) -> Dict[str, Any]:
+def _bundled_provenance_for(resolved_name: str) -> dict[str, Any]:
     """Return provenance dict for a bundled library basename (without extension)."""
     base = resolved_name
     for ext in (".txt", ".gmt", ".tsv"):
@@ -185,8 +185,8 @@ def _bundled_provenance_for(resolved_name: str) -> Dict[str, Any]:
 
 @functools.lru_cache(maxsize=16)
 def _try_load_bundled_gene_set(
-    name: str, gene_case: Optional[str] = None
-) -> Optional[Tuple[Dict[str, set], Dict[str, str], str]]:
+    name: str, gene_case: str | None = None
+) -> tuple[dict[str, set], dict[str, str], str] | None:
     """
     Try to load a gene set from the files bundled in scatrans/data/.
 
@@ -329,7 +329,7 @@ GSEA_COLUMNS = [
 ]
 
 
-def _get_analysis_info() -> Dict[str, Any]:
+def _get_analysis_info() -> dict[str, Any]:
     """Return reproducibility metadata for attrs / save_enrichment_report."""
     from datetime import datetime as _dt
 
@@ -357,7 +357,7 @@ def _warn_user(msg: str) -> None:
     logger.warning(msg)
 
 
-def _apply_gene_case(genes: Iterable[Any], gene_case: Optional[str]) -> List[str]:
+def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
     if gene_case is not None:
         gene_case = str(gene_case).lower()
     if gene_case is None:
@@ -369,9 +369,7 @@ def _apply_gene_case(genes: Iterable[Any], gene_case: Optional[str]) -> List[str
     raise ValueError("gene_case must be None, 'upper', or 'lower'")
 
 
-def _clean_gene_list(
-    gene_list: Optional[Iterable[Any]], gene_case: Optional[str] = None
-) -> List[str]:
+def _clean_gene_list(gene_list: Iterable[Any] | None, gene_case: str | None = None) -> list[str]:
     if gene_list is None:
         return []
     s = pd.Series(list(gene_list))
@@ -383,11 +381,11 @@ def _clean_gene_list(
 
 
 def _load_gene_sets(
-    gene_sets_input: Union[Mapping[str, Iterable[Any]], str, None],
+    gene_sets_input: Mapping[str, Iterable[Any]] | str | None,
     organism: str = "mouse",
     verbose: bool = True,
-    gene_case: Optional[str] = None,
-) -> Tuple[Dict[str, set], Dict[str, str], Dict[str, Any]]:
+    gene_case: str | None = None,
+) -> tuple[dict[str, set], dict[str, str], dict[str, Any]]:
     """Load gene sets and return provenance info for reproducibility.
 
     Returns
@@ -402,8 +400,8 @@ def _load_gene_sets(
     if gene_sets_input is None:
         raise ValueError("gene_sets cannot be None")
     if isinstance(gene_sets_input, Mapping):
-        term_to_genes: Dict[str, set] = {}
-        term_to_desc: Dict[str, str] = {}
+        term_to_genes: dict[str, set] = {}
+        term_to_desc: dict[str, str] = {}
         for k, v in gene_sets_input.items():
             cleaned = _clean_gene_list(v, gene_case=gene_case)
             if cleaned:
@@ -601,14 +599,13 @@ def _empty_gsea_result(**attrs) -> pd.DataFrame:
 
 def run_enrichment(
     gene_list: Iterable[Any],
-    gene_sets: Union[Mapping[str, Iterable[Any]], str],
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[
-        Any
-    ] = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
+    gene_sets: Mapping[str, Iterable[Any]] | str,
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any
+    | None = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
@@ -616,7 +613,7 @@ def run_enrichment(
     return_all: bool = False,
     verbose: bool = True,
     organism: str = "mouse",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     p_adjust_method: str = "fdr_bh",
@@ -1024,19 +1021,19 @@ def run_enrichment(
 def run_kegg(
     gene_list: Iterable[Any],
     organism: str = "mouse",
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,  # forwarded to run_enrichment for smart universe default
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any | None = None,  # forwarded to run_enrichment for smart universe default
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     return_all: bool = False,
     verbose: bool = True,
-    gene_case: Optional[str] = None,
-    kegg_library: Optional[str] = None,
+    gene_case: str | None = None,
+    kegg_library: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     **kwargs: Any,
@@ -1098,18 +1095,18 @@ def run_go(
     gene_list: Iterable[Any],
     ontology: str = "BP",
     organism: str = "mouse",
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any | None = None,
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     return_all: bool = False,
     verbose: bool = True,
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     adjust_across_all: bool = False,
@@ -1227,7 +1224,7 @@ def run_go(
 
     # "ALL" case: run three and concat
     frames = []
-    per_ontology_attrs: Dict[str, dict] = {}
+    per_ontology_attrs: dict[str, dict] = {}
     eff_cut = padj_cutoff if padj_cutoff is not None else pval_cutoff
 
     for o in ont_list:
@@ -1369,16 +1366,16 @@ def _comb_comb_comb(
     return float(p_sum)
 
 
-def _parse_gene_overlap_field(genes_str: str) -> List[str]:
+def _parse_gene_overlap_field(genes_str: str) -> list[str]:
     return [g.strip() for g in re.split(r"[;,]+", str(genes_str)) if g.strip()]
 
 
 def _resolve_gene_sets_for_simplify(
     enrich_df: pd.DataFrame,
-    gene_sets: Optional[Union[Mapping[str, Iterable[Any]], str]],
+    gene_sets: Mapping[str, Iterable[Any]] | str | None,
     organism: str = "mouse",
     verbose: bool = True,
-) -> Dict[str, set]:
+) -> dict[str, set]:
     """Resolve full pathway gene memberships for PathwayDenester."""
     if gene_sets is not None:
         term_to_genes, _, _ = _load_gene_sets(gene_sets, organism=organism, verbose=verbose)
@@ -1408,7 +1405,7 @@ def _resolve_gene_sets_for_simplify(
 
 def _simplify_by_pathway_denester(
     df: pd.DataFrame,
-    term_to_genes: Dict[str, set],
+    term_to_genes: dict[str, set],
     *,
     gene_col: str,
     p_col: str,
@@ -1489,11 +1486,11 @@ def _simplify_by_pathway_denester(
                 errors="ignore",
             )
 
-    pathways: List[Dict[str, Any]] = []
+    pathways: list[dict[str, Any]] = []
     for row_idx, row in work.iterrows():
         term_id = str(row["Term"])
         all_genes = set(term_to_genes.get(term_id, set()))
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "row_index": int(row_idx),
             "id": term_id,
             "name": str(row.get(name_col, term_id)),
@@ -1637,14 +1634,14 @@ def _simplify_by_pathway_denester(
 def simplify_enrichment(
     enrich_df: pd.DataFrame,
     similarity_cutoff: float = 0.5,
-    by: Optional[str] = None,
+    by: str | None = None,
     ascending: bool = True,
     min_count: int = 3,
-    gene_col: Optional[str] = None,
+    gene_col: str | None = None,
     method: str = "jaccard",
-    obo_file: Optional[str] = None,
+    obo_file: str | None = None,
     verbose: bool = True,
-    gene_sets: Optional[Union[Mapping[str, Iterable[Any]], str]] = None,
+    gene_sets: Mapping[str, Iterable[Any]] | str | None = None,
     organism: str = "mouse",
     to_test_threshold: float = 0.0,
     pval_threshold: float = 0.05,
@@ -1944,13 +1941,13 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_gsea(
-    ranked_genes: Union[pd.Series, Mapping[str, float], Iterable[str], pd.DataFrame],
-    gene_sets: Union[Mapping[str, Iterable[Any]], str],
+    ranked_genes: pd.Series | Mapping[str, float] | Iterable[str] | pd.DataFrame,
+    gene_sets: Mapping[str, Iterable[Any]] | str,
     min_size: int = 15,
     max_size: int = 500,
     nperm: int = 1000,
     organism: str = "mouse",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     verbose: bool = True,
     seed: int = 42,
@@ -2244,7 +2241,7 @@ def save_enrichment_report(
     save_metadata: bool = True,
     save_term_gene_table: bool = True,
     index: bool = False,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     Save enrichment results in formats friendly for manuscripts and supplementary materials.
 
@@ -2288,7 +2285,7 @@ def save_enrichment_report(
 
     prefix_path = Path(str(prefix))
     prefix_path.parent.mkdir(parents=True, exist_ok=True)
-    outputs: Dict[str, str] = {}
+    outputs: dict[str, str] = {}
 
     # Prepare a copy safe for export (convert list columns like Genes_list to joined strings)
     res_export = res.copy()
@@ -2369,22 +2366,22 @@ def save_enrichment_report(
 
 
 def _clean_and_validate_gene_list_for_compare(
-    genes: Iterable[Any], gene_case: Optional[str] = None
-) -> List[str]:
+    genes: Iterable[Any], gene_case: str | None = None
+) -> list[str]:
     """Lightweight cleaner used by compare helpers (re-uses the main cleaner)."""
     return _clean_gene_list(genes, gene_case=gene_case)
 
 
 def extract_gene_lists(
-    de_results: Union[pd.DataFrame, Mapping[str, pd.DataFrame]],
+    de_results: pd.DataFrame | Mapping[str, pd.DataFrame],
     *,
     logfc_cutoff: float = 0.5,
     pval_cutoff: float = 0.05,
     logfc_direction: str = "up",
     separate_directions: bool = False,
-    name_prefix: Optional[str] = None,
-    gene_case: Optional[str] = None,
-) -> Dict[str, List[str]]:
+    name_prefix: str | None = None,
+    gene_case: str | None = None,
+) -> dict[str, list[str]]:
     """
     Extract named gene lists from one or more DE result DataFrames for downstream enrichment.
 
@@ -2443,7 +2440,7 @@ def extract_gene_lists(
     else:
         raise ValueError(f"logfc_direction={logfc_direction!r} not recognized.")
 
-    def _get_genes_from_df(df: pd.DataFrame) -> List[str]:
+    def _get_genes_from_df(df: pd.DataFrame) -> list[str]:
         if df is None or df.empty:
             return []
         work = df
@@ -2480,7 +2477,7 @@ def extract_gene_lists(
         selected = [g for g, m in zip(genes, mask) if m]
         return _clean_and_validate_gene_list_for_compare(selected, gene_case=gene_case)
 
-    result: Dict[str, List[str]] = {}
+    result: dict[str, list[str]] = {}
 
     if isinstance(de_results, pd.DataFrame):
         genes = _get_genes_from_df(de_results)
@@ -2579,7 +2576,7 @@ def extract_gene_lists(
 
 
 def concat_compare_results(
-    results: Union[Mapping[str, pd.DataFrame], List[Tuple[str, pd.DataFrame]]],
+    results: Mapping[str, pd.DataFrame] | list[tuple[str, pd.DataFrame]],
     cluster_col: str = "Cluster",
 ) -> pd.DataFrame:
     """
@@ -2632,19 +2629,19 @@ def concat_compare_results(
 def compare_enrichment(
     gene_clusters: Mapping[str, Iterable[Any]],
     *,
-    fun: Optional[Callable] = None,
+    fun: Callable | None = None,
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     organism: str = "mouse",
     gene_sets: Any = "GO_Biological_Process",
-    universe: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,
+    universe: Iterable[Any] | None = None,
+    adata: Any | None = None,
     gene_set_source: str = "scatrans",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     verbose: bool = True,
     return_all: bool = False,
     raise_on_error: bool = False,
@@ -2712,7 +2709,7 @@ def compare_enrichment(
         )
 
     frames = []
-    per_cluster: Dict[str, Any] = {}
+    per_cluster: dict[str, Any] = {}
     cluster_names = list(gene_clusters.keys())
 
     for cname in cluster_names:

@@ -75,7 +75,9 @@ def _single_permutation_task(
         if not np.array_equal(shuffled_labels, original_labels):
             break
     else:
-        logger.warning("Failed to generate a different permutation after 50 attempts. Skipping this replicate.")
+        logger.warning(
+            "Failed to generate a different permutation after 50 attempts. Skipping this replicate."
+        )
         n = len(original_labels)
         return np.full(n, np.nan), np.full(n, np.nan)
 
@@ -246,7 +248,9 @@ def run_permutation_test(
             valid_residuals.append(res)
     n_success = len(valid_scores)
     if n_success == 0:
-        logger.warning("All %d permutation replicates failed to generate distinct shuffles.", n_perm)
+        logger.warning(
+            "All %d permutation replicates failed to generate distinct shuffles.", n_perm
+        )
         # Fall back to non-informative p-values (no power to reject).
         n_genes = adata.n_vars
         return (

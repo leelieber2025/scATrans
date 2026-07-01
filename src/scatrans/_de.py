@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from importlib.metadata import version
 from typing import Any
 
 import anndata as ad
@@ -37,8 +38,6 @@ def _pydeseq2_uses_design_factors() -> bool:
     unrelated future errors.
     """
     try:
-        from importlib.metadata import version, PackageNotFoundError
-
         vstr = version("pydeseq2")
     except Exception:
         # If we cannot determine (e.g. not installed or metadata issue), prefer the
@@ -195,7 +194,9 @@ def _run_de_wrapper(
             gene_sums = np.asarray(ad_temp.X.sum(axis=0)).ravel()
             gene_keep = gene_sums >= min_counts_per_gene
             if gene_keep.sum() == 0:
-                raise ValueError(f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene}).")
+                raise ValueError(
+                    f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
+                )
             X_filtered = ad_temp.X[:, gene_keep].toarray()
             X_filtered = np.clip(np.round(np.nan_to_num(X_filtered)), 0, None).astype(int)
             counts_use = pd.DataFrame(
@@ -209,7 +210,9 @@ def _run_de_wrapper(
             counts_use = counts_df.loc[:, gene_keep].copy()
 
         if counts_use.shape[1] == 0:
-            raise ValueError(f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene}).")
+            raise ValueError(
+                f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
+            )
 
         condition = ad_temp.obs[use_groupby].astype(str).values
         metadata = pd.DataFrame(
@@ -453,7 +456,8 @@ def _run_mixedlm_de(
             "MixedLM: %d/%d genes had degenerate fits (e.g. small n per group, collinearity) "
             "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
             "See diagnostics['mixed_model']['n_genes_failed_fit'].",
-            n_failed, len(de_df)
+            n_failed,
+            len(de_df),
         )
     return de_df
 

@@ -17,7 +17,7 @@ import logging
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -49,7 +49,7 @@ def _open_package_data(filename: str) -> Iterator[Path]:
         yield p
 
 
-def list_available_gene_features(verbose: bool = False) -> List[str]:
+def list_available_gene_features(verbose: bool = False) -> list[str]:
     """
     List all available gene feature parquet files shipped with the package.
 
@@ -70,7 +70,7 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
         "human_GRCh38_2024A_gene_features.parquet",
     ]
 
-    discovered: List[str] = []
+    discovered: list[str] = []
     try:
         data_traversable = files("scatrans.data")
         # iterdir works on Traversable (importlib.resources)
@@ -94,7 +94,7 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
 
 def generate_gene_features_from_gtf(
     gtf_path: str,
-    output_name: Optional[str] = None,
+    output_name: str | None = None,
     organism: str = "mouse",
 ):
     """
@@ -166,7 +166,8 @@ def generate_gene_features_from_gtf(
             return 0
         # Collect (start, end) pairs (GTF is 1-based, inclusive)
         ivs = sorted(
-            (int(s), int(e)) for s, e in zip(grp["start"], grp["end"])
+            (int(s), int(e))
+            for s, e in zip(grp["start"], grp["end"])
             if pd.notna(s) and pd.notna(e)
         )
         if not ivs:
@@ -180,7 +181,11 @@ def generate_gene_features_from_gtf(
                 merged.append([s, e])
         return sum(e - s + 1 for s, e in merged)
 
-    gene_length = exon.groupby("gene_id").apply(_exon_union_length, include_groups=False).rename("gene_length")
+    gene_length = (
+        exon.groupby("gene_id")
+        .apply(_exon_union_length, include_groups=False)
+        .rename("gene_length")
+    )
 
     # 2. intron_number: a *proxy* using the transcript with the largest exon count.
     #    intron_number ≈ max_exons_over_transcripts - 1
@@ -242,8 +247,8 @@ def generate_gene_features_from_gtf(
 def add_gene_features(
     adata,
     organism: str = "mouse",
-    gene_feature_file: Optional[str] = None,
-    gene_features_path: Optional[str] = None,
+    gene_feature_file: str | None = None,
+    gene_features_path: str | None = None,
 ):
     """
     Add gene features (length, intron number) to adata.var for bias correction.
@@ -270,7 +275,7 @@ def add_gene_features(
     """
     logger.info("Loading gene features for bias correction...")
 
-    final_path: Optional[Path] = None
+    final_path: Path | None = None
     using_package_data = False
 
     # Priority 1: Full custom path (user file, do not touch package resources)

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from scipy import sparse
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 

@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager, nullcontext, suppress
-from typing import Any, Iterable, List, Mapping, Optional, Tuple, Union
+from typing import Any, Iterable, Mapping
 
 import matplotlib as mpl
 import matplotlib.cm as cm
@@ -352,7 +352,9 @@ def _parse_gene_ratio(x):
     return pd.to_numeric(x, errors="coerce")
 
 
-def _save_and_maybe_show(fig, save_path=None, dpi=300, show=True, created=True, transparent=True, close=False):
+def _save_and_maybe_show(
+    fig, save_path=None, dpi=300, show=True, created=True, transparent=True, close=False
+):
     """Internal: centralized save + conditional show + optional close.
 
     close=True is intended for batch/non-interactive pipelines to avoid matplotlib
@@ -387,9 +389,8 @@ def comet_plot(
     point_scale=1.0,
     min_size=2,
     max_size=180,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
     alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
     figsize=(8, 6),
     dpi=300,
@@ -401,8 +402,8 @@ def comet_plot(
     positive_logfc_only: bool = True,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
     close: bool = False,
 ):
     """
@@ -476,7 +477,9 @@ def comet_plot(
             # still return the provided ax (user can decide)
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     if ax is None:
@@ -568,7 +571,9 @@ def comet_plot(
     # constrained_layout at creation + bbox_inches on save handles colorbar cleanly.
     # (avoid tight_layout after colorbar)
 
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close)
+    _save_and_maybe_show(
+        fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+    )
     if return_data:
         return fig, ax, plot_df
     return fig, ax
@@ -581,7 +586,7 @@ def volcano_3d(
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[float] = None,  # fixed point size (direct control, omicverse reference)
+    s: float | None = None,  # fixed point size (direct control, omicverse reference)
     alpha: float = 0.8,
     title="3D Active Volcano Plot",
     figsize=(10, 8),
@@ -592,6 +597,7 @@ def volcano_3d(
     show: bool = True,
     use_style: bool = False,
     return_data: bool = False,
+    close: bool = False,
 ):
     """
     3D volcano-style view (logFC, -log10(p_adj), velocity residual).
@@ -638,7 +644,9 @@ def volcano_3d(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     if ax is None:
@@ -738,7 +746,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
-    show_terms: Optional[Union[int, str, List[str], Tuple[str, ...]]] = None,
+    show_terms: int | str | list[str] | tuple[str, ...] | None = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -748,15 +756,16 @@ def enrich_dotplot(
     color_by="Adjusted P-value",
     size_by="Count",
     cmap="viridis_r",
-    dot_max: Optional[float] = None,
-    dot_min: Optional[float] = None,
+    dot_max: float | None = None,
+    dot_min: float | None = None,
     smallest_dot: float = 0.0,
     ax=None,
     show: bool = True,
     use_style: bool = False,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     facet_by_cluster: bool = False,
     return_data: bool = False,
+    close: bool = False,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -810,7 +819,9 @@ def enrich_dotplot(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     # --- Multi-cluster detection (compareCluster style) ---
@@ -905,8 +916,7 @@ def enrich_dotplot(
                 for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
                     parts.append(sub.head(show_terms))
                 plot_df = (
-                    pd.concat(parts)
-                    .drop_duplicates()
+                    pd.concat(parts).drop_duplicates()
                     # Do not apply another global .head() here: the per-cluster
                     # heads already ensure representation. A cluster-order-dependent
                     # head would silently drop later clusters' terms.
@@ -948,9 +958,7 @@ def enrich_dotplot(
                         selected_idx.extend(sub_cand.head(top_n).index.tolist())
                     else:
                         selected_idx.extend(sub.head(top_n).index.tolist())
-                plot_df = (
-                    enrich_df.loc[list(dict.fromkeys(selected_idx))].copy()
-                )
+                plot_df = enrich_df.loc[list(dict.fromkeys(selected_idx))].copy()
                 # per-cluster selection already performed; avoid order-dependent global head
                 # that can drop entire later clusters from the union.
             else:
@@ -1377,15 +1385,15 @@ def enrich_dotplot(
 
 def enrich_upsetplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 40,
     title: str = "Enriched Term Overlap (UpSet-style)",
-    figsize: Tuple[float, float] = (11, 6.5),
+    figsize: tuple[float, float] = (11, 6.5),
     dpi: int = 300,
     fontsize: int = 10,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
@@ -1625,16 +1633,16 @@ def enrich_upsetplot(
 
 def enrich_vennplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 200,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (8, 6),
+    title: str | None = None,
+    figsize: tuple[float, float] = (8, 6),
     dpi: int = 300,
     fontsize: int = 11,
-    colors: Optional[list] = None,
-    save_path: Optional[str] = None,
+    colors: list | None = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
@@ -1813,22 +1821,22 @@ def enrich_vennplot(
 
 
 def gseaplot(
-    ranked_genes: Union[pd.Series, Mapping, Iterable],
-    gsea_result: Optional[pd.DataFrame] = None,
-    term: Optional[str] = None,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (6.5, 5.5),
+    ranked_genes: pd.Series | Mapping | Iterable,
+    gsea_result: pd.DataFrame | None = None,
+    term: str | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] = (6.5, 5.5),
     dpi: int = 300,
     color: str = "#88C544",
     cmap: str = "seismic",
-    ax: Optional[Any] = None,
+    ax: Any | None = None,
     show: bool = True,
     use_style: bool = False,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     pheno_pos: str = "Pos",
     pheno_neg: str = "Neg",
     **kwargs: Any,
-) -> Tuple[Optional[Any], Optional[Any]]:
+) -> tuple[Any | None, Any | None]:
     """
     Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
 
@@ -2049,15 +2057,14 @@ def gseaplot(
 def volcano_plot(
     df,
     top_n=10,
-    label_genes: Optional[Iterable[str]] = None,
+    label_genes: Iterable[str] | None = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
     alpha: float = 0.75,
     figsize=(8, 6),
     dpi=300,
@@ -2071,8 +2078,8 @@ def volcano_plot(
     use_style: bool = False,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
     close: bool = False,
 ):
     """
@@ -2137,7 +2144,9 @@ def volcano_plot(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     # ggVolcano-style classic coloring (up/down/ns) when not using active_score
