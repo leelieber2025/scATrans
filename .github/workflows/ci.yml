@@ -13,7 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12"]
-        # Core + each optional extra (some may be heavy / have native deps)
         install-extra:
           - ""
           - "advanced"
@@ -23,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Good practice for setuptools_scm (version detection)
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -46,9 +45,20 @@ jobs:
           ruff check src/scatrans tests
           ruff format --check src/scatrans tests
 
-      - name: Run tests (with coverage when possible)
-        run: |
-          pytest --cov=src/scatrans --cov-report=xml -q || pytest -q
+      - name: Run fast tests
+        run: PYTHONPATH=src:. python -m pytest -m "not plot and not slow" -q
+
+      - name: Run slow tests (core / Python 3.11 only)
+        if: matrix.python-version == '3.11' && matrix.install-extra == ''
+        run: PYTHONPATH=src:. python -m pytest -m "slow and not plot" -q
+
+      - name: Run plot tests (core / Python 3.11 only)
+        if: matrix.python-version == '3.11' && matrix.install-extra == ''
+        run: PYTHONPATH=src:. python -m pytest -m plot -q
+
+      - name: Coverage report (core / Python 3.11 only)
+        if: matrix.python-version == '3.11' && matrix.install-extra == ''
+        run: PYTHONPATH=src:. python -m pytest -m "not plot" --cov=src/scatrans --cov-report=xml -q
 
       - name: Upload coverage (optional)
         if: matrix.python-version == '3.11' && matrix.install-extra == ''

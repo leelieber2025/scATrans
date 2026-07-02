@@ -5,13 +5,19 @@ This module provides functions to attach per-gene length and intron number
 information (used for bias correction) and to generate such tables from GTF
 annotation files. Package data access uses importlib.resources for robustness
 across installation methods.
+
+Note on precision:
+- gene_length uses full exon interval union per gene.
+- intron_number uses a max-exons-per-transcript heuristic (see generate_gene_features_from_gtf).
 """
+
+from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -43,7 +49,7 @@ def _open_package_data(filename: str) -> Iterator[Path]:
         yield p
 
 
-def list_available_gene_features(verbose: bool = False) -> List[str]:
+def list_available_gene_features(verbose: bool = False) -> list[str]:
     """
     List all available gene feature parquet files shipped with the package.
 
@@ -64,7 +70,7 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
         "human_GRCh38_2024A_gene_features.parquet",
     ]
 
-    discovered: List[str] = []
+    discovered: list[str] = []
     try:
         data_traversable = files("scatrans.data")
         # iterdir works on Traversable (importlib.resources)
@@ -72,8 +78,9 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
             name = getattr(item, "name", str(item))
             if name.endswith(".parquet"):
                 discovered.append(name)
-    except Exception:
+    except Exception as exc:
         # Best-effort fallback for unusual environments
+        logger.debug("list_available_gene_features discovery failed (best-effort): %s", exc)
         discovered = []
 
     files_list = sorted(set(discovered)) if discovered else known
@@ -87,7 +94,7 @@ def list_available_gene_features(verbose: bool = False) -> List[str]:
 
 def generate_gene_features_from_gtf(
     gtf_path: str,
-    output_name: Optional[str] = None,
+    output_name: str | None = None,
     organism: str = "mouse",
 ):
     """
@@ -95,6 +102,16 @@ def generate_gene_features_from_gtf(
 
     This is the recommended way to create custom tables for human or non-standard
     annotations so that bias correction in active_score() can be used.
+
+    **gene_length**: proper union of all exon intervals of the gene (fixed from an
+    earlier "sum all transcripts" bug).
+
+    **intron_number**: heuristic = (max number of exons among any transcript of the gene) - 1.
+    This is only an approximation:
+    - Uses the "most exon-rich" transcript as a proxy for the gene.
+    - Does not perform coordinate-level union of intron intervals across isoforms.
+    - The main/canonical transcript may differ from the max-exon one.
+    See source comments in generate_gene_features_from_gtf for details.
 
     Requires the `gtfparse` package (installed via `pip install "scatrans[gene_features]"`).
 
@@ -149,7 +166,8 @@ def generate_gene_features_from_gtf(
             return 0
         # Collect (start, end) pairs (GTF is 1-based, inclusive)
         ivs = sorted(
-            (int(s), int(e)) for s, e in zip(grp["start"], grp["end"])
+            (int(s), int(e))
+            for s, e in zip(grp["start"], grp["end"])
             if pd.notna(s) and pd.notna(e)
         )
         if not ivs:
@@ -163,9 +181,24 @@ def generate_gene_features_from_gtf(
                 merged.append([s, e])
         return sum(e - s + 1 for s, e in merged)
 
-    gene_length = exon.groupby("gene_id").apply(_exon_union_length, include_groups=False).rename("gene_length")
+    gene_length = (
+        exon.groupby("gene_id")
+        .apply(_exon_union_length, include_groups=False)
+        .rename("gene_length")
+    )
 
-    # 2. intron_number (max exons per transcript - 1)
+    # 2. intron_number: a *proxy* using the transcript with the largest exon count.
+    #    intron_number ≈ max_exons_over_transcripts - 1
+    #
+    #    Limitations (documented for users of bias correction):
+    #    - "Longest" by exon count is only a heuristic; the canonical/main isoform may have
+    #      fewer exons or different structure.
+    #    - Unlike gene_length (which now does a proper interval *union* across *all* exons
+    #      of the gene), this does *not* attempt a cross-transcript "union" of intron regions
+    #      (that would require coordinate-aware intron interval calculation).
+    #    - Therefore gene_length and intron_number have different levels of precision.
+    #    - This value is only used as a numeric feature for Huber regression bias correction
+    #      of velocity delta. Small errors are usually tolerated by the robust fit.
     transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
     intron_number = (
         (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
@@ -214,8 +247,8 @@ def generate_gene_features_from_gtf(
 def add_gene_features(
     adata,
     organism: str = "mouse",
-    gene_feature_file: Optional[str] = None,
-    gene_features_path: Optional[str] = None,
+    gene_feature_file: str | None = None,
+    gene_features_path: str | None = None,
 ):
     """
     Add gene features (length, intron number) to adata.var for bias correction.
@@ -242,7 +275,7 @@ def add_gene_features(
     """
     logger.info("Loading gene features for bias correction...")
 
-    final_path: Optional[Path] = None
+    final_path: Path | None = None
     using_package_data = False
 
     # Priority 1: Full custom path (user file, do not touch package resources)

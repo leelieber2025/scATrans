@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from importlib.metadata import version
 from typing import Any
 
 import anndata as ad
@@ -21,6 +22,15 @@ from scipy.sparse import csr_matrix
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 
+from ._utils import (
+    _is_integer_counts_like,
+    _prepare_log_normalized_expression,
+    _warn_if_low_counts_matrix,
+)
+
+logger = logging.getLogger(__name__)
+
+
 def _pydeseq2_uses_design_factors() -> bool:
     """Detect whether the installed PyDESeq2 supports the modern design_factors= API.
 
@@ -28,12 +38,10 @@ def _pydeseq2_uses_design_factors() -> bool:
     unrelated future errors.
     """
     try:
-        from importlib.metadata import version, PackageNotFoundError
-
         vstr = version("pydeseq2")
     except Exception:
-        # If we cannot determine, prefer the modern path and let the try/except in caller
-        # be a last resort (narrowed).
+        # If we cannot determine (e.g. not installed or metadata issue), prefer the
+        # modern path and let the try/except in caller be a last resort.
         return True
     # pydeseq2 0.4+ standardized on design_factors; earlier used design=
     # Be defensive: parse major.minor
@@ -44,14 +52,6 @@ def _pydeseq2_uses_design_factors() -> bool:
         return (major, minor) >= (0, 4)
     except Exception:
         return True
-
-from ._utils import (
-    _is_integer_counts_like,
-    _prepare_log_normalized_expression,
-    _warn_if_low_counts_matrix,
-)
-
-logger = logging.getLogger(__name__)
 
 
 def _run_de_wrapper(
@@ -75,6 +75,10 @@ def _run_de_wrapper(
     memento_n_cpus: int = -1,
     # Allow providing raw counts separately (common when adata.X is already HVG + log1p)
     counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData | None = None,
+    # Minimum total counts (across observations) to keep a gene for PyDESeq2.
+    # The original hard-coded 10 can be too aggressive for very small pseudobulk
+    # (few samples) or low-depth data, and too lenient for huge datasets.
+    min_counts_per_gene: int = 10,
 ) -> pd.DataFrame:
     """Run DE and return a DataFrame with logFC, p_val, p_adj (and optionally delta_variance, delta_var_pval when mixed).
 
@@ -82,8 +86,8 @@ def _run_de_wrapper(
     This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
 
     logFC is normalized toward log2 scale for cross-backend comparability of logfc_cutoff:
-      - PyDESeq2 + t-test family: native log2
-      - wilcoxon, mixedlm, memento: converted from natural/log1p scale (/ log(2))
+      - PyDESeq2 + scanpy backends (wilcoxon, t-test, logreg, etc.): native log2
+      - mixedlm + memento: converted from natural/log1p scale (/ log(2))
 
     Internal function: type hints strengthened for mypy/pyright.
     """
@@ -188,9 +192,11 @@ def _run_de_wrapper(
 
         if sparse.issparse(ad_temp.X):
             gene_sums = np.asarray(ad_temp.X.sum(axis=0)).ravel()
-            gene_keep = gene_sums >= 10
+            gene_keep = gene_sums >= min_counts_per_gene
             if gene_keep.sum() == 0:
-                raise ValueError("No genes passed the DESeq2 count filter (sum(counts) >= 10).")
+                raise ValueError(
+                    f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
+                )
             X_filtered = ad_temp.X[:, gene_keep].toarray()
             X_filtered = np.clip(np.round(np.nan_to_num(X_filtered)), 0, None).astype(int)
             counts_use = pd.DataFrame(
@@ -200,11 +206,13 @@ def _run_de_wrapper(
             X = np.asarray(ad_temp.X)
             X = np.clip(np.round(np.nan_to_num(X)), 0, None).astype(int)
             counts_df = pd.DataFrame(X, index=ad_temp.obs_names, columns=ad_temp.var_names)
-            gene_keep = counts_df.sum(axis=0) >= 10
+            gene_keep = counts_df.sum(axis=0) >= min_counts_per_gene
             counts_use = counts_df.loc[:, gene_keep].copy()
 
         if counts_use.shape[1] == 0:
-            raise ValueError("No genes passed the DESeq2 count filter (sum(counts) >= 10).")
+            raise ValueError(
+                f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
+            )
 
         condition = ad_temp.obs[use_groupby].astype(str).values
         metadata = pd.DataFrame(
@@ -274,10 +282,9 @@ def _run_de_wrapper(
         )
         de_df = pd.DataFrame(index=ad_temp.var_names)
         raw_lfc = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
-        # Wilcoxon in scanpy reports log1p(mean_t) - log1p(mean_r) (natural-ish scale).
-        # Convert to log2 for consistency with t-test / PyDESeq2.
-        if de_method == "wilcoxon":
-            raw_lfc = raw_lfc / np.log(2)
+        # scanpy rank_genes_groups always returns logfoldchanges on log2 scale:
+        # log2( (expm1(mean_t) + eps) / (expm1(mean_r) + eps) ), independent of the
+        # statistical method (wilcoxon / t-test / etc.). No secondary conversion needed.
         de_df["logFC"] = raw_lfc
         de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names).fillna(1.0)
         de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names).fillna(1.0)
@@ -306,6 +313,11 @@ def _run_mixedlm_de(
     This provides a lightweight Python analogue to variancePartition/dream (fraction of variation explained)
     + LMM DE, suitable for cell-level data with sample-level random effects (addresses pseudoreplication).
     For full voom + precision weights + dreampy/dreamlet on pseudobulk, or NEBULA NB-GLMM, see external packages.
+
+    Performance note: fits a MixedLM (full + null) per gene via LRT (or Wald). This is
+    O(n_genes) non-linear optimizations; use n_jobs for parallelism, or prefer faster
+    backends (scanpy rank_genes or pydeseq2) for very large gene sets unless you need
+    the per-gene delta_variance and sample-aware modeling.
     """
     try:
         import statsmodels.formula.api as smf
@@ -444,7 +456,8 @@ def _run_mixedlm_de(
             "MixedLM: %d/%d genes had degenerate fits (e.g. small n per group, collinearity) "
             "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
             "See diagnostics['mixed_model']['n_genes_failed_fit'].",
-            n_failed, len(de_df)
+            n_failed,
+            len(de_df),
         )
     return de_df
 

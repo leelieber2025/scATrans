@@ -21,6 +21,8 @@ sdist/
 var/
 wheels/
 *.egg-info/
+scatrans.egg-info/
+src/scatrans.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
@@ -165,6 +167,9 @@ Thumbs.db
 gene_features.parquet
 *_gene_features.parquet
 *_features.parquet
+# Bundled package data (must be tracked for CI / wheels)
+!src/scatrans/data/
+!src/scatrans/data/*.parquet
 # Temporary analysis outputs
 *.pdf
 *.png

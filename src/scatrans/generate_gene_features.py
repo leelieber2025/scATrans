@@ -15,6 +15,8 @@ Or from source:
 See README for full human/custom annotation workflow.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import sys
@@ -27,13 +29,12 @@ except ImportError:
     from pp_bias import generate_gene_features_from_gtf
 
 
-# Configure logging so that logger calls inside generate_gene_features_from_gtf
-# (and future library code) produce clean output when the tool is run from CLI.
-# We use a simple format so progress messages look almost identical to the old prints.
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-
 def main():
+    # Configure logging ONLY inside the CLI entry point.
+    # Never at import time: "import scatrans" must not call basicConfig or affect
+    # the caller's root logger (no bare messages, no forced INFO level).
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(
         description="Generate scATrans gene features parquet from a GTF annotation file",
         formatter_class=argparse.RawDescriptionHelpFormatter,

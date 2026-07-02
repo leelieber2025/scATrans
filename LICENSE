@@ -199,3 +199,13 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+   =====================================================================
+   ADDITIONAL NOTICE — BUNDLED DATA FILES (NOT COVERED BY APACHE-2.0)
+   =====================================================================
+
+   Files under src/scatrans/data/ shipped with the package may include
+   third-party-derived gene sets (GO, KEGG). Those files are NOT licensed
+   under Apache-2.0. See src/scatrans/data/DATA_LICENSES.md for terms,
+   provenance, and redistribution restrictions (especially KEGG:
+   https://www.kegg.jp/kegg/legal.html).

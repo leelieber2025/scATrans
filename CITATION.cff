@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: "scATrans: Single-cell Active Transcription Analysis"
+message: >-
+  If you use this software, please cite it using the metadata below.
+type: software
+authors:
+  - name: "scATrans Developers"
+repository-code: "https://github.com/scATrans/scatrans"
+url: "https://github.com/scATrans/scatrans"
+license: Apache-2.0
+version: 0.9.2
+keywords:
+  - single-cell
+  - RNA-seq
+  - unspliced RNA
+  - nascent RNA
+  - active transcription
+  - bioinformatics
+  - differential expression
+  - gene set enrichment

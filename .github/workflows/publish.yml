@@ -1,9 +1,8 @@
 name: Publish to PyPI
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Publish only when a GitHub Release is published (avoids duplicate runs when
+  # "Create release" also creates a tag — push:tags would fire a second job).
   release:
     types: [published]
   workflow_dispatch:
@@ -12,6 +11,10 @@ on:
         description: "Force a specific version (SETUPTOOLS_SCM_PRETEND_VERSION). Useful for dev releases when not on a tag."
         required: false
         default: ""
+
+concurrency:
+  group: publish-pypi-${{ github.event.release.tag_name || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -50,14 +53,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
 
-    # Required for Trusted Publishing (OIDC) - no API token secret needed
+    # Trusted Publishing (OIDC). Configure the "pypi" environment in repo
+    # Settings → Environments with required reviewers before first release.
     permissions:
       id-token: write
 
-    # Recommended: tie to a protected GitHub Environment (create "pypi" environment in repo settings)
-    # You can add required reviewers or branch restrictions in the environment settings.
-    # environment:
-    #   name: pypi
+    environment:
+      name: pypi
 
     steps:
       - name: Download all dists

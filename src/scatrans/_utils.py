@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import uuid
 import warnings
+from collections.abc import Iterable
 from math import comb  # re-exported for permutation use
-from typing import Any, Iterable
+from typing import Any
 
 import anndata as ad
 import numpy as np
@@ -88,6 +89,10 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6)
     """Return True if the matrix contains non-negative values that are integer-valued
     (within tolerance). This is tolerant of float64 summed counts that are exactly
     (or very nearly) integers, which commonly occurs after pseudobulk aggregation.
+
+    For large matrices (> max_check elements), a fixed-seed (0) random subsample is
+    used for performance. This is a QC heuristic; it does not affect scientific results
+    of the main analysis. Subsampling is deterministic for reproducibility.
     """
     if sparse.issparse(X):
         data = X.data
@@ -190,7 +195,28 @@ def _resolve_aligned_raw_counts(
 
 
 def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
-    """Dense log1p library-size normalized matrix for mixed models (no double log1p)."""
+    """Dense log1p library-size normalized matrix for mixed models (no double log1p).
+
+    This is an internal helper for the LMM (mixedlm) DE path only.
+
+    Logic (best-effort):
+    1. If adata.uns has "log1p" marker (standard scanpy), trust and return X as-is.
+    2. Else if matrix looks like integer (non-neg) counts (via _is_integer_counts_like,
+       which tolerates float pseudobulk sums), run normalize_total + log1p.
+    3. Else fall back to a simple heuristic on the observed max value:
+       - has negative values or max <= 20  => assume already log-transformed (return raw)
+       - max > 20 => assume raw-ish, apply log1p (with warning)
+
+    Limitations / caveats (see issue analysis):
+    - The mx<=20 heuristic is fragile for non-integer data (e.g. already scaled floats with
+      small dynamic range, or very low-depth raw counts that failed integer detection).
+    - It only uses global max; does not inspect distribution or fractional parts deeply.
+    - For outer DE (rank_genes_groups, pydeseq2 etc) use the documented ``de_preprocess``
+      parameter ("auto" | "normalize_log1p" | "none") which has its own (more visible) logic.
+    - This function is deliberately silent on most paths; errors only surface in mixed model.
+
+    If you see surprising LMM results, pass explicit preprocessed data or use other DE backends.
+    """
     ad_work = ad_expr.copy()
     if "log1p" in ad_work.uns:
         X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
@@ -227,6 +253,11 @@ def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
 
 
 def _warn_if_low_counts_matrix(X: Any, max_check: int = 100000) -> None:
+    """Warn if max rounded count looks suspiciously low for raw counts input to DE.
+
+    For very large matrices, inspects only a deterministic fixed-seed subsample
+    (see _is_integer_counts_like for rationale).
+    """
     vals = X.data if sparse.issparse(X) else np.asarray(X).ravel()
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:

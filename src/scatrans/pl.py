@@ -17,6 +17,16 @@ OmicVerse (https://github.com/omicverse/omicverse) and gseapy, including:
 - consistent ax= embedding, return (fig, ax), and save_path behavior
 - modern adjustText usage and sensible defaults for journal figures
 
+**Figure lifecycle (important for batch use):**
+Plot functions that create figures return them. By default we do **not** close them
+(`close=False`) so notebooks and interactive use keep the figure. In loops or
+headless pipelines you will accumulate figures (matplotlib warning after ~20).
+Use:
+  * `close=True` on supported plotters (passes through to save + close)
+  * or `scat.pl.save_all_figures(..., close=True)`
+  * or explicitly `plt.close(fig)` after saving/showing
+See individual functions for the `close=` parameter.
+
 Internal `set_style()` is called by plotting functions **only when use_style=True**.
 Default is now use_style=False to avoid surprising global rcParams changes in notebooks
 and shared environments.
@@ -29,9 +39,12 @@ and shared environments.
   consistency.
 """
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, nullcontext, suppress
-from typing import Any, Iterable, List, Mapping, Optional, Tuple, Union
+from typing import Any
 
 import matplotlib as mpl
 import matplotlib.cm as cm
@@ -303,6 +316,61 @@ def _require_columns(df, columns, func_name="plot"):
         )
 
 
+def _venn_exclusive_region_counts(sets_list: list[set]) -> dict[tuple[int, ...], int]:
+    """Element counts for each exclusive Venn region (one per non-empty subset of sets)."""
+    n = len(sets_list)
+    regions: dict[tuple[int, ...], int] = {}
+    for mask in range(1, 2**n):
+        inc_idx = [i for i in range(n) if mask & (1 << i)]
+        exc_idx = [i for i in range(n) if not (mask & (1 << i))]
+        region = set.intersection(*(sets_list[i] for i in inc_idx))
+        for j in exc_idx:
+            region -= sets_list[j]
+        regions[tuple(inc_idx)] = len(region)
+    return regions
+
+
+def _venn_region_label_coords(n: int) -> dict[tuple[int, ...], tuple[float, float]]:
+    """Approximate (x, y) label anchors for the built-in circle Venn layouts (n=1..4)."""
+    if n == 1:
+        return {(0,): (0.0, 0.0)}
+    if n == 2:
+        return {
+            (0,): (-0.75, 0.15),
+            (1,): (0.75, 0.15),
+            (0, 1): (0.0, 0.15),
+        }
+    if n == 3:
+        return {
+            (0,): (-0.85, 0.35),
+            (1,): (0.85, 0.35),
+            (2,): (0.0, -0.95),
+            (0, 1): (0.0, 0.45),
+            (0, 2): (-0.35, -0.05),
+            (1, 2): (0.35, -0.05),
+            (0, 1, 2): (0.0, 0.05),
+        }
+    if n == 4:
+        return {
+            (0,): (-0.95, 0.55),
+            (1,): (0.95, 0.55),
+            (2,): (-0.95, -0.55),
+            (3,): (0.95, -0.55),
+            (0, 1): (0.0, 0.58),
+            (2, 3): (0.0, -0.58),
+            (0, 2): (-0.58, 0.05),
+            (1, 3): (0.58, 0.05),
+            (0, 3): (-0.05, 0.05),
+            (1, 2): (0.05, 0.05),
+            (0, 1, 2): (-0.22, 0.22),
+            (0, 1, 3): (0.22, 0.22),
+            (0, 2, 3): (-0.22, -0.22),
+            (1, 2, 3): (0.22, -0.22),
+            (0, 1, 2, 3): (0.0, 0.05),
+        }
+    return {}
+
+
 def _safe_neg_log10(x, minval=1e-300):
     """Safe -log10 with clipping for zero/near-zero p-values and non-numeric safety.
 
@@ -340,13 +408,22 @@ def _parse_gene_ratio(x):
     return pd.to_numeric(x, errors="coerce")
 
 
-def _save_and_maybe_show(fig, save_path=None, dpi=300, show=True, created=True, transparent=True):
-    """Internal: centralized save + conditional show to keep behavior identical across plotters."""
+def _save_and_maybe_show(
+    fig, save_path=None, dpi=300, show=True, created=True, transparent=True, close=False
+):
+    """Internal: centralized save + conditional show + optional close.
+
+    close=True is intended for batch/non-interactive pipelines to avoid matplotlib
+    "too many figures open" warnings and memory growth. Default remains False for
+    notebook/interactive compatibility (user keeps the returned fig alive).
+    """
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=transparent)
         logger.info("Figure saved to %s", save_path)
     if created and show:
         plt.show()
+    if created and close:
+        plt.close(fig)
 
 
 def _empty_placeholder_fig(message="No data to plot", figsize=(6, 4), dpi=150):
@@ -368,9 +445,8 @@ def comet_plot(
     point_scale=1.0,
     min_size=2,
     max_size=180,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
     alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
     figsize=(8, 6),
     dpi=300,
@@ -382,8 +458,9 @@ def comet_plot(
     positive_logfc_only: bool = True,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
+    close: bool = False,
 ):
     """
     Comet plot of log fold change vs. bias-corrected unspliced residual.
@@ -456,7 +533,9 @@ def comet_plot(
             # still return the provided ax (user can decide)
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     if ax is None:
@@ -548,7 +627,9 @@ def comet_plot(
     # constrained_layout at creation + bbox_inches on save handles colorbar cleanly.
     # (avoid tight_layout after colorbar)
 
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    _save_and_maybe_show(
+        fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+    )
     if return_data:
         return fig, ax, plot_df
     return fig, ax
@@ -561,7 +642,7 @@ def volcano_3d(
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[float] = None,  # fixed point size (direct control, omicverse reference)
+    s: float | None = None,  # fixed point size (direct control, omicverse reference)
     alpha: float = 0.8,
     title="3D Active Volcano Plot",
     figsize=(10, 8),
@@ -572,6 +653,7 @@ def volcano_3d(
     show: bool = True,
     use_style: bool = False,
     return_data: bool = False,
+    close: bool = False,
 ):
     """
     3D volcano-style view (logFC, -log10(p_adj), velocity residual).
@@ -588,6 +670,21 @@ def volcano_3d(
     if use_style:
         _style_ctx = style_context()
         _style_ctx.__enter__()
+
+    if df is None or (hasattr(df, "empty") and df.empty):
+        logger.warning("Empty results DataFrame passed to volcano_3d.")
+        if ax is None:
+            fig, ax = _empty_placeholder_fig("No valid genes to plot", figsize=(8, 6))
+            _created_fig = True
+        else:
+            fig = ax.figure
+            _created_fig = False
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
+        return fig, ax
 
     residual_col = _excess_residual_col(df)
     _require_columns(df, ["logFC", "p_adj", residual_col, "active_score"], "volcano_3d")
@@ -618,7 +715,9 @@ def volcano_3d(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     if ax is None:
@@ -709,7 +808,9 @@ def volcano_3d(
 
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    _save_and_maybe_show(
+        fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+    )
     if return_data:
         return fig, ax, plot_df
     return fig, ax
@@ -718,7 +819,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
-    show_terms: Optional[Union[int, str, List[str], Tuple[str, ...]]] = None,
+    show_terms: int | str | list[str] | tuple[str, ...] | None = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -728,15 +829,16 @@ def enrich_dotplot(
     color_by="Adjusted P-value",
     size_by="Count",
     cmap="viridis_r",
-    dot_max: Optional[float] = None,
-    dot_min: Optional[float] = None,
+    dot_max: float | None = None,
+    dot_min: float | None = None,
     smallest_dot: float = 0.0,
     ax=None,
     show: bool = True,
     use_style: bool = False,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     facet_by_cluster: bool = False,
     return_data: bool = False,
+    close: bool = False,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -790,7 +892,9 @@ def enrich_dotplot(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     # --- Multi-cluster detection (compareCluster style) ---
@@ -851,7 +955,9 @@ def enrich_dotplot(
                 axes[j].axis("off")
             if _style_ctx is not None:
                 _style_ctx.__exit__(None, None, None)
-            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            _save_and_maybe_show(
+                fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+            )
             return fig, axes[0] if axes else fig
 
     if dot_min is not None and dot_max is not None and dot_min > dot_max:
@@ -885,9 +991,10 @@ def enrich_dotplot(
                 for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
                     parts.append(sub.head(show_terms))
                 plot_df = (
-                    pd.concat(parts)
-                    .drop_duplicates()
-                    .head(show_terms * max(1, enrich_df[cluster_col].nunique() // 2 + 1))
+                    pd.concat(parts).drop_duplicates()
+                    # Do not apply another global .head() here: the per-cluster
+                    # heads already ensure representation. A cluster-order-dependent
+                    # head would silently drop later clusters' terms.
                 )
             else:
                 plot_df = enrich_df.head(show_terms).copy()
@@ -926,9 +1033,9 @@ def enrich_dotplot(
                         selected_idx.extend(sub_cand.head(top_n).index.tolist())
                     else:
                         selected_idx.extend(sub.head(top_n).index.tolist())
-                plot_df = (
-                    enrich_df.loc[list(dict.fromkeys(selected_idx))].head(top_n * 2).copy()
-                )  # union, cap later
+                plot_df = enrich_df.loc[list(dict.fromkeys(selected_idx))].copy()
+                # per-cluster selection already performed; avoid order-dependent global head
+                # that can drop entire later clusters from the union.
             else:
                 try:
                     padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(1.0)
@@ -997,7 +1104,10 @@ def enrich_dotplot(
             per_cl = max(3, top_n // max(1, enrich_df[cluster_col].nunique()))
             for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
                 parts.append(sub.head(per_cl))
-            plot_df = pd.concat(parts).drop_duplicates().head(top_n * 2)
+            plot_df = pd.concat(parts).drop_duplicates()
+            # Removed the final .head(top_n*2): it was applied after concat in
+            # cluster appearance order and could drop all terms from later clusters.
+            # Per-cluster caps + dedup is sufficient for representation.
         else:
             plot_df = enrich_df.head(top_n).copy()
 
@@ -1149,7 +1259,9 @@ def enrich_dotplot(
                 _created_fig = False
             if _style_ctx is not None:
                 _style_ctx.__exit__(None, None, None)
-            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            _save_and_maybe_show(
+                fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+            )
             return fig, ax
 
     # Robust dot size scaling (the root cause of "all dots look the same size").
@@ -1341,7 +1453,9 @@ def enrich_dotplot(
 
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    _save_and_maybe_show(
+        fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+    )
 
     if return_data:
         return fig, ax, plot_df
@@ -1350,15 +1464,15 @@ def enrich_dotplot(
 
 def enrich_upsetplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 40,
     title: str = "Enriched Term Overlap (UpSet-style)",
-    figsize: Tuple[float, float] = (11, 6.5),
+    figsize: tuple[float, float] = (11, 6.5),
     dpi: int = 300,
     fontsize: int = 10,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
@@ -1598,21 +1712,24 @@ def enrich_upsetplot(
 
 def enrich_vennplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 200,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (8, 6),
+    title: str | None = None,
+    figsize: tuple[float, float] = (8, 6),
     dpi: int = 300,
     fontsize: int = 11,
-    colors: Optional[list] = None,
-    save_path: Optional[str] = None,
+    colors: list | None = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
     """
     Simple multi-group Venn diagram for significant enriched terms across clusters.
+
+    Region labels show **exclusive** counts (elements belonging to exactly that
+    overlap pattern, not cumulative pairwise totals). Supports 1–4 groups.
 
     Useful companion to enrich_upsetplot when you have 2-3 (max 4) groups and
     want a classic overlapping-circles view of shared vs unique terms.
@@ -1723,54 +1840,29 @@ def enrich_vennplot(
             ax.add_patch(circ)
             ax.text(cx, cy + r + 0.12, name, ha="center", fontsize=fontsize - 1, fontweight="bold")
 
-        # Labels for unique + pairwise counts (simple text placement)
-        if n >= 2:
-            # compute sizes for labels
-            sets_list = [term_sets[c] for c in clusters]
-            # For 2-3 sets we place approximate numbers
+        # Exclusive region counts (each label = elements in exactly that overlap pattern)
+        sets_list = [term_sets[c] for c in clusters]
+        region_counts = _venn_exclusive_region_counts(sets_list)
+        label_coords = _venn_region_label_coords(n)
+        for key, count in region_counts.items():
+            if count <= 0:
+                continue
+            pos = label_coords.get(key)
+            if pos is None:
+                continue
+            region_size = len(key)
+            fs = fontsize - (2 if region_size >= 3 else (1 if region_size == 2 else 0))
+            weight = "bold" if region_size == n else "normal"
             ax.text(
-                0,
-                0.15,
-                str(len(sets_list[0] & sets_list[1])),
+                pos[0],
+                pos[1],
+                str(count),
                 ha="center",
                 va="center",
-                fontsize=fontsize,
+                fontsize=fs,
+                fontweight=weight,
+                color="#333",
             )
-            if n == 2:
-                ax.text(
-                    -0.7,
-                    0.15,
-                    str(len(sets_list[0] - sets_list[1])),
-                    ha="center",
-                    fontsize=fontsize - 1,
-                    color="#333",
-                )
-                ax.text(
-                    0.7,
-                    0.15,
-                    str(len(sets_list[1] - sets_list[0])),
-                    ha="center",
-                    fontsize=fontsize - 1,
-                    color="#333",
-                )
-            if n >= 3:
-                ax.text(
-                    0,
-                    -0.1,
-                    str(len(set.intersection(*sets_list))),
-                    ha="center",
-                    va="center",
-                    fontsize=fontsize,
-                    fontweight="bold",
-                )
-                ax.text(
-                    -0.7,
-                    0.55,
-                    str(len(sets_list[0] - sets_list[1] - sets_list[2])),
-                    ha="center",
-                    fontsize=fontsize - 2,
-                )
-                # (full 3-set intersections left as exercise; the counts above are the main signal)
 
         ax.text(
             0.5,
@@ -1786,22 +1878,22 @@ def enrich_vennplot(
 
 
 def gseaplot(
-    ranked_genes: Union[pd.Series, Mapping, Iterable],
-    gsea_result: Optional[pd.DataFrame] = None,
-    term: Optional[str] = None,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (6.5, 5.5),
+    ranked_genes: pd.Series | Mapping | Iterable,
+    gsea_result: pd.DataFrame | None = None,
+    term: str | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] = (6.5, 5.5),
     dpi: int = 300,
     color: str = "#88C544",
     cmap: str = "seismic",
-    ax: Optional[Any] = None,
+    ax: Any | None = None,
     show: bool = True,
     use_style: bool = False,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     pheno_pos: str = "Pos",
     pheno_neg: str = "Neg",
     **kwargs: Any,
-) -> Tuple[Optional[Any], Optional[Any]]:
+) -> tuple[Any | None, Any | None]:
     """
     Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
 
@@ -2022,15 +2114,14 @@ def gseaplot(
 def volcano_plot(
     df,
     top_n=10,
-    label_genes: Optional[Iterable[str]] = None,
+    label_genes: Iterable[str] | None = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
     alpha: float = 0.75,
     figsize=(8, 6),
     dpi=300,
@@ -2044,8 +2135,9 @@ def volcano_plot(
     use_style: bool = False,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
+    close: bool = False,
 ):
     """
     2D volcano plot with ggVolcano-inspired flexibility and style options.
@@ -2109,7 +2201,9 @@ def volcano_plot(
             _created_fig = False
         if _style_ctx is not None:
             _style_ctx.__exit__(None, None, None)
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        _save_and_maybe_show(
+            fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+        )
         return fig, ax
 
     # ggVolcano-style classic coloring (up/down/ns) when not using active_score
@@ -2262,10 +2356,14 @@ def volcano_plot(
     if title:
         ax.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=15)
 
-    if color_by == "active_score" and "active_score" in plot_df.columns:
+    if colors_for_scatter is None:
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.02, aspect=20)
         cbar.set_label(
-            cbar_label, fontsize=max(9, fontsize - 1), fontweight="bold", rotation=270, labelpad=15
+            cbar_label or color_by,
+            fontsize=max(9, fontsize - 1),
+            fontweight="bold",
+            rotation=270,
+            labelpad=15,
         )
         cbar.outline.set_visible(False)
     else:
@@ -2280,7 +2378,9 @@ def volcano_plot(
 
     if _style_ctx is not None:
         _style_ctx.__exit__(None, None, None)
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+    _save_and_maybe_show(
+        fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig, close=close
+    )
     if return_data:
         return fig, ax, plot_df
     return fig, ax

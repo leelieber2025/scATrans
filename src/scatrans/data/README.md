@@ -119,6 +119,23 @@ TERM_ID<TAB>description<TAB>GENE1<TAB>GENE2<TAB>...
 
 This is the same format Enrichr/gseapy GMTs use, so any existing GMT tooling will work.
 
+### License and redistribution (read before commercial use)
+
+Bundled enrichment files have **separate** license terms from the scATrans **source code**
+(Apache-2.0). See **[DATA_LICENSES.md](DATA_LICENSES.md)** in this folder.
+
+Summary:
+
+- **Gene feature `.parquet` files** — Apache-2.0 (project).
+- **GO BP `*_GO_Biological_Process_2026.txt`** — GO / Bioconductor-derived; cite GO and
+  Bioconductor annotation packages in Methods.
+- **KEGG `Hs_KEGG_2026.txt` / `Mm_KEGG_2026.txt`** — **not Apache-2.0**. KEGG pathway
+  mappings are subject to [KEGG legal terms](https://www.kegg.jp/kegg/legal.html).
+  Academic use is typically allowed with attribution; **commercial use requires a KEGG
+  license**. Do not redistribute these files outside academic fair-use without checking
+  KEGG policy. For commercial pipelines, use runtime Enrichr/gseapy KEGG libraries or
+  your own licensed gene-set file instead of the bundled `.txt` files.
+
 ### Provenance of bundled `*_2026.txt` libraries (for Methods / reproducibility)
 
 The four default organism-specific libraries shipped with scATrans 0.9.x are:
@@ -127,8 +144,8 @@ The four default organism-specific libraries shipped with scATrans 0.9.x are:
 |------|---------|-----------------|-----------------|
 | `Hs_GO_Biological_Process_2026.txt` | Human | 14,208 | clusterProfiler GO map (`org.Hs.eg.db` + `GO.db`) |
 | `Mm_GO_Biological_Process_2026.txt` | Mouse | 14,956 | clusterProfiler GO map (`org.Mm.eg.db` + `GO.db`) |
-| `Hs_KEGG_2026.txt` | Human | 222 | clusterProfiler KEGG cache (organism `hsa`) |
-| `Mm_KEGG_2026.txt` | Mouse | 218 | clusterProfiler KEGG cache (organism `mmu`) |
+| `Hs_KEGG_2026.txt` | Human | 222 | clusterProfiler KEGG cache (organism `hsa`) — **KEGG license, not Apache-2.0** |
+| `Mm_KEGG_2026.txt` | Mouse | 218 | clusterProfiler KEGG cache (organism `mmu`) — **KEGG license, not Apache-2.0** |
 
 - **Extracted:** June 2026 (`extracted_date: 2026-06` in enrichment attrs).
 - **Gene ID type:** gene symbols (same convention as clusterProfiler ORA output).

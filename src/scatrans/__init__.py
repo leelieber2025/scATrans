@@ -13,6 +13,8 @@ Submodules `pl` and `qc` are intentionally exposed (scanpy-style convention).
 Other internal modules are not part of the stable public surface.
 """
 
+from __future__ import annotations
+
 from . import pl, qc
 from .enrich import (
     compare_enrichment,

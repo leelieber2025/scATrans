@@ -24,14 +24,11 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy.sparse as sparse  # for type hints in signatures (e.g. spmatrix)
-from joblib import Parallel, delayed
-from statsmodels.stats.multitest import multipletests
 
 # qc is imported lazily inside active_score to keep startup light, but exposed at package level
 from . import qc as _qc  # for unspliced_global integration
-from ._bias import fit_huber_bias_correction
 from ._de import _run_de_wrapper
-from ._permutation import _single_permutation_task, run_permutation_test
+from ._permutation import run_permutation_test
 from ._utils import (
     LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
@@ -47,6 +44,7 @@ from ._utils import (
     _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
+from ._utils import _fit_huber_bias_correction as fit_huber_bias_correction
 from ._velocity import _compute_moments_velocity_delta, _compute_velocity_delta
 
 try:
@@ -82,18 +80,20 @@ def _validate_de_common_options(
     if pseudobulk_de_backend not in {"pydeseq2", "scanpy"}:
         raise ValueError("pseudobulk_de_backend must be 'pydeseq2' or 'scanpy'.")
 
-    if mixed_model_pval not in ("wald", "lrt"):
+    if use_mixed_model and mixed_model_pval not in ("wald", "lrt"):
         raise ValueError("mixed_model_pval must be 'wald' or 'lrt'.")
 
-    if not (0 < memento_capture_rate < 1):
-        raise ValueError(
-            "memento_capture_rate must be in (0, 1). Typical values: ~0.07 for 10x v1, ~0.15 for v2."
-        )
+    if use_memento_de:
+        if not (0 < memento_capture_rate < 1):
+            raise ValueError(
+                "memento_capture_rate must be in (0, 1). "
+                "Typical values: ~0.07 for 10x v1, ~0.15 for v2."
+            )
 
-    if memento_num_boot < 100:
-        raise ValueError(
-            "memento_num_boot should be reasonably large (>=100) for stable estimates."
-        )
+        if memento_num_boot < 100:
+            raise ValueError(
+                "memento_num_boot should be reasonably large (>=100) for stable estimates."
+            )
 
     if min_cells is not None and min_cells < 1:
         raise ValueError("min_cells must be >= 1.")
@@ -111,7 +111,9 @@ def _validate_de_common_options(
     if not isinstance(use_memento_de, bool):
         raise ValueError("use_memento_de must be boolean.")
 
-    if not isinstance(memento_num_boot, int) or isinstance(memento_num_boot, bool):
+    if use_memento_de and (
+        not isinstance(memento_num_boot, int) or isinstance(memento_num_boot, bool)
+    ):
         raise ValueError("memento_num_boot must be an integer.")
 
     if not isinstance(n_perm, int) or isinstance(n_perm, bool):
@@ -156,6 +158,9 @@ def active_score(
     unspliced_excess_fdr_cutoff: float = 0.05,
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
+    # Minimum summed counts (across obs) required to retain a gene when using the pydeseq2 backend.
+    # The legacy hard-coded value of 10 can remove too many genes on tiny pseudobulk or low-depth data.
+    pydeseq2_min_counts: int = 10,
     use_permutation: bool = False,
     perm_de_backend: str = "same",
     n_perm: int = 100,
@@ -214,9 +219,26 @@ def active_score(
     copy_input: bool = True,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Identify genes with condition-wise differences in unspliced (nascent) RNA abundance
-    relative to a reference group, using a composite score that also incorporates
-    differential expression statistics.
+    Identify genes showing **higher** unspliced (nascent) RNA in the target group
+    relative to reference (positive unspliced excess after reference-gamma correction),
+    combined with upregulation (positive logFC).
+
+    The returned ``significant`` DataFrame (second return value) is **strictly one-sided**:
+    it only contains genes that are upregulated in target (logFC > cutoff) **AND**
+    have positive bias-corrected unspliced excess (nascent excess > 0).
+    Downregulated genes or genes with negative excess are never included in the
+    built-in ``significant`` list even if DE is strong. Use ``all_results`` +
+    :func:`filter_active_genes` (with ``logfc_direction="down"`` or ``"both"``) for
+    other directions or custom thresholds.
+
+    **Recommended entry points (to avoid the long parameter list):**
+    - For new users: :func:`active_score_simple`
+    - For guided configuration: :func:`recommend_workflow` then ``active_score(..., **rec["suggested_kwargs"])``
+    - Presets are defined in ``WORKFLOW_PRESETS``.
+
+    The full signature below is for power users and internal composition. Many parameters
+    have inter-dependencies that are validated early; hidden interactions exist (e.g.
+    ranking_mode affects some weight_* defaults).
 
     The function computes:
     - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
@@ -432,6 +454,7 @@ def active_score(
                 target_group=target_group,
                 reference_group=reference_group,
                 sample_col=sample_col,
+                copy_input=False,  # pure read-only diagnostic; avoid expensive deep copy
             )  # never let diagnosis break the main analysis
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
@@ -652,6 +675,7 @@ def active_score(
         memento_num_boot=memento_num_boot,
         memento_n_cpus=memento_n_cpus,
         counts=resolved_counts,
+        min_counts_per_gene=pydeseq2_min_counts,
     )
 
     adata.var["logFC"] = de_df["logFC"]
@@ -669,7 +693,9 @@ def active_score(
 
     n_mixed_failed = 0
     if use_mixed_model:
-        n_mixed_failed = int(de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0)
+        n_mixed_failed = int(
+            de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0
+        )
 
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
     unspliced_fraction = np.nan
@@ -683,12 +709,14 @@ def active_score(
     uns_layer_raw = adata.layers["unspliced"]
     spl_layer_raw = adata.layers["spliced"]
 
-    if is_pseudobulk:
-        uns_layer, spl_layer, _, _ = _normalize_velocity_layers_by_size_factor(
-            uns_layer_raw, spl_layer_raw
-        )
-    else:
-        uns_layer, spl_layer = uns_layer_raw, spl_layer_raw
+    # Always library-size normalize spliced + unspliced layers (per cell or per pseudobulk sample)
+    # before computing group means for velocity delta. This removes per-observation depth
+    # confounding from the U/S excess statistic.
+    # Previously only done for pseudobulk; cell-level path inherited raw count scale differences
+    # between groups (common batch/sequencing-depth effects).
+    uns_layer, spl_layer, _row_totals, _factors = _normalize_velocity_layers_by_size_factor(
+        uns_layer_raw, spl_layer_raw
+    )
 
     obs_labels = adata.obs[groupby].astype(str).values
     t_mask = obs_labels == target_group
@@ -709,9 +737,11 @@ def active_score(
 
     elif mode == "advanced":
         adata_comp = adata.copy()
-        if is_pseudobulk:
-            adata_comp.layers["unspliced"] = uns_layer.copy()
-            adata_comp.layers["spliced"] = spl_layer.copy()
+        # Use the (library-size normalized) velocity layers for moments computation too.
+        # This ensures cell-level advanced mode also benefits from depth correction
+        # before neighbor graph + scVelo moments.
+        adata_comp.layers["unspliced"] = uns_layer.copy()
+        adata_comp.layers["spliced"] = spl_layer.copy()
 
         try:
             delta_velocity, total_us_velocity, gamma_ref, moments_info = (
@@ -1147,10 +1177,7 @@ def _finalize_active_score_results(
             )
         # Apply delta_variance pval filter only in the permutation path where a meaningful
         # significant mask can be produced (avoids dead-code application to the all-False mask).
-        if (
-            extra_metadata.get("use_delta_variance_pval")
-            and "delta_var_pval" in adata.var.columns
-        ):
+        if extra_metadata.get("use_delta_variance_pval") and "delta_var_pval" in adata.var.columns:
             mask = mask & (
                 adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
             )
@@ -1328,6 +1355,7 @@ def differential_expression(
     subset_values: str | list[str] | tuple[str, ...] | None = None,
     de_method: str = "t-test_overestim_var",
     pseudobulk_de_backend: str = "pydeseq2",
+    pydeseq2_min_counts: int = 10,
     use_pseudobulk: bool = False,
     sample_col: str | None = None,
     min_cells: int = 10,
@@ -1453,6 +1481,14 @@ def differential_expression(
         min_counts=min_counts,
     )
 
+    if min_total_counts != 50:
+        logger.warning(
+            "differential_expression: min_total_counts=%s is not enforced in the DE-only path "
+            "(reserved for API compatibility). It affects gene filtering in active_score() only. "
+            "Use min_cells / min_counts for pseudobulk filtering instead.",
+            min_total_counts,
+        )
+
     if copy_input:
         adata_input = adata_input.copy()
 
@@ -1472,7 +1508,7 @@ def differential_expression(
 
     if use_pseudobulk:
         logger.info("Performing pseudobulk aggregation for DE...")
-        available_layers = [l for l in ("spliced", "unspliced") if l in adata.layers]
+        available_layers = [layer for layer in ("spliced", "unspliced") if layer in adata.layers]
         adata = _pseudobulk_with_layers(
             adata,
             sample_col,
@@ -1531,6 +1567,7 @@ def differential_expression(
         memento_num_boot=memento_num_boot,
         memento_n_cpus=memento_n_cpus,
         counts=counts,
+        min_counts_per_gene=pydeseq2_min_counts,
     )
 
     # Store results
@@ -1549,7 +1586,11 @@ def differential_expression(
         if extra in de_df.columns:
             adata.var[extra] = de_df[extra]
 
-    n_mixed_failed_de = int(de_df.attrs.get("n_genes_failed_fit", 0)) if (use_mixed_model and hasattr(de_df, "attrs")) else 0
+    n_mixed_failed_de = (
+        int(de_df.attrs.get("n_genes_failed_fit", 0))
+        if (use_mixed_model and hasattr(de_df, "attrs"))
+        else 0
+    )
 
     # Build clean results table (no velocity columns)
     cols = ["logFC", "p_val", "p_adj"]
@@ -2167,7 +2208,9 @@ def filter_active_genes(
                     sort_cols.append("logFC")
                     ascending.append(True)
                 elif direction == "both":
-                    results = results.assign(_logfc_abs=results["logFC"].abs())
+                    # Use direct assignment so inplace=True actually mutates the caller's
+                    # DataFrame (assign() would rebind the local variable and lose the effect).
+                    results["_logfc_abs"] = results["logFC"].abs()
                     sort_cols.append("_logfc_abs")
                     ascending.append(False)
                 else:
@@ -2290,6 +2333,8 @@ def diagnose_design(
     reference_group: str,
     sample_col: str | None = None,
     _min_cells_per_sample: int = 10,  # reserved/internal; not yet used (will affect sample filtering/power in future)
+    *,
+    copy_input: bool = True,
 ) -> dict[str, Any]:
     """
     Analyze the experimental design and provide guidance on suitable analysis choices
@@ -2309,8 +2354,14 @@ def diagnose_design(
       - workflow_preset: recommended entry from WORKFLOW_PRESETS
 
     Note: ``_min_cells_per_sample`` is reserved for future use and currently ignored.
+
+    copy_input : bool, default True
+        If True (default), a full deep copy of the input AnnData is made before
+        reading. Set False for a zero-copy read-only diagnostic when the caller
+        guarantees the input will not be mutated (saves large amounts of memory
+        and time on big datasets with many layers).
     """
-    adata = adata_input.copy()
+    adata = adata_input.copy() if copy_input else adata_input
 
     if groupby not in adata.obs.columns:
         raise ValueError(f"groupby '{groupby}' not found in adata.obs")
@@ -2496,6 +2547,7 @@ def recommend_workflow(
         target_group=target_group,
         reference_group=reference_group,
         sample_col=sample_col,
+        copy_input=True,  # public entry point: be safe by default
     )
 
     workflow_key = diag.get("workflow_preset") or "explore"
@@ -2536,7 +2588,17 @@ def recommend_workflow(
 
 
 def _maybe_add_gene_features(adata: Any, organism: str) -> Any:
-    """Attach bundled gene features when length/intron columns are missing."""
+    """Attach bundled gene features when length/intron columns are missing or completely empty.
+
+    Semantics:
+    - If either column is absent → attach (fill NaNs for missing genes).
+    - If both columns present but *all* values are NaN (gl.notna().any() is False
+      for both) → attach (user provided empty placeholders).
+    - If at least one gene has a real (non-NaN) value in *both* columns → do nothing.
+      Partial user data is respected; we never overwrite or "complete" the table.
+    This boundary is deliberate but worth knowing: a table with 99% NaN but 1%
+    real value will *not* trigger auto-attachment.
+    """
     has_length = "gene_length" in adata.var.columns
     has_intron = "intron_number" in adata.var.columns
     needs = not has_length or not has_intron
@@ -2602,6 +2664,7 @@ def active_score_simple(
     *,
     show_plot: bool = False,
     copy_input: bool = True,
+    pydeseq2_min_counts: int = 10,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Recommended entry point for new users (minimal parameters).
@@ -2619,7 +2682,9 @@ def active_score_simple(
     """
     adata = adata_input.copy() if copy_input else adata_input
     _maybe_add_gene_features(adata, organism)
-    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
+    backend = _resolve_simple_backend_kwargs(
+        adata, groupby, target_group, reference_group, sample_col
+    )
     return active_score(
         adata,
         groupby=groupby,
@@ -2629,6 +2694,7 @@ def active_score_simple(
         use_permutation=False,
         show_plot=show_plot,
         copy_input=False,
+        pydeseq2_min_counts=pydeseq2_min_counts,
         **backend,
     )
 
@@ -2641,6 +2707,7 @@ def differential_expression_simple(
     sample_col: str | None = None,
     *,
     copy_input: bool = True,
+    pydeseq2_min_counts: int = 10,
 ) -> tuple[ad.AnnData, pd.DataFrame]:
     """
     Minimal-parameter differential expression (no velocity layers required).
@@ -2649,13 +2716,16 @@ def differential_expression_simple(
     For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
     """
     adata = adata_input.copy() if copy_input else adata_input
-    backend = _resolve_simple_backend_kwargs(adata, groupby, target_group, reference_group, sample_col)
+    backend = _resolve_simple_backend_kwargs(
+        adata, groupby, target_group, reference_group, sample_col
+    )
     return differential_expression(
         adata,
         groupby=groupby,
         target_group=target_group,
         reference_group=reference_group,
         copy_input=False,
+        pydeseq2_min_counts=pydeseq2_min_counts,
         **backend,
     )
 
@@ -2670,7 +2740,7 @@ def run_default_pipeline(
     *,
     run_go_enrichment: bool = True,
     gene_sets: str = "GO_Biological_Process",
-    filter_preset: str = "heuristic",
+    filter_preset: str | None = None,
     show_plot: bool = False,
 ) -> dict[str, Any]:
     """
@@ -2679,11 +2749,26 @@ def run_default_pipeline(
     Steps: active scoring → ``filter_active_genes`` → optional GO enrichment.
     Uses "Disease"/"Control" convenience defaults for target/reference.
 
+    The default for ``filter_preset`` is now **auto-detected** from the experimental
+    design (via ``_resolve_simple_backend_kwargs``): "pseudobulk" when sample_col
+    is provided with >=3 samples per group (which triggers pseudobulk inside
+    active_score_simple), otherwise "heuristic". This keeps the thresholds
+    consistent with the actual scale of active_score / unspliced_excess_residual
+    (see WORKFLOW_PRESETS["pseudobulk_report"]).
+
     Returns a dict with keys:
       - ``adata``, ``significant``, ``all_results``, ``candidates``
       - ``enrichment`` (DataFrame or None)
       - ``filter_preset``, ``backend`` (kwargs used for DE)
     """
+    # Resolve once so we can pick a matching filter_preset (addresses mismatch
+    # between auto-pseudobulk in active_score_simple and hardcoded "heuristic").
+    backend = _resolve_simple_backend_kwargs(
+        adata_input, groupby, target_group, reference_group, sample_col
+    )
+    if filter_preset is None:
+        filter_preset = "pseudobulk" if backend.get("use_pseudobulk") else "heuristic"
+
     adata_res, significant, all_results = active_score_simple(
         adata_input,
         groupby=groupby,
@@ -2707,9 +2792,8 @@ def run_default_pipeline(
             pval_cutoff=0.05,
         )
 
-    backend = _resolve_simple_backend_kwargs(
-        adata_input, groupby, target_group, reference_group, sample_col
-    )
+    # We already resolved backend above (avoids calling the resolver a second time
+    # just to "guess" what active_score_simple decided internally).
     return {
         "adata": adata_res,
         "significant": significant,

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import functools
 import json
 import logging
 import math
@@ -5,10 +8,11 @@ import os
 import re
 import sys
 import warnings
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -18,12 +22,14 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 # Reproducibility metadata for bundled 2026 gene-set libraries (see data/README.md).
-BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
+BUNDLED_GENE_SET_PROVENANCE: dict[str, dict[str, Any]] = {
     "Hs_GO_Biological_Process_2026": {
         "bundled_file": "Hs_GO_Biological_Process_2026.txt",
         "species": "Homo sapiens",
         "collection": "GO Biological Process",
         "source_pipeline": "clusterProfiler::buildGOmap + org.Hs.eg.db + GO.db (Bioconductor)",
+        "data_license": "GO / Bioconductor-derived (not Apache-2.0); see scatrans/data/DATA_LICENSES.md",
+        "license_url": "http://geneontology.org/docs/go-licenses/",
         "package_version_tag": "scATrans 0.9.x data bundle",
         "extracted_date": "2026-06",
         "format": "GMT-like tab-separated (.txt)",
@@ -35,6 +41,8 @@ BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
         "species": "Mus musculus",
         "collection": "GO Biological Process",
         "source_pipeline": "clusterProfiler::buildGOmap + org.Mm.eg.db + GO.db (Bioconductor)",
+        "data_license": "GO / Bioconductor-derived (not Apache-2.0); see scatrans/data/DATA_LICENSES.md",
+        "license_url": "http://geneontology.org/docs/go-licenses/",
         "package_version_tag": "scATrans 0.9.x data bundle",
         "extracted_date": "2026-06",
         "format": "GMT-like tab-separated (.txt)",
@@ -46,6 +54,8 @@ BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
         "species": "Homo sapiens",
         "collection": "KEGG pathways",
         "source_pipeline": "clusterProfiler KEGG cache (organism hsa) via enrichKEGG mappings",
+        "data_license": "KEGG (not Apache-2.0); academic use with attribution; commercial requires KEGG license",
+        "license_url": "https://www.kegg.jp/kegg/legal.html",
         "package_version_tag": "scATrans 0.9.x data bundle",
         "extracted_date": "2026-06",
         "format": "GMT-like tab-separated (.txt)",
@@ -57,6 +67,8 @@ BUNDLED_GENE_SET_PROVENANCE: Dict[str, Dict[str, Any]] = {
         "species": "Mus musculus",
         "collection": "KEGG pathways",
         "source_pipeline": "clusterProfiler KEGG cache (organism mmu) via enrichKEGG mappings",
+        "data_license": "KEGG (not Apache-2.0); academic use with attribution; commercial requires KEGG license",
+        "license_url": "https://www.kegg.jp/kegg/legal.html",
         "package_version_tag": "scATrans 0.9.x data bundle",
         "extracted_date": "2026-06",
         "format": "GMT-like tab-separated (.txt)",
@@ -86,16 +98,16 @@ def _open_package_data(filename: str) -> Iterator[Path]:
 
 
 def _parse_gmt_content(
-    content: str, gene_case: Optional[str] = None
-) -> Tuple[Dict[str, set], Dict[str, str]]:
+    content: str, gene_case: str | None = None
+) -> tuple[dict[str, set], dict[str, str]]:
     """Parse GMT text content (term<TAB>desc<TAB>gene1<TAB>gene2...).
 
     The second column (description) is retained when present and stored
     under the "Description" output column. Many bundled sets ship with an
     empty description column (two tabs); this is handled gracefully.
     """
-    term_to_genes: Dict[str, set] = {}
-    term_to_desc: Dict[str, str] = {}
+    term_to_genes: dict[str, set] = {}
+    term_to_desc: dict[str, str] = {}
     for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -120,7 +132,7 @@ def _parse_gmt_content(
     return term_to_genes, term_to_desc
 
 
-def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
+def list_bundled_gene_sets(verbose: bool = False) -> list[str]:
     """
     List gene set files (.gmt and similar) that are bundled inside the package
     under scatrans/data/.
@@ -138,25 +150,24 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
         res = scat.run_enrichment(genes, gene_sets="GO_Biological_Process", organism="mouse")
         # Legacy names are also accepted and mapped to the 2026 sets.
     """
-    discovered: List[str] = []
+    discovered: list[str] = []
     try:
         data_traversable = files("scatrans.data")
         for item in data_traversable.iterdir():
             name = getattr(item, "name", str(item))
             if name.endswith((".gmt", ".tsv", ".txt")) or "gene_set" in name.lower():
                 discovered.append(name)
-    except Exception:
+    except Exception as exc:
+        logger.debug("list_bundled_gene_sets discovery failed (best-effort): %s", exc)
         discovered = []
 
-    # Fallback known names. New organism-specific defaults (2026) are the built-in
-    # libraries when organism is given and no specific version is requested.
+    # Fallback known names. These must match files actually present under src/scatrans/data/
+    # (packaged via pyproject.toml package-data). Keep in sync with shipped files.
     known = [
         "Hs_GO_Biological_Process_2026.txt",
         "Hs_KEGG_2026.txt",
         "Mm_GO_Biological_Process_2026.txt",
         "Mm_KEGG_2026.txt",
-        "GO_Biological_Process_scATrans.gmt",
-        "KEGG_scATrans.gmt",
     ]
     files_list = sorted(set(discovered)) if discovered else known
 
@@ -172,7 +183,7 @@ def list_bundled_gene_sets(verbose: bool = False) -> List[str]:
     return files_list
 
 
-def _bundled_provenance_for(resolved_name: str) -> Dict[str, Any]:
+def _bundled_provenance_for(resolved_name: str) -> dict[str, Any]:
     """Return provenance dict for a bundled library basename (without extension)."""
     base = resolved_name
     for ext in (".txt", ".gmt", ".tsv"):
@@ -181,9 +192,10 @@ def _bundled_provenance_for(resolved_name: str) -> Dict[str, Any]:
     return dict(BUNDLED_GENE_SET_PROVENANCE.get(base, {}))
 
 
+@functools.lru_cache(maxsize=16)
 def _try_load_bundled_gene_set(
-    name: str, gene_case: Optional[str] = None
-) -> Optional[Tuple[Dict[str, set], Dict[str, str], str]]:
+    name: str, gene_case: str | None = None
+) -> tuple[dict[str, set], dict[str, str], str] | None:
     """
     Try to load a gene set from the files bundled in scatrans/data/.
 
@@ -245,15 +257,14 @@ def _resolve_gene_set_name(requested: str, source: str, organism: str = "mouse")
     # These become the default built-in library if user does not specify a year/version.
     # Only map names for which we actually ship bundled files (BP + KEGG for each organism).
     default_map = {
-        # GO base names -> organism 2026 built-in (only BP is bundled)
+        # Base names (no year) -> organism 2026 built-in (only BP + KEGG are bundled)
         "GO_Biological_Process": f"{prefix}_GO_Biological_Process_2026",
-        "GO_Biological_Process_2023": f"{prefix}_GO_Biological_Process_2026",
         "GO_Biological_Process_2026": f"{prefix}_GO_Biological_Process_2026",
         "GO_BP": f"{prefix}_GO_Biological_Process_2026",
-        # KEGG
         "KEGG": f"{prefix}_KEGG_2026",
         "KEGG_2026": f"{prefix}_KEGG_2026",
-        "KEGG_2021": f"{prefix}_KEGG_2026",  # map old popular names to new default
+        # Historical Enrichr names with explicit years (e.g. GO_Biological_Process_2023,
+        # KEGG_2021) are intentionally NOT mapped here — they pass through to gseapy/Enrichr.
     }
 
     mapped = default_map.get(requested)
@@ -326,7 +337,7 @@ GSEA_COLUMNS = [
 ]
 
 
-def _get_analysis_info() -> Dict[str, Any]:
+def _get_analysis_info() -> dict[str, Any]:
     """Return reproducibility metadata for attrs / save_enrichment_report."""
     from datetime import datetime as _dt
 
@@ -354,7 +365,7 @@ def _warn_user(msg: str) -> None:
     logger.warning(msg)
 
 
-def _apply_gene_case(genes: Iterable[Any], gene_case: Optional[str]) -> List[str]:
+def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
     if gene_case is not None:
         gene_case = str(gene_case).lower()
     if gene_case is None:
@@ -366,9 +377,7 @@ def _apply_gene_case(genes: Iterable[Any], gene_case: Optional[str]) -> List[str
     raise ValueError("gene_case must be None, 'upper', or 'lower'")
 
 
-def _clean_gene_list(
-    gene_list: Optional[Iterable[Any]], gene_case: Optional[str] = None
-) -> List[str]:
+def _clean_gene_list(gene_list: Iterable[Any] | None, gene_case: str | None = None) -> list[str]:
     if gene_list is None:
         return []
     s = pd.Series(list(gene_list))
@@ -380,11 +389,11 @@ def _clean_gene_list(
 
 
 def _load_gene_sets(
-    gene_sets_input: Union[Mapping[str, Iterable[Any]], str, None],
+    gene_sets_input: Mapping[str, Iterable[Any]] | str | None,
     organism: str = "mouse",
     verbose: bool = True,
-    gene_case: Optional[str] = None,
-) -> Tuple[Dict[str, set], Dict[str, str], Dict[str, Any]]:
+    gene_case: str | None = None,
+) -> tuple[dict[str, set], dict[str, str], dict[str, Any]]:
     """Load gene sets and return provenance info for reproducibility.
 
     Returns
@@ -399,8 +408,8 @@ def _load_gene_sets(
     if gene_sets_input is None:
         raise ValueError("gene_sets cannot be None")
     if isinstance(gene_sets_input, Mapping):
-        term_to_genes: Dict[str, set] = {}
-        term_to_desc: Dict[str, str] = {}
+        term_to_genes: dict[str, set] = {}
+        term_to_desc: dict[str, str] = {}
         for k, v in gene_sets_input.items():
             cleaned = _clean_gene_list(v, gene_case=gene_case)
             if cleaned:
@@ -462,7 +471,8 @@ def _load_gene_sets(
 
             try:
                 gene_dict = gp.get_library(name=gene_sets_input, organism=organism)
-            except Exception:
+            except Exception as exc:
+                logger.debug("gseapy get_library with organism failed, retrying without: %s", exc)
                 gene_dict = gp.get_library(name=gene_sets_input)
             term_to_genes = {}
             term_to_desc = {}
@@ -597,14 +607,13 @@ def _empty_gsea_result(**attrs) -> pd.DataFrame:
 
 def run_enrichment(
     gene_list: Iterable[Any],
-    gene_sets: Union[Mapping[str, Iterable[Any]], str],
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[
-        Any
-    ] = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
+    gene_sets: Mapping[str, Iterable[Any]] | str,
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any
+    | None = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
@@ -612,7 +621,7 @@ def run_enrichment(
     return_all: bool = False,
     verbose: bool = True,
     organism: str = "mouse",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     p_adjust_method: str = "fdr_bh",
@@ -917,18 +926,20 @@ def run_enrichment(
         )
 
     results = []
+    n_terms_size_filtered = 0
     for term, term_genes in term_to_genes.items():
         term_genes_in_universe = term_genes & universe_set
         K = len(term_genes_in_universe)
         if min_size > K or max_size < K:
             continue
+        n_terms_size_filtered += 1
         overlap = set(genes_in_universe) & term_genes_in_universe
         k = len(overlap)
-        if k == 0:
-            continue
-        pval = hypergeom.sf(k - 1, N, K, n)
-        GeneRatio = k / n
-        BgRatio = K / N
+        # Include zero-overlap terms (p=1) so BH/FDR denominator m equals all size-eligible
+        # gene sets tested — clusterProfiler / standard ORA convention.
+        pval = float(hypergeom.sf(k - 1, N, K, n)) if k > 0 else 1.0
+        GeneRatio = k / n if n > 0 else 0.0
+        BgRatio = K / N if N > 0 else 0.0
         row = {
             "Term": term,
             "Description": term_to_desc.get(term, ""),
@@ -961,12 +972,14 @@ def run_enrichment(
     if not results:
         if verbose:
             _log_info(
-                f"Tested {len(term_to_genes)} terms; found 0 terms with overlap (after size filters)"
+                f"No terms passed min_size={min_size}/max_size={max_size} "
+                f"(of {len(term_to_genes)} gene sets loaded)"
             )
         return _empty_ora_result(
             include_gene_list=include_gene_list,
-            reason="no_term_overlap_after_filters",
-            n_tested_terms=len(term_to_genes),
+            reason="no_terms_after_size_filters",
+            n_tested_terms=0,
+            n_terms_size_filtered=0,
             pval_cutoff=cutoff,
             universe_info=base_attrs.get("universe_info"),  # may be None here but ok
             **base_attrs,
@@ -1001,18 +1014,23 @@ def run_enrichment(
         "scope": "all_tested_terms",
         "method": p_adjust_method,
         "n_tests": int(len(res_df)),
+        "n_terms_size_filtered": int(n_terms_size_filtered),
+        "includes_zero_overlap_terms": True,
     }
 
     if return_all:
         if verbose:
-            _log_info(f"Tested {len(res_df)} terms; returning all (return_all=True)")
+            _log_info(
+                f"Tested {len(res_df)} terms (incl. zero-overlap); returning all (return_all=True)"
+            )
         return res_df
 
     sig = res_df[res_df["p.adjust"] < cutoff].copy().reset_index(drop=True)
     sig.attrs.update(res_df.attrs)
     if verbose:
         _log_info(
-            f"Tested {len(res_df)} terms; found {len(sig)} significant terms at padj < {cutoff}"
+            f"Tested {len(res_df)} terms (incl. zero-overlap); "
+            f"found {len(sig)} significant at padj < {cutoff}"
         )
     return sig
 
@@ -1020,19 +1038,19 @@ def run_enrichment(
 def run_kegg(
     gene_list: Iterable[Any],
     organism: str = "mouse",
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,  # forwarded to run_enrichment for smart universe default
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any | None = None,  # forwarded to run_enrichment for smart universe default
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     return_all: bool = False,
     verbose: bool = True,
-    gene_case: Optional[str] = None,
-    kegg_library: Optional[str] = None,
+    gene_case: str | None = None,
+    kegg_library: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     **kwargs: Any,
@@ -1094,18 +1112,18 @@ def run_go(
     gene_list: Iterable[Any],
     ontology: str = "BP",
     organism: str = "mouse",
-    universe: Optional[Iterable[Any]] = None,
-    background: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,
+    universe: Iterable[Any] | None = None,
+    background: Iterable[Any] | None = None,
+    adata: Any | None = None,
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     return_all: bool = False,
     verbose: bool = True,
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     adjust_across_all: bool = False,
@@ -1165,6 +1183,12 @@ def run_go(
     """
     analysis_info = _get_analysis_info()
     ont = str(ontology).upper().strip()
+    if ont not in ("BP", "GO_BP"):
+        logger.warning(
+            "run_go(ontology=%s): only BP has fully bundled offline 2026 data; "
+            "CC/MF will use gseapy/Enrichr (possible network access).",
+            ontology,
+        )
     ont_map = {
         "BP": "GO_Biological_Process",
         "GO_BP": "GO_Biological_Process",
@@ -1217,7 +1241,7 @@ def run_go(
 
     # "ALL" case: run three and concat
     frames = []
-    per_ontology_attrs: Dict[str, dict] = {}
+    per_ontology_attrs: dict[str, dict] = {}
     eff_cut = padj_cutoff if padj_cutoff is not None else pval_cutoff
 
     for o in ont_list:
@@ -1359,16 +1383,16 @@ def _comb_comb_comb(
     return float(p_sum)
 
 
-def _parse_gene_overlap_field(genes_str: str) -> List[str]:
+def _parse_gene_overlap_field(genes_str: str) -> list[str]:
     return [g.strip() for g in re.split(r"[;,]+", str(genes_str)) if g.strip()]
 
 
 def _resolve_gene_sets_for_simplify(
     enrich_df: pd.DataFrame,
-    gene_sets: Optional[Union[Mapping[str, Iterable[Any]], str]],
+    gene_sets: Mapping[str, Iterable[Any]] | str | None,
     organism: str = "mouse",
     verbose: bool = True,
-) -> Dict[str, set]:
+) -> dict[str, set]:
     """Resolve full pathway gene memberships for PathwayDenester."""
     if gene_sets is not None:
         term_to_genes, _, _ = _load_gene_sets(gene_sets, organism=organism, verbose=verbose)
@@ -1398,7 +1422,7 @@ def _resolve_gene_sets_for_simplify(
 
 def _simplify_by_pathway_denester(
     df: pd.DataFrame,
-    term_to_genes: Dict[str, set],
+    term_to_genes: dict[str, set],
     *,
     gene_col: str,
     p_col: str,
@@ -1479,11 +1503,11 @@ def _simplify_by_pathway_denester(
                 errors="ignore",
             )
 
-    pathways: List[Dict[str, Any]] = []
+    pathways: list[dict[str, Any]] = []
     for row_idx, row in work.iterrows():
         term_id = str(row["Term"])
         all_genes = set(term_to_genes.get(term_id, set()))
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "row_index": int(row_idx),
             "id": term_id,
             "name": str(row.get(name_col, term_id)),
@@ -1627,14 +1651,14 @@ def _simplify_by_pathway_denester(
 def simplify_enrichment(
     enrich_df: pd.DataFrame,
     similarity_cutoff: float = 0.5,
-    by: Optional[str] = None,
+    by: str | None = None,
     ascending: bool = True,
     min_count: int = 3,
-    gene_col: Optional[str] = None,
+    gene_col: str | None = None,
     method: str = "jaccard",
-    obo_file: Optional[str] = None,
+    obo_file: str | None = None,
     verbose: bool = True,
-    gene_sets: Optional[Union[Mapping[str, Iterable[Any]], str]] = None,
+    gene_sets: Mapping[str, Iterable[Any]] | str | None = None,
     organism: str = "mouse",
     to_test_threshold: float = 0.0,
     pval_threshold: float = 0.05,
@@ -1934,13 +1958,13 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_gsea(
-    ranked_genes: Union[pd.Series, Mapping[str, float], Iterable[str], pd.DataFrame],
-    gene_sets: Union[Mapping[str, Iterable[Any]], str],
+    ranked_genes: pd.Series | Mapping[str, float] | Iterable[str] | pd.DataFrame,
+    gene_sets: Mapping[str, Iterable[Any]] | str,
     min_size: int = 15,
     max_size: int = 500,
     nperm: int = 1000,
     organism: str = "mouse",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     gene_set_source: str = "scatrans",
     verbose: bool = True,
     seed: int = 42,
@@ -2234,7 +2258,7 @@ def save_enrichment_report(
     save_metadata: bool = True,
     save_term_gene_table: bool = True,
     index: bool = False,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     Save enrichment results in formats friendly for manuscripts and supplementary materials.
 
@@ -2278,7 +2302,7 @@ def save_enrichment_report(
 
     prefix_path = Path(str(prefix))
     prefix_path.parent.mkdir(parents=True, exist_ok=True)
-    outputs: Dict[str, str] = {}
+    outputs: dict[str, str] = {}
 
     # Prepare a copy safe for export (convert list columns like Genes_list to joined strings)
     res_export = res.copy()
@@ -2359,22 +2383,22 @@ def save_enrichment_report(
 
 
 def _clean_and_validate_gene_list_for_compare(
-    genes: Iterable[Any], gene_case: Optional[str] = None
-) -> List[str]:
+    genes: Iterable[Any], gene_case: str | None = None
+) -> list[str]:
     """Lightweight cleaner used by compare helpers (re-uses the main cleaner)."""
     return _clean_gene_list(genes, gene_case=gene_case)
 
 
 def extract_gene_lists(
-    de_results: Union[pd.DataFrame, Mapping[str, pd.DataFrame]],
+    de_results: pd.DataFrame | Mapping[str, pd.DataFrame],
     *,
     logfc_cutoff: float = 0.5,
     pval_cutoff: float = 0.05,
     logfc_direction: str = "up",
     separate_directions: bool = False,
-    name_prefix: Optional[str] = None,
-    gene_case: Optional[str] = None,
-) -> Dict[str, List[str]]:
+    name_prefix: str | None = None,
+    gene_case: str | None = None,
+) -> dict[str, list[str]]:
     """
     Extract named gene lists from one or more DE result DataFrames for downstream enrichment.
 
@@ -2433,7 +2457,7 @@ def extract_gene_lists(
     else:
         raise ValueError(f"logfc_direction={logfc_direction!r} not recognized.")
 
-    def _get_genes_from_df(df: pd.DataFrame) -> List[str]:
+    def _get_genes_from_df(df: pd.DataFrame) -> list[str]:
         if df is None or df.empty:
             return []
         work = df
@@ -2470,7 +2494,7 @@ def extract_gene_lists(
         selected = [g for g, m in zip(genes, mask) if m]
         return _clean_and_validate_gene_list_for_compare(selected, gene_case=gene_case)
 
-    result: Dict[str, List[str]] = {}
+    result: dict[str, list[str]] = {}
 
     if isinstance(de_results, pd.DataFrame):
         genes = _get_genes_from_df(de_results)
@@ -2569,7 +2593,7 @@ def extract_gene_lists(
 
 
 def concat_compare_results(
-    results: Union[Mapping[str, pd.DataFrame], List[Tuple[str, pd.DataFrame]]],
+    results: Mapping[str, pd.DataFrame] | list[tuple[str, pd.DataFrame]],
     cluster_col: str = "Cluster",
 ) -> pd.DataFrame:
     """
@@ -2622,19 +2646,19 @@ def concat_compare_results(
 def compare_enrichment(
     gene_clusters: Mapping[str, Iterable[Any]],
     *,
-    fun: Optional[Callable] = None,
+    fun: Callable | None = None,
     pval_cutoff: float = 0.05,
-    padj_cutoff: Optional[float] = None,
+    padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
     restrict_background_to_gene_sets: bool = True,
     force_universe: bool = False,
     organism: str = "mouse",
     gene_sets: Any = "GO_Biological_Process",
-    universe: Optional[Iterable[Any]] = None,
-    adata: Optional[Any] = None,
+    universe: Iterable[Any] | None = None,
+    adata: Any | None = None,
     gene_set_source: str = "scatrans",
-    gene_case: Optional[str] = None,
+    gene_case: str | None = None,
     verbose: bool = True,
     return_all: bool = False,
     raise_on_error: bool = False,
@@ -2645,7 +2669,15 @@ def compare_enrichment(
     Run enrichment analysis across multiple named groups/clusters/contrasts
     (clusterProfiler::compareCluster style).
 
-    The main entry point for multi-group enrichment in scATrans.
+    **Important default note on multiple-testing**:
+    ``adjust_across_clusters=False`` (the default) performs BH FDR correction
+    *separately inside each cluster*. This is conservative per group but when you
+    have many clusters the *overall* false discovery rate across the whole table
+    can be higher than a single global correction. If you intend to compare
+    significance across clusters, use ``adjust_across_clusters=True``; per-cluster
+    calls then use ``return_all=True`` internally (all size-eligible terms, including
+    zero-overlap) before a single global BH step, and the final table is filtered
+    by ``padj_cutoff``/``pval_cutoff`` unless you also pass ``return_all=True``.
 
     Biological comparability notes (inspired by clusterProfiler best practices):
     - When `adata=` or `universe=` is supplied, the **same background** is used for every cluster.
@@ -2695,8 +2727,20 @@ def compare_enrichment(
             "For best cross-cluster comparability, pass the same adata (after store_raw_counts) or explicit universe."
         )
 
+    eff_cut = padj_cutoff if padj_cutoff is not None else pval_cutoff
+    eff_return_all = return_all
+    if adjust_across_clusters:
+        if not return_all:
+            _warn_user(
+                "compare_enrichment: adjust_across_clusters=True requires every tested term "
+                "from each cluster (including zero-overlap and non-significant) before global "
+                "BH correction. Forcing return_all=True on per-cluster calls; significance "
+                "filtering is applied after global p.adjust."
+            )
+        eff_return_all = True
+
     frames = []
-    per_cluster: Dict[str, Any] = {}
+    per_cluster: dict[str, Any] = {}
     cluster_names = list(gene_clusters.keys())
 
     for cname in cluster_names:
@@ -2735,7 +2779,7 @@ def compare_enrichment(
                 adata=shared_adata,
                 gene_set_source=gene_set_source,
                 gene_case=gene_case,
-                return_all=return_all,
+                return_all=eff_return_all,
                 verbose=verbose,
                 **kwargs,
             )
@@ -2819,16 +2863,19 @@ def compare_enrichment(
     # Multi-cluster multiple testing (new, analogous to adjust_across_all in run_go)
     multiple_testing_scope = "per_cluster"
     if adjust_across_clusters and not combined.empty and "pvalue" in combined.columns:
+        combined = combined.copy()
         if "p.adjust" in combined.columns:
             combined["p.adjust.within_cluster"] = combined["p.adjust"]
         combined["p.adjust"] = _bh_p_adjust(combined["pvalue"].values)
         combined["neg_log10_padj"] = -np.log10(
             combined["p.adjust"].astype(float).clip(lower=1e-300)
         )
+        combined = combined.sort_values("p.adjust").reset_index(drop=True)
         multiple_testing_scope = "all_clusters"
         if verbose:
             _log_info(
-                "compare_enrichment: p.adjust re-computed across all clusters (adjust_across_clusters=True)"
+                "compare_enrichment: p.adjust re-computed across all clusters "
+                f"(adjust_across_clusters=True; n_tests={len(combined)})"
             )
 
     # Structured under scatrans (fixed from previous "scatans" note)
@@ -2855,5 +2902,14 @@ def compare_enrichment(
             f"compare_enrichment: {len(frames)} clusters, total {len(combined)} rows. "
             f"Shared background: {bool(shared_universe or shared_adata)}"
         )
+
+    if not return_all and not combined.empty and "p.adjust" in combined.columns:
+        sig = combined[combined["p.adjust"] < eff_cut].copy().reset_index(drop=True)
+        sig.attrs.update(combined.attrs)
+        if verbose:
+            _log_info(
+                f"compare_enrichment: returning {len(sig)} significant rows at padj < {eff_cut}"
+            )
+        return sig
 
     return combined
