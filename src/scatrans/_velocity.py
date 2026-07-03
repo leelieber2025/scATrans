@@ -23,6 +23,7 @@ from scipy import sparse
 from ._utils import _get_group_mean
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 _EPS = 1e-8
 _MIN_GENES_FOR_EB_PRIOR = 10

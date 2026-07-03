@@ -59,6 +59,7 @@ except (ImportError, AttributeError):
     VERSION = "0.9.2"
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 def _materialize_if_view(adata: ad.AnnData) -> ad.AnnData:
@@ -95,6 +96,16 @@ def _select_var(
     if bool(mask.all()):
         return adata
     return adata[:, mask]
+
+
+def _resolve_velocity_layer_keys(adata: ad.AnnData) -> tuple[str, str] | None:
+    """Return (spliced_key, unspliced_key) for QC, including kb_python mature/nascent."""
+    layers = set(adata.layers.keys())
+    if "spliced" in layers and "unspliced" in layers:
+        return "spliced", "unspliced"
+    if "mature" in layers and "nascent" in layers:
+        return "mature", "nascent"
+    return None
 
 
 def _validate_de_common_options(
@@ -599,6 +610,7 @@ def active_score(
         adata = _select_var(
             adata, adata.var["gene_type"] == gene_type_filter, copy_input=copy_input
         )
+        adata = _materialize_if_view(adata)
 
     if adata.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
@@ -1571,6 +1583,7 @@ def differential_expression(
         adata_input = _select_var(
             adata_input, adata_input.var["gene_type"] == gene_type_filter, copy_input=copy_input
         )
+        adata_input = _materialize_if_view(adata_input)
 
     if adata_input.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
@@ -2558,19 +2571,25 @@ def diagnose_design(
     }
 
     # Global unspliced fraction (important technical QC)
-    try:
-        ufrac = _qc.unspliced_global(
-            adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
-        )
-        result["unspliced_global_fraction"] = float(ufrac)
-        if ufrac > 0.5:
-            result["warnings"].append(
-                f"Global unspliced fraction is high ({ufrac:.1%}). "
-                "This often indicates nuclear enrichment or gDNA contamination and can "
-                "reduce the reliability of velocity-based signals."
+    layer_keys = _resolve_velocity_layer_keys(adata)
+    if layer_keys is not None:
+        spliced_key, unspliced_key = layer_keys
+        try:
+            ufrac = _qc.unspliced_global(
+                adata,
+                spliced_key=spliced_key,
+                unspliced_key=unspliced_key,
+                warn_threshold=0.5,
             )
-    except Exception:
-        pass
+            result["unspliced_global_fraction"] = float(ufrac)
+            if ufrac > 0.5:
+                result["warnings"].append(
+                    f"Global unspliced fraction is high ({ufrac:.1%}). "
+                    "This often indicates nuclear enrichment or gDNA contamination and can "
+                    "reduce the reliability of velocity-based signals."
+                )
+        except Exception as e:
+            logger.debug("Could not compute global unspliced fraction: %s", e)
 
     # Sample structure
     if sample_col and sample_col in adata.obs.columns:

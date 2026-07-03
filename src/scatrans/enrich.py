@@ -1103,7 +1103,14 @@ def run_kegg(
     Note: internal organism is normalized to lowercase (e.g. "mouse") for attrs.
     """
     org_lower = str(organism).lower()
-    org_map = {"mouse": "Mouse", "mmu": "Mouse", "human": "Human", "hsa": "Human"}
+    org_map = {
+        "mouse": "Mouse",
+        "mm": "Mouse",
+        "mmu": "Mouse",
+        "human": "Human",
+        "hs": "Human",
+        "hsa": "Human",
+    }
     gseapy_org = org_map.get(org_lower)
     if gseapy_org is None:
         raise ValueError(f"Unsupported organism '{organism}' for run_kegg")

@@ -350,7 +350,8 @@ def add_gene_features(
     else:
         using_package_data = True
         avail = list_available_gene_features(verbose=False)
-        if organism == "human":
+        organism_norm = str(organism).lower()
+        if organism_norm in ("human", "hs", "hsa"):
             # Prefer any human-named file present in the package data
             human_cands = [
                 f
@@ -360,9 +361,14 @@ def add_gene_features(
             pkg_filename = (
                 human_cands[0] if human_cands else "human_GRCh38_2024A_gene_features.parquet"
             )
-        else:
+        elif organism_norm in ("mouse", "mm", "mmu"):
             mouse_cands = [f for f in avail if "mouse" in f.lower() or f.startswith("Mus")]
             pkg_filename = mouse_cands[0] if mouse_cands else "mouse_2020A_gene_features.parquet"
+        else:
+            raise ValueError(
+                f"Unsupported organism '{organism}' for add_gene_features. "
+                "Use 'human'/'hs'/'hsa' or 'mouse'/'mm'/'mmu'."
+            )
         logger.info("Using default for %s: %s", organism, pkg_filename)
 
     # Load the gene features table.

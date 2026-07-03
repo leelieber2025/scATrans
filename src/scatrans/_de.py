@@ -30,6 +30,7 @@ from ._utils import (
 )
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 _DE_REQUIRED_COLS = frozenset({"logFC", "p_val", "p_adj"})
 
@@ -302,10 +303,18 @@ def _run_de_wrapper(
 
         res2 = stat_res.results_df.copy().reindex(ad_temp.var_names)
         de_df = pd.DataFrame(index=ad_temp.var_names)
-        de_df["logFC"] = res2["log2FoldChange"].fillna(0.0)
-        de_df["p_val"] = res2.get("pvalue", pd.Series(1.0, index=res2.index)).fillna(1.0)
-        de_df["p_adj"] = res2.get("padj", pd.Series(1.0, index=res2.index)).fillna(1.0)
-        return _validate_de_result(de_df, backend="pydeseq2")
+        de_df["logFC"] = res2["log2FoldChange"].reindex(ad_temp.var_names)
+        de_df["p_val"] = res2.get("pvalue", pd.Series(np.nan, index=res2.index)).reindex(
+            ad_temp.var_names
+        )
+        de_df["p_adj"] = res2.get("padj", pd.Series(np.nan, index=res2.index)).reindex(
+            ad_temp.var_names
+        )
+        _validate_de_result(de_df, backend="pydeseq2")
+        de_df["logFC"] = de_df["logFC"].fillna(0.0)
+        de_df["p_val"] = de_df["p_val"].fillna(1.0)
+        de_df["p_adj"] = de_df["p_adj"].fillna(1.0)
+        return de_df
 
     else:
         # Standard scanpy path (works for both regular and pseudobulk when not using pydeseq2)
@@ -323,14 +332,17 @@ def _run_de_wrapper(
             "names"
         )
         de_df = pd.DataFrame(index=ad_temp.var_names)
-        raw_lfc = de_raw["logfoldchanges"].reindex(ad_temp.var_names).fillna(0.0)
         # scanpy rank_genes_groups always returns logfoldchanges on log2 scale:
         # log2( (expm1(mean_t) + eps) / (expm1(mean_r) + eps) ), independent of the
         # statistical method (wilcoxon / t-test / etc.). No secondary conversion needed.
-        de_df["logFC"] = raw_lfc
-        de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names).fillna(1.0)
-        de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names).fillna(1.0)
-        return _validate_de_result(de_df, backend=f"scanpy:{de_method}")
+        de_df["logFC"] = de_raw["logfoldchanges"].reindex(ad_temp.var_names)
+        de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names)
+        de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names)
+        _validate_de_result(de_df, backend=f"scanpy:{de_method}")
+        de_df["logFC"] = de_df["logFC"].fillna(0.0)
+        de_df["p_val"] = de_df["p_val"].fillna(1.0)
+        de_df["p_adj"] = de_df["p_adj"].fillna(1.0)
+        return de_df
 
 
 def _run_mixedlm_de(

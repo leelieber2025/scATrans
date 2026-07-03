@@ -22,6 +22,7 @@ from scipy import sparse
 from sklearn.linear_model import HuberRegressor
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 def _normalize_group_label(val: Any) -> str | None:
@@ -187,7 +188,16 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6)
 
     if vals.size > max_check:
         rng = np.random.default_rng(0)
-        vals = rng.choice(vals, size=max_check, replace=False)
+        # Stride + random subsample: stride covers the full matrix deterministically;
+        # random supplement catches sparse non-integer contamination missed by stride alone.
+        stride = max(1, vals.size // (max_check // 2))
+        stride_vals = vals[::stride]
+        n_random = max_check - stride_vals.size
+        if n_random > 0:
+            random_vals = rng.choice(vals, size=min(n_random, vals.size), replace=False)
+            vals = np.concatenate([stride_vals, random_vals])
+        else:
+            vals = stride_vals[:max_check]
 
     # Tolerant check: allows tiny floating point noise from summation / cast
     rounded = np.round(vals)
@@ -200,6 +210,19 @@ def _dense_expression_matrix(X: Any) -> np.ndarray:
     return np.asarray(X, dtype=float)
 
 
+def _x_looks_zscore_scaled(finite: np.ndarray) -> bool:
+    """Return True when values look z-score scaled (e.g. after ``sc.pp.scale``)."""
+    if finite.size == 0 or not np.any(finite < 0):
+        return False
+    mx = float(np.nanmax(finite))
+    mn = float(np.nanmin(finite))
+    mean = float(np.nanmean(finite))
+    std = float(np.nanstd(finite))
+    if mx > 25.0:
+        return False
+    return abs(mean) < 1.0 and 0.25 < std < 5.0 and mn < -0.1
+
+
 def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
     """Return True when *X* is unlikely to be raw integer counts needing normalize+log1p."""
     if _is_integer_counts_like(X, max_check=max_check):
@@ -207,6 +230,8 @@ def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
     arr = _dense_expression_matrix(X)
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
+        return False
+    if _x_looks_zscore_scaled(finite):
         return False
     mx = float(np.nanmax(finite))
     has_neg = bool(np.any(finite < 0))
@@ -216,6 +241,36 @@ def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
 def _clear_log_preprocess_metadata(adata: ad.AnnData) -> None:
     """Drop scanpy log-transform markers after restoring raw counts into .X."""
     adata.uns.pop("log1p", None)
+
+
+def _restore_log_from_scaled_x(adata: ad.AnnData) -> bool:
+    """Reverse ``sc.pp.scale`` on ``.X`` when mean/std are stored in ``adata.var``."""
+    arr = _dense_expression_matrix(adata.X)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0 or not _x_looks_zscore_scaled(finite):
+        return False
+
+    if "mean" not in adata.var.columns or "std" not in adata.var.columns:
+        return False
+
+    mean = pd.to_numeric(adata.var["mean"], errors="coerce").to_numpy(dtype=float)
+    std = pd.to_numeric(adata.var["std"], errors="coerce").to_numpy(dtype=float)
+    if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)):
+        return False
+
+    if sparse.issparse(adata.X):
+        X = np.asarray(adata.X.toarray(), dtype=float)
+    else:
+        X = np.asarray(adata.X, dtype=float)
+
+    adata.X = X * std + mean
+    logger.warning(
+        ".X appeared z-score scaled (typical after sc.pp.scale). Restored log-normalized "
+        "expression from adata.var['mean']/'std' for DE. Keep scaled data in a separate "
+        "AnnData copy for PCA/clustering."
+    )
+    adata.uns.setdefault("log1p", {"base": None})
+    return True
 
 
 def _reconcile_log1p_marker(adata: ad.AnnData) -> bool:
@@ -228,7 +283,19 @@ def _reconcile_log1p_marker(adata: ad.AnnData) -> bool:
     normalize_total + log1p.
     """
     has_marker = "log1p" in adata.uns
+    arr = _dense_expression_matrix(adata.X)
+    finite = arr[np.isfinite(arr)]
+    x_is_scaled = _x_looks_zscore_scaled(finite) if finite.size else False
     x_is_log = _x_looks_log_normalized(adata.X)
+
+    if has_marker and x_is_scaled:
+        _clear_log_preprocess_metadata(adata)
+        logger.warning(
+            "Removed stale uns['log1p'] metadata: .X appears z-score scaled (e.g. after "
+            "sc.pp.scale) while the log1p marker was still set. Downstream DE preprocessing "
+            "will re-apply normalize_total + log1p when de_preprocess='auto'."
+        )
+        return False
 
     if has_marker and not x_is_log:
         _clear_log_preprocess_metadata(adata)
@@ -257,6 +324,17 @@ def _apply_de_preprocess(
     skip_auto: bool = False,
 ) -> None:
     """Apply normalize_total + log1p according to ``de_preprocess`` mode."""
+    if de_preprocess in ("auto", "normalize_log1p") and not skip_auto:
+        arr = _dense_expression_matrix(adata.X)
+        finite = arr[np.isfinite(arr)]
+        if finite.size and _x_looks_zscore_scaled(finite) and not _restore_log_from_scaled_x(adata):
+            raise ValueError(
+                ".X appears z-score scaled (e.g. after sc.pp.scale) but cannot be restored "
+                "for DE (missing adata.var['mean']/'std']). Use an AnnData copy from before "
+                "scaling, pass de_preprocess='none' with a suitable matrix, or store "
+                "log-normalized expression in adata.raw or a layer."
+            )
+
     if de_preprocess == "normalize_log1p":
         logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
         sc.pp.normalize_total(adata, target_sum=1e4)
