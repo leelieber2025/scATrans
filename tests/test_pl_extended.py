@@ -57,3 +57,35 @@ def test_enrich_dotplot_cluster_col(enrich_df):
     df["cluster"] = ["A", "A", "B"]
     fig, ax = scat.pl.enrich_dotplot(df, top_n=3, show=False)
     plt.close(fig)
+
+
+def test_bias_diagnostic_plot_rejects_invalid_axes(results_df):
+    with pytest.raises(ValueError, match="exactly two matplotlib Axes"):
+        scat.pl.bias_diagnostic_plot(results_df, axes=(None, None), show=False)
+
+
+def test_comet_plot_missing_columns_placeholder():
+    df = pd.DataFrame({"logFC": [1.0], "active_score": [50.0]})
+    fig, ax = scat.pl.comet_plot(df, show=False)
+    assert fig is not None and ax is not None
+    plt.close(fig)
+
+
+def test_volcano_plot_missing_columns_placeholder():
+    df = pd.DataFrame({"logFC": [1.0]})
+    fig, ax = scat.pl.volcano_plot(df, show=False)
+    assert fig is not None and ax is not None
+    plt.close(fig)
+
+
+def test_enrich_dotplot_auto_without_padj_column():
+    """show_terms='auto' must not crash when p.adjust column is absent."""
+    df = pd.DataFrame(
+        {
+            "Term": ["T1", "T2", "T3"],
+            "Count": [5, 3, 2],
+            "GeneRatio": [0.1, 0.2, 0.05],
+        }
+    )
+    fig, ax = scat.pl.enrich_dotplot(df, show_terms="auto", top_n=2, show=False)
+    plt.close(fig)

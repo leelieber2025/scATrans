@@ -15,6 +15,7 @@ results DataFrames from either function.
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from typing import Any
 
@@ -22,7 +23,6 @@ import anndata as ad
 import joblib
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import scipy.sparse as sparse  # for type hints in signatures (e.g. spmatrix)
 
 # qc is imported lazily inside active_score to keep startup light, but exposed at package level
@@ -35,12 +35,16 @@ from ._utils import (
     UNSPLICED_EXCESS_FDR_COL,
     UNSPLICED_EXCESS_PVAL_COL,
     UNSPLICED_EXCESS_RESIDUAL_COL,
+    _apply_de_preprocess,
+    _clear_log_preprocess_metadata,
     _get_exponential_scale_lambda,
     _is_integer_counts_like,
+    _normalize_group_label,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
     _resolve_aligned_raw_counts,
     _soft_scale,
+    _validate_group_contrast,
     _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
@@ -140,13 +144,57 @@ def _coerce_memento_de_preprocess(use_memento_de: bool, de_preprocess: str) -> s
     return de_preprocess
 
 
+def _require_explicit_groups(
+    target_group: str | None,
+    reference_group: str | None,
+    *,
+    func_name: str,
+) -> None:
+    """Require explicit contrast labels; prevents silent GA/Ctrl mismatches."""
+    if target_group is None or reference_group is None:
+        raise ValueError(
+            f"{func_name}() requires explicit target_group and reference_group "
+            "matching adata.obs[groupby] values. "
+            'Historical defaults "GA"/"Ctrl" were removed to prevent silent mismatches '
+            "that yield empty subsets and NaN results. "
+            "Use active_score_simple() / differential_expression_simple() for "
+            "Disease/Control convenience defaults, or call recommend_workflow() first."
+        )
+
+
+def _resolve_deprecated_active_score_kwargs(kwargs: dict[str, Any]) -> tuple[float, bool]:
+    """Pop deprecated active_score kwargs and emit DeprecationWarning when used."""
+    active_fdr_cutoff = 0.05
+    prioritize_velocity = False
+    if "active_fdr_cutoff" in kwargs:
+        active_fdr_cutoff = kwargs.pop("active_fdr_cutoff")
+        warnings.warn(
+            "active_fdr_cutoff is deprecated and no longer used for the built-in "
+            "'significant' gene list. Use unspliced_excess_fdr_cutoff instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if not (0 < active_fdr_cutoff <= 1):
+            raise ValueError("active_fdr_cutoff must be in (0, 1].")
+    if "prioritize_velocity" in kwargs:
+        prioritize_velocity = kwargs.pop("prioritize_velocity")
+        warnings.warn(
+            "prioritize_velocity is deprecated; use ranking_mode='nascent_excess' instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    if kwargs:
+        raise TypeError(
+            f"active_score() got unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
+        )
+    return active_fdr_cutoff, prioritize_velocity
+
+
 def active_score(
     adata_input: Any,
     groupby: str = "condition",
-    # Note: historical defaults "GA"/"Ctrl". Always supply explicit target/reference
-    # matching your adata.obs[groupby] values to avoid silent mismatches.
-    target_group: str = "GA",
-    reference_group: str = "Ctrl",
+    target_group: str | None = None,
+    reference_group: str | None = None,
     subset_col: str | None = None,
     subset_values: str | list[str] | tuple[str, ...] | None = None,
     weight_fc: float = 1.0,
@@ -154,7 +202,6 @@ def active_score(
     weight_pval: float = 1.0,
     pval_cutoff: float = 0.05,
     logfc_cutoff: float = 0.5,
-    active_fdr_cutoff: float = 0.05,  # deprecated: not used for built-in significant list
     unspliced_excess_fdr_cutoff: float = 0.05,
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
@@ -213,10 +260,9 @@ def active_score(
     # "empirical_bayes": robust log-ratio empirical Bayes shrinkage (recommended for small reference)
     # "raw": minimal shrinkage (use observed ratios directly)
     gamma_method: str = "heuristic_shrink",
-    # Advanced convenience for users primarily interested in nascent RNA excess
-    prioritize_velocity: bool = False,
     ranking_mode: str = "composite",
     copy_input: bool = True,
+    **deprecated_kwargs: Any,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
     Identify genes showing **higher** unspliced (nascent) RNA in the target group
@@ -231,10 +277,17 @@ def active_score(
     :func:`filter_active_genes` (with ``logfc_direction="down"`` or ``"both"``) for
     other directions or custom thresholds.
 
+    **Required:** ``target_group`` and ``reference_group`` must match values in
+    ``adata.obs[groupby]`` (no implicit defaults). Use :func:`active_score_simple`
+    for Disease/Control convenience defaults.
+
     **Recommended entry points (to avoid the long parameter list):**
     - For new users: :func:`active_score_simple`
     - For guided configuration: :func:`recommend_workflow` then ``active_score(..., **rec["suggested_kwargs"])``
     - Presets are defined in ``WORKFLOW_PRESETS``.
+
+    Deprecated keyword-only arguments (emit ``DeprecationWarning``):
+    ``active_fdr_cutoff``, ``prioritize_velocity``.
 
     The full signature below is for power users and internal composition. Many parameters
     have inter-dependencies that are validated early; hidden interactions exist (e.g.
@@ -317,6 +370,11 @@ def active_score(
 
     # Memento requires count data; force no log-norm preprocess for the DE leg
     # (do this BEFORE the single validation call)
+    active_fdr_cutoff, prioritize_velocity = _resolve_deprecated_active_score_kwargs(
+        deprecated_kwargs
+    )
+    _require_explicit_groups(target_group, reference_group, func_name="active_score")
+
     de_preprocess = _coerce_memento_de_preprocess(use_memento_de, de_preprocess)
 
     # Shared validation for DE options (deduplicated with differential_expression)
@@ -336,18 +394,8 @@ def active_score(
         min_counts=min_counts,
     )
 
-    if not (0 < active_fdr_cutoff <= 1):
-        raise ValueError("active_fdr_cutoff must be in (0, 1].")
     if not (0 < unspliced_excess_fdr_cutoff <= 1):
         raise ValueError("unspliced_excess_fdr_cutoff must be in (0, 1].")
-    if active_fdr_cutoff != 0.05:
-        warnings.warn(
-            "active_fdr_cutoff is deprecated and no longer used for the built-in "
-            "'significant' gene list. Use unspliced_excess_fdr_cutoff instead "
-            "(tests unspliced_excess_fdr from permutation).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
     if min_total_counts < 0:
         raise ValueError("min_total_counts must be non-negative.")
@@ -429,25 +477,19 @@ def active_score(
     if not adata_input.var_names.is_unique:
         raise ValueError("adata.var_names must be unique.")
 
-    target_group = str(target_group)
-    reference_group = str(reference_group)
-
-    if target_group == reference_group:
-        raise ValueError("target_group and reference_group must be different.")
-
     if groupby not in adata_input.obs.columns:
         raise ValueError(f"groupby '{groupby}' not found.")
 
-    if target_group not in adata_input.obs[groupby].astype(str).unique():
-        raise ValueError(f"target_group '{target_group}' not found.")
-    if reference_group not in adata_input.obs[groupby].astype(str).unique():
-        raise ValueError(f"reference_group '{reference_group}' not found.")
+    target_group, reference_group, norm_groups = _validate_group_contrast(
+        adata_input.obs[groupby],
+        groupby=groupby,
+        target_group=str(target_group),
+        reference_group=str(reference_group),
+    )
 
     # Automatic design guidance for small-sample or replicate-structured data
     if sample_col or use_pseudobulk:
-        from contextlib import suppress
-
-        with suppress(Exception):
+        try:
             _ = diagnose_design(
                 adata_input,
                 groupby=groupby,
@@ -455,7 +497,9 @@ def active_score(
                 reference_group=reference_group,
                 sample_col=sample_col,
                 copy_input=False,  # pure read-only diagnostic; avoid expensive deep copy
-            )  # never let diagnosis break the main analysis
+            )
+        except Exception as e:
+            logger.debug("diagnose_design skipped (non-fatal): %s", e)
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
     available_layers = list(adata_input.layers.keys())
@@ -478,8 +522,15 @@ def active_score(
                 f"Available layers: {available_layers}"
             )
 
-    keep_mask = adata_input.obs[groupby].astype(str).isin([target_group, reference_group])
+    keep_mask = norm_groups.isin([target_group, reference_group])
     adata = adata_input[keep_mask].copy()
+    if adata.n_obs == 0:
+        raise ValueError(
+            "No cells match target/reference groups after filtering. "
+            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
+            f"against adata.obs['{groupby}'] (missing labels are excluded)."
+        )
+    adata.obs[groupby] = norm_groups.loc[keep_mask].values
 
     # Perform layer remapping only on the copied adata to avoid mutating the caller's original object.
     if (
@@ -601,22 +652,11 @@ def active_score(
             )
 
     # DE preprocess
-    if de_preprocess == "normalize_log1p":
-        logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
-        sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
-    elif de_preprocess == "auto" and not (is_pseudobulk and pseudobulk_de_backend == "pydeseq2"):
-        if "log1p" not in adata.uns:
-            logger.info(
-                "DE preprocessing: 'auto' detected no log1p; applying normalize_total + log1p."
-            )
-            sc.pp.normalize_total(adata, target_sum=1e4)
-            sc.pp.log1p(adata)
-        else:
-            logger.debug("DE preprocessing: 'auto' — log1p already present, skipping.")
-    elif de_preprocess == "none":
-        logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
-        pass
+    _apply_de_preprocess(
+        adata,
+        de_preprocess,
+        skip_auto=is_pseudobulk and pseudobulk_de_backend == "pydeseq2",
+    )
 
     # For permutation tasks we pass *already preprocessed* adata copies (or layers).
     # Re-applying normalize_log1p (or auto) inside _single_permutation_task would double-transform
@@ -699,12 +739,17 @@ def active_score(
 
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
     unspliced_fraction = np.nan
-    try:
-        unspliced_fraction = _qc.unspliced_global(
-            adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
+    if "spliced" in adata.layers and "unspliced" in adata.layers:
+        try:
+            unspliced_fraction = _qc.unspliced_global(
+                adata, spliced_key="spliced", unspliced_key="unspliced", warn_threshold=0.5
+            )
+        except Exception as _e:
+            logger.debug("Could not compute global unspliced fraction: %s", _e)
+    else:
+        logger.debug(
+            "Skipping global unspliced fraction: required layers not present after filtering."
         )
-    except Exception as _e:
-        logger.debug("Could not compute global unspliced fraction: %s", _e)
 
     uns_layer_raw = adata.layers["unspliced"]
     spl_layer_raw = adata.layers["spliced"]
@@ -718,7 +763,7 @@ def active_score(
         uns_layer_raw, spl_layer_raw
     )
 
-    obs_labels = adata.obs[groupby].astype(str).values
+    obs_labels = adata.obs[groupby].map(_normalize_group_label).values
     t_mask = obs_labels == target_group
     r_mask = obs_labels == reference_group
 
@@ -1347,10 +1392,8 @@ def _finalize_active_score_results(
 def differential_expression(
     adata_input: Any,
     groupby: str = "condition",
-    # Note: historical defaults "GA"/"Ctrl" (same as active_score).
-    # Convenience wrappers use "Disease"/"Control".
-    target_group: str = "GA",
-    reference_group: str = "Ctrl",
+    target_group: str | None = None,
+    reference_group: str | None = None,
     subset_col: str | None = None,
     subset_values: str | list[str] | tuple[str, ...] | None = None,
     de_method: str = "t-test_overestim_var",
@@ -1412,6 +1455,8 @@ def differential_expression(
         - adata.var is updated with the same columns for convenience.
         - Metadata is stored under adata.uns["scatrans"].
     """
+    _require_explicit_groups(target_group, reference_group, func_name="differential_expression")
+
     # --- minimal shared validation (subset + group checks) ---
     if subset_col is not None:
         if subset_col not in adata_input.obs.columns:
@@ -1430,16 +1475,25 @@ def differential_expression(
     if not adata_input.var_names.is_unique:
         raise ValueError("adata.var_names must be unique.")
 
-    target_group = str(target_group)
-    reference_group = str(reference_group)
-    if target_group == reference_group:
-        raise ValueError("target_group and reference_group must be different.")
     if groupby not in adata_input.obs.columns:
         raise ValueError(f"groupby '{groupby}' not found.")
-    if target_group not in adata_input.obs[groupby].astype(str).unique():
-        raise ValueError(f"target_group '{target_group}' not found.")
-    if reference_group not in adata_input.obs[groupby].astype(str).unique():
-        raise ValueError(f"reference_group '{reference_group}' not found.")
+
+    target_group, reference_group, norm_groups = _validate_group_contrast(
+        adata_input.obs[groupby],
+        groupby=groupby,
+        target_group=str(target_group),
+        reference_group=str(reference_group),
+    )
+
+    keep_mask = norm_groups.isin([target_group, reference_group])
+    adata_input = adata_input[keep_mask].copy()
+    if adata_input.n_obs == 0:
+        raise ValueError(
+            "No cells match target/reference groups after filtering. "
+            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
+            f"against adata.obs['{groupby}'] (missing labels are excluded)."
+        )
+    adata_input.obs[groupby] = norm_groups.loc[keep_mask].values
 
     if gene_type_filter:
         if "gene_type" not in adata_input.var.columns:
@@ -1489,6 +1543,15 @@ def differential_expression(
             min_total_counts,
         )
 
+    if use_delta_variance_pval:
+        logger.warning(
+            "differential_expression: use_delta_variance_pval=True is not enforced in the DE-only "
+            "path (this function returns the full ranked results table, not a significant-gene "
+            "subset). Use active_score() for delta-variance filtering, or filter manually via "
+            "results['delta_var_pval'] < delta_var_pval_cutoff (currently %.4g).",
+            delta_var_pval_cutoff,
+        )
+
     if copy_input:
         adata_input = adata_input.copy()
 
@@ -1528,22 +1591,11 @@ def differential_expression(
     # DE preprocess
     # (Memento coercion to 'none' already performed early via _coerce_memento_de_preprocess)
 
-    if de_preprocess == "normalize_log1p":
-        logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
-        sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
-    elif de_preprocess == "auto" and not (use_pseudobulk and pseudobulk_de_backend == "pydeseq2"):
-        if "log1p" not in adata.uns:
-            logger.info(
-                "DE preprocessing: 'auto' detected no log1p; applying normalize_total + log1p."
-            )
-            sc.pp.normalize_total(adata, target_sum=1e4)
-            sc.pp.log1p(adata)
-        else:
-            logger.debug("DE preprocessing: 'auto' — log1p already present, skipping.")
-    elif de_preprocess == "none":
-        logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
-        pass
+    _apply_de_preprocess(
+        adata,
+        de_preprocess,
+        skip_auto=use_pseudobulk and pseudobulk_de_backend == "pydeseq2",
+    )
 
     effective_n_jobs = joblib.cpu_count() if n_jobs == -1 else max(1, n_jobs)
 
@@ -1884,15 +1936,14 @@ def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False)
             "Cannot restore into .X without explicit gene reindexing."
         )
 
+    target = adata if inplace else adata.copy()
+    target.X = raw
+    _clear_log_preprocess_metadata(target)
     if inplace:
-        adata.X = raw
         logger.info(f"Restored raw counts from {source} into adata.X (inplace).")
         return None
-    else:
-        adata_restored = adata.copy()
-        adata_restored.X = raw
-        logger.info(f"Created copy with raw counts from {source} in .X.")
-        return adata_restored
+    logger.info(f"Created copy with raw counts from {source} in .X.")
+    return target
 
 
 _NOT_PROVIDED = object()
@@ -1904,7 +1955,6 @@ def filter_active_genes(
     preset: str | None = None,
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
-    velocity_residual_cutoff: Any = _NOT_PROVIDED,
     unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
     logfc_direction: str = "up",
@@ -1915,6 +1965,7 @@ def filter_active_genes(
     delta_variance_min: Any = _NOT_PROVIDED,
     return_mask: bool = False,
     inplace: bool = False,
+    **deprecated_kwargs: Any,
 ) -> pd.DataFrame | pd.Series:
     """Apply custom post-filtering to a results DataFrame (from `active_score` or `differential_expression`).
 
@@ -1973,8 +2024,6 @@ def filter_active_genes(
         otherwise falls back to the nominal "p_val" column. This matches the behavior
         of the internal significant mask in active_score() and common user expectations
         (FDR control when available).
-    velocity_residual_cutoff : float
-        Deprecated alias for ``unspliced_excess_residual_cutoff``.
     unspliced_excess_residual_cutoff : float
         Minimum bias-corrected unspliced (nascent) excess residual.
     logfc_cutoff : float
@@ -2008,6 +2057,20 @@ def filter_active_genes(
     if not isinstance(results, pd.DataFrame):
         raise ValueError("results must be the all_results DataFrame returned by active_score")
 
+    velocity_residual_cutoff = _NOT_PROVIDED
+    if "velocity_residual_cutoff" in deprecated_kwargs:
+        velocity_residual_cutoff = deprecated_kwargs.pop("velocity_residual_cutoff")
+        warnings.warn(
+            "velocity_residual_cutoff is deprecated; use unspliced_excess_residual_cutoff.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if deprecated_kwargs:
+        raise TypeError(
+            "filter_active_genes() got unexpected keyword argument(s): "
+            f"{', '.join(sorted(deprecated_kwargs))}"
+        )
+
     # Resolve values from preset + explicit overrides
     if preset is not None:
         p = preset.lower()
@@ -2040,12 +2103,12 @@ def filter_active_genes(
         elif p in ("permissive", "none", "all", "no_filter"):
             preset_vals = {
                 "active_score_cutoff": 0.0,
-                "pval_cutoff": 1.0,
+                "pval_cutoff": float("inf"),
                 "velocity_residual_cutoff": float("-inf"),
                 "unspliced_excess_residual_cutoff": float("-inf"),
-                "logfc_cutoff": float("-inf"),
-                "active_score_fdr_cutoff": 1.0,
-                "unspliced_excess_fdr_cutoff": 1.0,
+                "logfc_cutoff": float("inf"),
+                "active_score_fdr_cutoff": float("inf"),
+                "unspliced_excess_fdr_cutoff": float("inf"),
                 "effective_gamma_min": float("-inf"),
                 "effective_gamma_max": None,
                 "delta_variance_min": None,
@@ -2064,18 +2127,30 @@ def filter_active_genes(
             return current
         return preset_vals.get(name, default)
 
-    active_score_cutoff = _resolve("active_score_cutoff", active_score_cutoff, 0.0)
-    pval_cutoff = _resolve("pval_cutoff", pval_cutoff, 1.0)
+    def _coerce_numeric_cutoff(val: Any, default: float, name: str) -> float:
+        if val is _NOT_PROVIDED:
+            return float(default)
+        try:
+            out = float(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be numeric, got {val!r}") from exc
+        return out
+
+    active_score_cutoff = _coerce_numeric_cutoff(
+        _resolve("active_score_cutoff", active_score_cutoff, 0.0),
+        0.0,
+        "active_score_cutoff",
+    )
+    pval_cutoff = _coerce_numeric_cutoff(
+        _resolve("pval_cutoff", pval_cutoff, float("inf")), float("inf"), "pval_cutoff"
+    )
+    if pval_cutoff < 0 or (not math.isfinite(pval_cutoff) and not math.isinf(pval_cutoff)):
+        raise ValueError("pval_cutoff must be non-negative, finite, or +inf (permissive).")
     if (
         velocity_residual_cutoff is not _NOT_PROVIDED
         and unspliced_excess_residual_cutoff is _NOT_PROVIDED
     ):
         unspliced_excess_residual_cutoff = velocity_residual_cutoff
-        warnings.warn(
-            "velocity_residual_cutoff is deprecated; use unspliced_excess_residual_cutoff.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
     velocity_residual_cutoff = _resolve(
         "velocity_residual_cutoff", velocity_residual_cutoff, float("-inf")
     )
@@ -2084,7 +2159,9 @@ def filter_active_genes(
         unspliced_excess_residual_cutoff,
         velocity_residual_cutoff,
     )
-    logfc_cutoff = _resolve("logfc_cutoff", logfc_cutoff, float("-inf"))
+    logfc_cutoff = _coerce_numeric_cutoff(
+        _resolve("logfc_cutoff", logfc_cutoff, float("inf")), float("inf"), "logfc_cutoff"
+    )
     # logfc_direction is not preset-driven (presets remain up-biased); normalize here
     dir_raw = str(logfc_direction).lower() if logfc_direction is not None else "up"
     if dir_raw in {"up", "positive", "pos", "u"}:
@@ -2097,9 +2174,11 @@ def filter_active_genes(
         raise ValueError(
             f'logfc_direction={logfc_direction!r} not recognized. Use one of: "up", "down", "both".'
         )
-    active_score_fdr_cutoff = _resolve("active_score_fdr_cutoff", active_score_fdr_cutoff, 1.0)
+    active_score_fdr_cutoff = _resolve(
+        "active_score_fdr_cutoff", active_score_fdr_cutoff, float("inf")
+    )
     unspliced_excess_fdr_cutoff = _resolve(
-        "unspliced_excess_fdr_cutoff", unspliced_excess_fdr_cutoff, 1.0
+        "unspliced_excess_fdr_cutoff", unspliced_excess_fdr_cutoff, float("inf")
     )
     effective_gamma_min = _resolve("effective_gamma_min", effective_gamma_min, float("-inf"))
     effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
@@ -2112,36 +2191,39 @@ def filter_active_genes(
     # Prefer adjusted p-value when present (consistent with active_score internal significant mask
     # and common user expectation). Fall back to nominal p_val only if p_adj is absent.
     if "active_score" in df.columns:
-        mask &= df["active_score"] >= active_score_cutoff
+        active_vals = pd.to_numeric(df["active_score"], errors="coerce")
+        mask &= active_vals.notna() & (active_vals >= active_score_cutoff)
     if "p_adj" in df.columns:
-        mask &= df["p_adj"] < pval_cutoff
+        padj_vals = pd.to_numeric(df["p_adj"], errors="coerce")
+        mask &= padj_vals.notna() & (padj_vals < pval_cutoff)
     elif "p_val" in df.columns:
-        mask &= df["p_val"] < pval_cutoff
+        pval_vals = pd.to_numeric(df["p_val"], errors="coerce")
+        mask &= pval_vals.notna() & (pval_vals < pval_cutoff)
     residual_col = (
         UNSPLICED_EXCESS_RESIDUAL_COL
         if UNSPLICED_EXCESS_RESIDUAL_COL in df.columns
         else LEGACY_VELOCITY_RESIDUAL_COL
     )
     if residual_col in df.columns:
-        mask &= df[residual_col] > unspliced_excess_residual_cutoff
+        resid_vals = pd.to_numeric(df[residual_col], errors="coerce")
+        mask &= resid_vals.notna() & (resid_vals > unspliced_excess_residual_cutoff)
     if "logFC" in df.columns:
         lc = logfc_cutoff
-        if isinstance(lc, (int, float)) and lc == float("-inf"):
-            # permissive: no logFC threshold for any direction
+        if isinstance(lc, (int, float)) and math.isinf(lc):
+            # permissive preset: no logFC threshold
             pass
         else:
-            try:
-                lc = float(lc)
-            except Exception:
-                lc = 0.0
+            if not math.isfinite(lc):
+                raise ValueError("logfc_cutoff must be finite or +inf (permissive).")
             if lc < 0:
                 lc = -lc  # always use positive magnitude
+            logfc_vals = pd.to_numeric(df["logFC"], errors="coerce")
             if direction == "up":
-                mask &= df["logFC"] > lc
+                mask &= logfc_vals.notna() & (logfc_vals > lc)
             elif direction == "down":
-                mask &= df["logFC"] < -lc
+                mask &= logfc_vals.notna() & (logfc_vals < -lc)
             else:  # both
-                mask &= df["logFC"].abs() > lc
+                mask &= logfc_vals.notna() & (logfc_vals.abs() > lc)
 
     # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
@@ -2366,8 +2448,9 @@ def diagnose_design(
     if groupby not in adata.obs.columns:
         raise ValueError(f"groupby '{groupby}' not found in adata.obs")
 
-    target_mask = adata.obs[groupby].astype(str) == str(target_group)
-    ref_mask = adata.obs[groupby].astype(str) == str(reference_group)
+    norm_groups = adata.obs[groupby].map(_normalize_group_label)
+    target_mask = norm_groups == _normalize_group_label(target_group)
+    ref_mask = norm_groups == _normalize_group_label(reference_group)
 
     n_t = int(target_mask.sum())
     n_r = int(ref_mask.sum())
@@ -2629,8 +2712,9 @@ def _resolve_simple_backend_kwargs(
         "pseudobulk_de_backend": "pydeseq2",
     }
     if sample_col and sample_col in adata.obs.columns:
-        t_mask = adata.obs[groupby].astype(str) == str(target_group)
-        r_mask = adata.obs[groupby].astype(str) == str(reference_group)
+        norm_groups = adata.obs[groupby].map(_normalize_group_label)
+        t_mask = norm_groups == _normalize_group_label(target_group)
+        r_mask = norm_groups == _normalize_group_label(reference_group)
         n_s_t = int(adata.obs.loc[t_mask, sample_col].nunique())
         n_s_r = int(adata.obs.loc[r_mask, sample_col].nunique())
         if min(n_s_t, n_s_r) >= 3:

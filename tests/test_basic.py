@@ -114,6 +114,72 @@ def test_layer_remapping_kb_python_style(adata_mature_nascent):
 # --------------------------- gene features ---------------------------
 
 
+def test_active_score_requires_explicit_groups(adata_basic):
+    with pytest.raises(ValueError, match="requires explicit target_group"):
+        scat.active_score(adata_basic, groupby="condition", show_plot=False)
+    with pytest.raises(ValueError, match="requires explicit target_group"):
+        scat.differential_expression(adata_basic, groupby="condition")
+
+
+def test_active_score_numeric_group_label_coercion(adata_basic):
+    ad = adata_basic.copy()
+    ad.obs["condition"] = ad.obs["condition"].map({"Disease": 1.0, "Control": 2.0})
+    _, _, allr = scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="1",
+        reference_group="2",
+        use_permutation=False,
+        show_plot=False,
+    )
+    assert "active_score" in allr.columns
+
+
+def test_active_score_empty_group_filter_raises(adata_basic):
+    ad = adata_basic.copy()
+    ad.obs["condition"] = "Other"
+    with pytest.raises(ValueError, match="not found"):
+        scat.active_score(
+            ad,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            show_plot=False,
+        )
+
+
+def test_filter_active_genes_permissive_inf_logfc(adata_basic):
+    _, _, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_permutation=False,
+        show_plot=False,
+    )
+    out = scat.filter_active_genes(allr, preset="permissive")
+    assert len(out) == len(allr)
+
+
+def test_filter_active_genes_permissive_keeps_padj_one():
+    """Default/permissive mode must not drop genes with p_adj or FDR exactly 1.0."""
+    df = pd.DataFrame(
+        {
+            "logFC": [0.1, -0.2, 0.5, -0.9, 0.0],
+            "p_val": [1.0, 0.9, 0.5, 0.2, 1.0],
+            "p_adj": [1.0, 1.0, 0.8, 0.3, 1.0],
+            "active_score_fdr": [1.0, 0.9, 0.5, 0.2, 1.0],
+            "unspliced_excess_fdr": [1.0, 1.0, 0.8, 0.3, 1.0],
+        },
+        index=[f"g{i}" for i in range(5)],
+    )
+    out_default = scat.filter_active_genes(df)
+    out_permissive = scat.filter_active_genes(df, preset="permissive")
+    assert len(out_default) == 5
+    assert len(out_permissive) == 5
+    assert set(out_default.index) == set(df.index)
+
+
 def test_add_gene_features_and_list(adata_basic):
     # Should not crash even if features are incomplete
     adata_basic.var.columns.tolist()
@@ -914,12 +980,21 @@ def test_enrichment_gene_case_and_mapping_examples():
 def test_enrichment_padj_cutoff_alias_and_log_message():
     genes = ["A", "B"]
     gs = {"S1": ["A", "B", "C"]}
-    # Using padj_cutoff should work identically to pval_cutoff
-    r1 = scat.run_enrichment(genes, gs, universe=["A", "B", "C"], pval_cutoff=0.5, return_all=True)
+    with pytest.warns(UserWarning, match="pval_cutoff.*deprecated"):
+        r1 = scat.run_enrichment(
+            genes, gs, universe=["A", "B", "C"], pval_cutoff=0.5, return_all=True
+        )
     r2 = scat.run_enrichment(genes, gs, universe=["A", "B", "C"], padj_cutoff=0.5, return_all=True)
     assert len(r1) == len(r2)
     # attrs should record the cutoff used
     assert "pval_cutoff" in r1.attrs or r1.attrs.get("pval_cutoff") is not None
+
+
+def test_enrichment_pval_cutoff_warns_even_at_default():
+    genes = ["A", "B"]
+    gs = {"S1": ["A", "B", "C"]}
+    with pytest.warns(UserWarning, match="pval_cutoff.*deprecated"):
+        scat.run_enrichment(genes, gs, universe=["A", "B", "C"], pval_cutoff=0.05, return_all=True)
 
 
 def test_enrichment_include_gene_list():
@@ -1195,12 +1270,12 @@ def test_run_gsea_basic():
     }
     res = scat.run_gsea(ranked, gene_sets, nperm=20, min_size=1, verbose=False)
     assert isinstance(res, pd.DataFrame)
-    if not res.empty:
-        assert "NES" in res.columns or "ES" in res.columns
-        assert "pvalue" in res.columns or "p.adjust" in res.columns
-        # attrs should have gsea info
-        assert res.attrs.get("method") == "gsea_prerank"
-        assert "gsea_info" in res.attrs
+    assert not res.empty, res.attrs.get("reason")
+    assert "NES" in res.columns or "ES" in res.columns
+    assert "pvalue" in res.columns or "p.adjust" in res.columns
+    # attrs should have gsea info
+    assert res.attrs.get("method") == "gsea_prerank"
+    assert "gsea_info" in res.attrs
 
 
 def test_run_gsea_without_gseapy_raises(monkeypatch):

@@ -157,9 +157,18 @@ def generate_gene_features_from_gtf(
     # 1. gene_length: proper union of exon intervals per gene (critical!)
     # Previous code summed lengths across all transcripts → massive overcount for multi-isoform genes.
     exon = df[df["feature"] == "exon"].copy()
+    if exon.empty:
+        logger.warning(
+            "No exon features found in GTF; gene_length will be 0 for all genes. "
+            "Bias correction will fall back to median if features are attached."
+        )
     exon["start"] = pd.to_numeric(exon["start"], errors="coerce")
     exon["end"] = pd.to_numeric(exon["end"], errors="coerce")
     exon = exon.dropna(subset=["gene_id", "start", "end"])
+    if exon.empty:
+        logger.warning(
+            "No valid exon intervals (missing/NaN coordinates); gene_length will be 0 for all genes."
+        )
 
     def _exon_union_length(grp):
         if len(grp) == 0:
@@ -181,11 +190,14 @@ def generate_gene_features_from_gtf(
                 merged.append([s, e])
         return sum(e - s + 1 for s, e in merged)
 
-    gene_length = (
-        exon.groupby("gene_id")
-        .apply(_exon_union_length, include_groups=False)
-        .rename("gene_length")
-    )
+    if exon.empty:
+        gene_length = pd.Series(dtype=float, name="gene_length")
+    else:
+        gene_length = (
+            exon.groupby("gene_id")
+            .apply(_exon_union_length, include_groups=False)
+            .rename("gene_length")
+        )
 
     # 2. intron_number: a *proxy* using the transcript with the largest exon count.
     #    intron_number ≈ max_exons_over_transcripts - 1
@@ -199,10 +211,13 @@ def generate_gene_features_from_gtf(
     #    - Therefore gene_length and intron_number have different levels of precision.
     #    - This value is only used as a numeric feature for Huber regression bias correction
     #      of velocity delta. Small errors are usually tolerated by the robust fit.
-    transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
-    intron_number = (
-        (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
-    )
+    if exon.empty:
+        intron_number = pd.Series(dtype=float, name="intron_number")
+    else:
+        transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
+        intron_number = (
+            (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
+        )
 
     # 3. Gene info - handle both GENCODE ('gene_type') and Ensembl ('gene_biotype')
     gene_cols = ["gene_id", "gene_name"]
@@ -233,7 +248,32 @@ def generate_gene_features_from_gtf(
         gene_df["gene_type"] = np.nan
 
     gene_df = gene_df[["gene_id", "gene_name", "gene_length", "intron_number", "gene_type"]]
-    gene_df = gene_df.dropna(subset=["gene_length"])
+    gene_df["gene_length"] = pd.to_numeric(gene_df["gene_length"], errors="coerce").fillna(0)
+    gene_df["intron_number"] = pd.to_numeric(gene_df["intron_number"], errors="coerce").fillna(0)
+    if (gene_df["gene_length"] == 0).all():
+        logger.warning(
+            "All gene_length values are zero (no usable exon intervals). "
+            "Downstream bias correction will use median fallback for affected genes."
+        )
+
+    n_before_names = len(gene_df)
+    gene_df = gene_df.dropna(subset=["gene_name"])
+    n_missing_names = n_before_names - len(gene_df)
+    if n_missing_names:
+        logger.warning(
+            "Dropped %d genes with missing gene_name (common in some Ensembl GTF exports).",
+            n_missing_names,
+        )
+
+    dup_mask = gene_df.duplicated(subset=["gene_name"], keep="first")
+    n_dup_names = int(dup_mask.sum())
+    if n_dup_names:
+        logger.warning(
+            "Dropped %d duplicate gene_name entries (multi-isoform GTFs); kept first per name. "
+            "Bias correction joins on gene_name — ensure adata.var_names are unique symbols.",
+            n_dup_names,
+        )
+        gene_df = gene_df[~dup_mask]
 
     logger.info("Processing completed! %d genes processed", len(gene_df))
     logger.debug("%s", gene_df.head())
@@ -344,7 +384,7 @@ def add_gene_features(
                 "  1. Use the CLI to generate it:\n"
                 f"     generate-gene-features --gtf /path/to/genes.gtf --output {pkg_filename}\n"
                 "  2. Provide your own file: add_gene_features(adata, gene_features_path='your_file.parquet')\n"
-                "  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
+                f"  3. Specify filename in package data: add_gene_features(adata, gene_feature_file='{pkg_filename}')"
             ) from exc
     else:
         if final_path is None:
@@ -354,19 +394,14 @@ def add_gene_features(
             )
         gf = pd.read_parquet(final_path).set_index("gene_name")
 
+    gf = gf[gf.index.notna()]
+    gf = gf[gf.index.astype(str).str.len() > 0]
     gf = gf[~gf.index.duplicated(keep="first")]
 
-    try:
-        adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
-        adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
+    adata.var["gene_length"] = gf["gene_length"].reindex(adata.var_names)
+    adata.var["intron_number"] = gf["intron_number"].reindex(adata.var_names)
 
-        valid_count = int(adata.var["gene_length"].notna().sum())
-        logger.info(
-            "Successfully mapped features for %d out of %d genes.", valid_count, adata.n_vars
-        )
-    except Exception as e:
-        logger.warning("Failed to load gene features (%s). Continuing with NaN values.", e)
-        adata.var["gene_length"] = np.nan
-        adata.var["intron_number"] = np.nan
+    valid_count = int(adata.var["gene_length"].notna().sum())
+    logger.info("Successfully mapped features for %d out of %d genes.", valid_count, adata.n_vars)
 
     return adata

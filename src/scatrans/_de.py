@@ -341,7 +341,10 @@ def _run_mixedlm_de(
     expr_mat = _prepare_log_normalized_expression(ad_temp)
 
     obs = ad_temp.obs
-    condition = obs[use_groupby].astype(str).values
+    condition = pd.Categorical(
+        obs[use_groupby].astype(str),
+        categories=[reference_group, target_group],
+    )
     samples = obs[sample_col].astype(str).values
 
     n_genes = expr_mat.shape[1]
@@ -406,6 +409,9 @@ def _run_mixedlm_de(
             delta_var = var_fe / total_v if total_v > 1e-12 else 0.0
 
             return idx, logfc, p_wald, lrt_p, float(np.clip(delta_var, 0.0, 1.0)), False
+        except np.linalg.LinAlgError as e:
+            logger.debug("MixedLM singular matrix for gene %d: %s", idx, e)
+            return idx, 0.0, 1.0, 1.0, 0.0, True
         except Exception:
             # Degenerate fit (few samples per group, collinear, etc.) -> non-informative
             return idx, 0.0, 1.0, 1.0, 0.0, True
@@ -622,7 +628,7 @@ def _run_memento_de(
     if isinstance(result, pd.DataFrame) and "de_coef" in result.columns:
         m_lfc_raw = result["de_coef"]
     else:
-        m_lfc_raw = 0.0
+        m_lfc_raw = pd.Series(0.0, index=res_index)
     m_lfc = pd.to_numeric(m_lfc_raw, errors="coerce").reindex(res_index).fillna(0.0)
     # memento de_coef is typically on natural log scale; convert to log2
     de_df["logFC"] = m_lfc / np.log(2)
@@ -630,7 +636,7 @@ def _run_memento_de(
     if isinstance(result, pd.DataFrame) and "de_pval" in result.columns:
         pval_raw = result["de_pval"]
     else:
-        pval_raw = 1.0
+        pval_raw = pd.Series(1.0, index=res_index)
     pvals = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index).fillna(1.0)
     de_df["p_val"] = pvals
 

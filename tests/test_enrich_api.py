@@ -50,6 +50,48 @@ def test_extract_gene_lists_single_df():
     assert len(out) >= 1
 
 
+def test_extract_gene_lists_prefers_gene_column_over_range_index():
+    """Scanpy-style DE tables use a 'gene'/'names' column with a default RangeIndex."""
+    df = pd.DataFrame(
+        {
+            "gene": ["G_up", "G_down", "G_ns"],
+            "logFC": [1.2, -0.9, 0.1],
+            "p_adj": [0.01, 0.02, 0.5],
+        },
+    )
+    out = scat.extract_gene_lists(df, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up")
+    assert out["contrast"] == ["G_up"]
+
+
+def test_extract_gene_lists_separate_directions_single_df_matches_dict():
+    df = pd.DataFrame(
+        {"logFC": [1.0, -1.0, 2.0, -2.0], "p_adj": [0.01] * 4},
+        index=["G1", "G2", "G3", "G4"],
+    )
+    single = scat.extract_gene_lists(
+        df, logfc_direction="up", separate_directions=True, name_prefix="X"
+    )
+    multi = scat.extract_gene_lists({"X": df}, logfc_direction="up", separate_directions=True)
+    assert single == multi
+    assert single == {"X_up": ["G1", "G3"], "X_down": ["G2", "G4"]}
+
+
+def test_extract_gene_lists_separate_directions_single_df_aligned():
+    df = pd.DataFrame(
+        {"logFC": [1.0, -1.0], "p_adj": [0.01, 0.01]},
+        index=["GeneA", "GeneB"],
+    )
+    out = scat.extract_gene_lists(
+        df,
+        logfc_cutoff=0.5,
+        pval_cutoff=0.05,
+        logfc_direction="both",
+        separate_directions=True,
+    )
+    assert out["up"] == ["GeneA"]
+    assert out["down"] == ["GeneB"]
+
+
 def test_extract_gene_lists_multi_and_separate_directions():
     df1 = pd.DataFrame(
         {"logFC": [1.0, -1.0], "p_adj": [0.01, 0.01]},

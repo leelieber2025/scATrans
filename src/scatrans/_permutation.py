@@ -12,7 +12,6 @@ import warnings
 from typing import Any
 
 import numpy as np
-import scanpy as sc
 from joblib import Parallel, delayed
 from statsmodels.stats.multitest import multipletests
 
@@ -20,6 +19,7 @@ from ._de import _run_de_wrapper
 
 # local import to avoid circulars at module load
 from ._utils import (
+    _apply_de_preprocess,
     _fit_huber_bias_correction,
     _soft_scale,
 )
@@ -83,15 +83,11 @@ def _single_permutation_task(
 
     ad_temp = adata_subset.copy()
 
-    if de_preprocess == "normalize_log1p":
-        sc.pp.normalize_total(ad_temp, target_sum=1e4)
-        sc.pp.log1p(ad_temp)
-    elif de_preprocess == "auto" and not (is_pseudobulk and pb_backend == "pydeseq2"):
-        if "log1p" not in ad_temp.uns:
-            sc.pp.normalize_total(ad_temp, target_sum=1e4)
-            sc.pp.log1p(ad_temp)
-    elif de_preprocess == "none":
-        pass
+    _apply_de_preprocess(
+        ad_temp,
+        de_preprocess,
+        skip_auto=is_pseudobulk and pb_backend == "pydeseq2",
+    )
 
     perm_de_df = _run_de_wrapper(
         ad_temp,

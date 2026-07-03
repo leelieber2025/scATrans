@@ -365,6 +365,26 @@ def _warn_user(msg: str) -> None:
     logger.warning(msg)
 
 
+def _resolve_enrichment_padj_cutoff(
+    pval_cutoff: float,
+    padj_cutoff: float | None,
+) -> float:
+    """Resolve the effective adjusted-p cutoff; warn on legacy ``pval_cutoff`` usage."""
+    if padj_cutoff is not None:
+        cutoff = float(padj_cutoff)
+        if pval_cutoff != 0.05:
+            _warn_user(
+                "Both pval_cutoff and padj_cutoff were provided. "
+                "Using padj_cutoff; pval_cutoff is ignored."
+            )
+        return cutoff
+    _warn_user(
+        "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
+        "Please use `padj_cutoff` instead for clarity."
+    )
+    return float(pval_cutoff)
+
+
 def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
     if gene_case is not None:
         gene_case = str(gene_case).lower()
@@ -375,6 +395,32 @@ def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
     if gene_case == "lower":
         return [str(g).strip().lower() for g in genes]
     raise ValueError("gene_case must be None, 'upper', or 'lower'")
+
+
+def _resolve_gseapy_weight(
+    *,
+    weight: float | None = None,
+    weighted_score_type: str | float | None = "classic",
+) -> float:
+    """Map legacy GSEA score-type names to gseapy's numeric ``weight`` parameter."""
+    if weight is not None:
+        return float(weight)
+    if weighted_score_type is None:
+        return 1.0
+    if isinstance(weighted_score_type, (int, float)):
+        return float(weighted_score_type)
+    wst = str(weighted_score_type).strip().lower()
+    if wst in {"classic", "weighted", "1", "1.0"}:
+        return 1.0
+    if wst in {"0", "0.0", "unweighted", "none"}:
+        return 0.0
+    try:
+        return float(wst)
+    except ValueError as e:
+        raise ValueError(
+            "weighted_score_type must be numeric or one of "
+            f"'classic'/'unweighted', got {weighted_score_type!r}"
+        ) from e
 
 
 def _clean_gene_list(gene_list: Iterable[Any] | None, gene_case: str | None = None) -> list[str]:
@@ -510,7 +556,8 @@ def _load_gene_sets(
                 }
                 return b_terms, b_desc, load_info
             raise ValueError(
-                f"Failed to load '{gene_sets_input}' via gseapy or as bundled package data: {e}\n"
+                f"Failed to load '{gene_sets_input}' via gseapy or as bundled package data.\n"
+                f"Error ({type(e).__name__}): {e}\n"
                 f"Available bundled sets: {list_bundled_gene_sets()}"
             ) from e
 
@@ -698,26 +745,9 @@ def run_enrichment(
     # Reproducibility info for manuscript supplementary materials
     analysis_info = _get_analysis_info()
 
-    # Resolve cutoff: prefer explicit padj_cutoff, fall back to pval_cutoff (legacy name)
+    # Resolve cutoff: prefer explicit padj_cutoff, fall back to pval_cutoff (legacy name).
     # Both are applied to the adjusted p-value column ("p.adjust").
-    if padj_cutoff is not None:
-        cutoff = float(padj_cutoff)
-        if pval_cutoff != 0.05:
-            _warn_user(
-                "Both pval_cutoff and padj_cutoff were provided. "
-                "Using padj_cutoff; pval_cutoff is ignored."
-            )
-    else:
-        cutoff = float(pval_cutoff)
-        # Only warn on non-default usage of the legacy parameter name.
-        # Warning on *every* call (even the documented default) was too noisy and
-        # polluted test output / normal user scripts. Users who pass pval_cutoff
-        # with a custom value get the nudge to switch to padj_cutoff.
-        if pval_cutoff != 0.05:
-            _warn_user(
-                "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
-                "Please use `padj_cutoff` instead for clarity.",
-            )
+    cutoff = _resolve_enrichment_padj_cutoff(pval_cutoff, padj_cutoff)
 
     genes = _clean_gene_list(gene_list, gene_case=gene_case)
     if not genes:
@@ -1414,9 +1444,17 @@ def _resolve_gene_sets_for_simplify(
             except Exception:
                 continue
 
+    requested = gene_set_info.get("requested")
+    extra = ""
+    if requested == "<dict>" or isinstance(gene_sets, dict):
+        extra = (
+            " Custom dict-based enrichment does not store full pathway gene memberships in "
+            "the result table — pass the same `gene_sets=` dict (or GMT/library name) to "
+            "simplify_enrichment(..., method='pathway_denester', gene_sets=...)."
+        )
     raise ValueError(
         "method='pathway_denester' requires `gene_sets` (GMT path, bundled name, or dict) "
-        "or an enrichment result whose .attrs['gene_set_info'] can be resolved."
+        "or an enrichment result whose .attrs['gene_set_info'] can be resolved." + extra
     )
 
 
@@ -1476,7 +1514,7 @@ def _simplify_by_pathway_denester(
             ascending=[False, True],
             kind="stable",
         )
-    work = work.sort_values(by="_pd_p_value", ascending=True, kind="stable").reset_index(drop=True)
+    work = work.reset_index(drop=True)
 
     missing_terms = work.loc[~work["Term"].isin(term_to_genes), "Term"].tolist()
     if missing_terms and verbose:
@@ -1970,7 +2008,8 @@ def run_gsea(
     seed: int = 42,
     threads: int = 4,
     ascending: bool = False,
-    weighted_score_type: str = "classic",
+    weight: float | None = None,
+    weighted_score_type: str | float | None = "classic",
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -2010,8 +2049,10 @@ def run_gsea(
         CPU threads for gseapy prerank.
     ascending : bool
         If True, lower ranked metric = more enriched (gseapy convention).
-    weighted_score_type : str
-        GSEA scoring mode passed to gseapy (default ``"classic"``).
+    weight : float, optional
+        GSEA enrichment weight passed to gseapy (default ``1.0``, classic weighted mode).
+    weighted_score_type : str or float, optional
+        Deprecated alias for ``weight``. ``"classic"`` maps to ``1.0``; ``0`` is unweighted.
     **kwargs
         Additional arguments forwarded to ``gseapy.prerank`` (e.g. ``graph_num``).
 
@@ -2066,8 +2107,21 @@ def run_gsea(
             "ranked_genes must be a pd.Series (gene->score), dict, or list of genes (sorted high->low)"
         )
 
-    # clean gene names
-    ranked.index = pd.Index(_apply_gene_case(ranked.index.tolist(), gene_case))
+    if not isinstance(ranked, pd.Series):
+        raise ValueError(
+            "ranked_genes must be a pd.Series indexed by gene names with numeric scores."
+        )
+    if ranked.index is None or len(ranked.index) == 0:
+        raise ValueError("ranked_genes must have a non-empty gene index.")
+
+    ranked.index = pd.Index(_apply_gene_case(ranked.index.astype(str).tolist(), gene_case))
+    n_before_numeric = len(ranked)
+    ranked = pd.to_numeric(ranked, errors="coerce")
+    if n_before_numeric > 0 and ranked.notna().sum() == 0:
+        raise ValueError(
+            "ranked_genes scores must be numeric (gene → score pd.Series). "
+            f"All {n_before_numeric} values became NaN after coercion."
+        )
     ranked = ranked.dropna()
     ranked = ranked[~ranked.index.duplicated(keep="first")]  # keep first occurrence
     if len(ranked) == 0:
@@ -2125,8 +2179,28 @@ def run_gsea(
             f"(min_size={min_size}, max_size={max_size}, nperm={nperm})"
         )
 
+    gsea_weight = _resolve_gseapy_weight(
+        weight=weight,
+        weighted_score_type=weighted_score_type,
+    )
+
     try:
         prerank_kwargs = dict(kwargs)
+        if "weighted_score_type" in prerank_kwargs:
+            warnings.warn(
+                "weighted_score_type is deprecated for run_gsea; use weight instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if weight is None:
+                gsea_weight = _resolve_gseapy_weight(
+                    weight=None,
+                    weighted_score_type=prerank_kwargs.pop("weighted_score_type"),
+                )
+            else:
+                prerank_kwargs.pop("weighted_score_type")
+        if "weight" in prerank_kwargs:
+            gsea_weight = float(prerank_kwargs.pop("weight"))
         pre_res = gp.prerank(
             rnk=ranked,
             gene_sets=gene_sets_for_gp,
@@ -2139,13 +2213,15 @@ def run_gsea(
             seed=prerank_kwargs.pop("seed", seed),
             threads=prerank_kwargs.pop("threads", threads),
             ascending=prerank_kwargs.pop("ascending", ascending),
-            weighted_score_type=prerank_kwargs.pop("weighted_score_type", weighted_score_type),
+            weight=gsea_weight,
             **prerank_kwargs,
         )
         res_df = pre_res.res2d.copy()
     except Exception as e:
+        msg = f"gseapy.prerank failed: {e}"
         if verbose:
-            _log_info(f"gseapy.prerank failed: {e}")
+            _log_info(msg)
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
         return _empty_gsea_result(
             method="gsea_prerank",
             organism=organism_norm,
@@ -2157,13 +2233,22 @@ def run_gsea(
         )
 
     if res_df is None or res_df.empty:
+        overlap = len(set(ranked.index) & set().union(*term_to_genes.values()))
+        msg = (
+            "gseapy returned no results (all gene sets filtered out?). "
+            f"Ranked genes={len(ranked)}, overlap with gene sets={overlap}. "
+            "Check gene symbols/IDs match the library; try lowering min_size."
+        )
         if verbose:
-            _log_info("gseapy returned no results (all gene sets filtered out?)")
+            _log_info(msg)
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
         return _empty_gsea_result(
             method="gsea_prerank",
             organism=organism_norm,
             gene_case=gene_case,
             reason="no_results_after_filters",
+            n_genes_ranked=int(len(ranked)),
+            n_genes_overlap=int(overlap),
             gene_set_info=gene_set_info,
             analysis_info=analysis_info,
         )
@@ -2304,14 +2389,23 @@ def save_enrichment_report(
     prefix_path.parent.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, str] = {}
 
+    _MAX_EXPORT_CELL_CHARS = 30_000  # stay below Excel's ~32k cell limit
+
+    def _join_list_for_export(x: Any) -> Any:
+        if isinstance(x, (list, tuple)):
+            joined = ";".join(map(str, x))
+            if len(joined) > _MAX_EXPORT_CELL_CHARS:
+                n = len(x)
+                joined = joined[:_MAX_EXPORT_CELL_CHARS] + f"...(truncated, {n} genes total)"
+            return joined
+        return x
+
     # Prepare a copy safe for export (convert list columns like Genes_list to joined strings)
     res_export = res.copy()
     for col in list(res_export.columns):
         try:
             if res_export[col].apply(lambda x: isinstance(x, (list, tuple))).any():
-                res_export[col] = res_export[col].apply(
-                    lambda x: ";".join(map(str, x)) if isinstance(x, (list, tuple)) else x
-                )
+                res_export[col] = res_export[col].apply(_join_list_for_export)
         except Exception:
             pass  # be defensive for weird columns
 
@@ -2389,6 +2483,25 @@ def _clean_and_validate_gene_list_for_compare(
     return _clean_gene_list(genes, gene_case=gene_case)
 
 
+def _row_gene_ids_from_df(work: pd.DataFrame) -> list[str]:
+    """Return per-row gene identifiers, preferring explicit DE columns over index."""
+    if work is None or work.empty:
+        return []
+    if "gene" in work.columns:
+        return work["gene"].astype(str).tolist()
+    if "names" in work.columns:
+        return work["names"].astype(str).tolist()
+    if (
+        isinstance(work.index, pd.Index)
+        and len(work.index) > 0
+        and not isinstance(work.index, pd.RangeIndex)
+    ):
+        return work.index.astype(str).tolist()
+    if work.shape[1] > 0:
+        return work.iloc[:, 0].astype(str).tolist()
+    return []
+
+
 def extract_gene_lists(
     de_results: pd.DataFrame | Mapping[str, pd.DataFrame],
     *,
@@ -2461,13 +2574,7 @@ def extract_gene_lists(
         if df is None or df.empty:
             return []
         work = df
-        # index often contains genes
-        if isinstance(work.index, pd.Index) and len(work.index) > 0:
-            genes = work.index.astype(str).tolist()
-        elif "gene" in work.columns:
-            genes = work["gene"].astype(str).tolist()
-        else:
-            genes = work.iloc[:, 0].astype(str).tolist() if work.shape[1] > 0 else []
+        genes = _row_gene_ids_from_df(work)
 
         if "p_adj" in work.columns:
             padj = pd.to_numeric(work["p_adj"], errors="coerce")
@@ -2499,7 +2606,7 @@ def extract_gene_lists(
     if isinstance(de_results, pd.DataFrame):
         genes = _get_genes_from_df(de_results)
         base_name = name_prefix or "contrast"
-        if separate_directions and direction == "both":
+        if separate_directions:
             # Recompute up and down separately
             # (re-implement light logic to split)
             work = de_results
@@ -2516,28 +2623,9 @@ def extract_gene_lists(
             )
             sig = padj < float(pval_cutoff)
             lc = float(logfc_cutoff)
-            up = [
-                g
-                for g, keep, lf in zip(
-                    _clean_and_validate_gene_list_for_compare(
-                        work.index.astype(str) if hasattr(work.index, "astype") else [], gene_case
-                    ),
-                    sig,
-                    lfc,
-                )
-                if keep and lf > lc
-            ]
-            down = [
-                g
-                for g, keep, lf in zip(
-                    _clean_and_validate_gene_list_for_compare(
-                        work.index.astype(str) if hasattr(work.index, "astype") else [], gene_case
-                    ),
-                    sig,
-                    lfc,
-                )
-                if keep and lf < -lc
-            ]
+            genes_idx = _row_gene_ids_from_df(work)
+            up = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf > lc]
+            down = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf < -lc]
             if name_prefix:
                 result[f"{name_prefix}_up"] = _clean_and_validate_gene_list_for_compare(
                     up, gene_case
@@ -2577,11 +2665,7 @@ def extract_gene_lists(
             )
             sig = padj < float(pval_cutoff)
             lc = float(logfc_cutoff)
-            genes_idx = (
-                work.index.astype(str).tolist()
-                if hasattr(work, "index")
-                else [str(i) for i in range(len(work))]
-            )
+            genes_idx = _row_gene_ids_from_df(work)
             up = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf > lc]
             down = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf < -lc]
             result[f"{base}_up"] = _clean_and_validate_gene_list_for_compare(up, gene_case)

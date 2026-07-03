@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2 bugfix 2026-07-02]
+
+### Fixed
+- **filter_active_genes permissive mode**: default/permissive thresholds for `pval_cutoff`, `active_score_fdr_cutoff`, and `unspliced_excess_fdr_cutoff` now use `float("inf")` instead of `1.0`, so genes with adjusted p-value or permutation FDR exactly equal to 1.0 are no longer silently dropped (strict `<` vs `1.0` bug).
+- **CI lint**: removed unused `import scanpy as sc` from `tl.py` and `_permutation.py` (leftover from permutation refactor); fixed `test_enrich_api.py` formatting.
+- **CI tests**: `test_pp_bias_cli` GTF generator tests now `pytest.importorskip("gtfparse")` so base installs without `scatrans[gene_features]` skip instead of failing.
+
+### Added
+- Regression test `test_filter_active_genes_permissive_keeps_padj_one`.
+
 ## [Unreleased / Review 2026-06-27]
 ### Added / Improved
 - Clarified and documented the `gamma_method="empirical_bayes"` implementation as **hierarchical (分层) gamma estimation** for the reference U/S ratio (README keeps the CN term; source now English-only).

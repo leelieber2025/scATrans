@@ -7,6 +7,39 @@ import pytest
 import scatrans as scat
 
 
+def test_generate_gene_features_no_exon_rows(tmp_path):
+    pytest.importorskip("gtfparse")
+    from scatrans.pp_bias import generate_gene_features_from_gtf
+
+    gtf = tmp_path / "no_exon.gtf"
+    rows = [
+        'chr1\t.\tgene\t100\t200\t.\t+\t.\tgene_id "G1"; gene_name "OnlyGene"; gene_type "protein_coding";',
+    ]
+    gtf.write_text("\n".join(rows) + "\n")
+    out = tmp_path / "features.parquet"
+    gene_df = generate_gene_features_from_gtf(str(gtf), str(out))
+    assert len(gene_df) == 1
+    assert gene_df.iloc[0]["gene_length"] == 0
+
+
+def test_generate_gene_features_dedup_gene_names(tmp_path):
+    pytest.importorskip("gtfparse")
+    from scatrans.pp_bias import generate_gene_features_from_gtf
+
+    gtf = tmp_path / "dup.gtf"
+    rows = [
+        'chr1\t.\tgene\t100\t200\t.\t+\t.\tgene_id "G1"; gene_name "DupGene"; gene_type "protein_coding";',
+        'chr1\t.\tgene\t300\t400\t.\t+\t.\tgene_id "G2"; gene_name "DupGene"; gene_type "protein_coding";',
+        'chr1\t.\texon\t100\t150\t.\t+\t.\tgene_id "G1"; transcript_id "T1";',
+        'chr1\t.\texon\t300\t350\t.\t+\t.\tgene_id "G2"; transcript_id "T2";',
+    ]
+    gtf.write_text("\n".join(rows) + "\n")
+    out = tmp_path / "features.parquet"
+    gene_df = generate_gene_features_from_gtf(str(gtf), str(out))
+    assert len(gene_df) == 1
+    assert gene_df.iloc[0]["gene_name"] == "DupGene"
+
+
 def test_add_gene_features_custom_path(adata_basic, tmp_path):
     import pandas as pd
 

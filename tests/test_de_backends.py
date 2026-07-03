@@ -2,12 +2,59 @@
 
 import importlib.util
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
 
 import scatrans as scat
+from scatrans._de import _run_mixedlm_de
+
+
+@pytest.mark.slow
+def test_mixedlm_logfc_respects_target_reference_order():
+    """Target alphabetically before reference must still yield target-minus-reference logFC."""
+    np.random.seed(0)
+    n_cells, n_genes = 40, 5
+    X = np.zeros((n_cells, n_genes))
+    X[:20] = 100.0
+    X[20:] = 1.0
+    X += np.random.randn(n_cells, n_genes) * 5.0
+    X = np.maximum(X, 0.0)
+    obs = pd.DataFrame(
+        {
+            "condition": ["A"] * 20 + ["Z"] * 20,
+            "sample": (["s1"] * 10 + ["s2"] * 10) * 2,
+        }
+    )
+    adata = ad.AnnData(
+        X=X,
+        obs=obs,
+        var=pd.DataFrame(index=[f"G{i}" for i in range(n_genes)]),
+    )
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+
+    a_vs_z = _run_mixedlm_de(
+        adata,
+        groupby="condition",
+        target_group="A",
+        reference_group="Z",
+        sample_col="sample",
+        n_jobs=1,
+    )
+    z_vs_a = _run_mixedlm_de(
+        adata,
+        groupby="condition",
+        target_group="Z",
+        reference_group="A",
+        sample_col="sample",
+        n_jobs=1,
+    )
+    assert np.all(a_vs_z["logFC"] > 0)
+    assert np.all(z_vs_a["logFC"] < 0)
+    assert np.allclose(a_vs_z["logFC"], -z_vs_a["logFC"])
 
 
 @pytest.mark.slow
@@ -46,6 +93,26 @@ def test_differential_expression_pseudobulk_pydeseq2(adata_pb):
 
 
 @pytest.mark.slow
+def test_pseudobulk_categorical_groupby_column(adata_pb):
+    """Regression: Categorical obs columns must not break pb_key string concat."""
+    ad = adata_pb.copy()
+    ad.obs["sample"] = pd.Categorical(ad.obs["sample"].astype(str))
+    ad.obs["condition"] = pd.Categorical(ad.obs["condition"].astype(str))
+    _, res = scat.differential_expression(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_pseudobulk=True,
+        sample_col="sample",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        min_cells=1,
+        min_counts=1,
+    )
+    assert len(res) == adata_pb.n_vars
+
+
 def test_differential_expression_pseudobulk_scanpy(adata_pb):
     ad, res = scat.differential_expression(
         adata_pb,

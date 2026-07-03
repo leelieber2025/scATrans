@@ -116,21 +116,25 @@ else:
 # ------------------------------------------------------------------
 scat.pl.set_style()   # call once for clean vector output (Type 42 fonts etc.)
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 5), dpi=150)
+fig = plt.figure(figsize=(16, 5), dpi=150)
+grid = fig.add_gridspec(1, 3, width_ratios=[1.1, 1, 1], wspace=0.35)
+ax_comet = fig.add_subplot(grid[0, 0])
+ax_bias_before = fig.add_subplot(grid[0, 1])
+ax_bias_after = fig.add_subplot(grid[0, 2])
 
 # Main result view
 scat.pl.comet_plot(
     all_results,
     top_n=10,
     title="Active Transcription Drivers (real data example)",
-    ax=axes[0],
+    ax=ax_comet,
 )
 
 # Bias correction diagnostic (before/after) — very important to show reviewers
 scat.pl.bias_diagnostic_plot(
     all_results,
     title="Bias correction (length + intron number)",
-    axes=(axes[1], None),   # or pass two axes
+    axes=(ax_bias_before, ax_bias_after),
     show_regression=True,
 )
 
@@ -156,7 +160,7 @@ if len(significant) > 0:
         # store_raw_counts early) so it auto-uses the preserved full measured gene list
         # instead of whatever is left after HVG. This is the most convenient & correct default.
         adata=adata,
-        pval_cutoff=0.05,
+        padj_cutoff=0.05,
     )
     # For KEGG the simplest is:
     # kegg = scat.run_kegg(significant.index.tolist(), organism="mouse", adata=adata)

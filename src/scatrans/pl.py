@@ -316,6 +316,37 @@ def _require_columns(df, columns, func_name="plot"):
         )
 
 
+def _guard_plot_dataframe(
+    df,
+    required_cols: list[str],
+    func_name: str,
+    *,
+    message: str | None = None,
+    ax=None,
+    figsize=(6, 4),
+    dpi: int = 150,
+) -> tuple[Any, Any, bool]:
+    """Return placeholder (fig, ax, guarded=True) when input is empty or missing columns."""
+    if df is None or (hasattr(df, "empty") and df.empty):
+        logger.warning("%s: empty DataFrame.", func_name)
+        if ax is None:
+            fig, ax = _empty_placeholder_fig(message or "No data to plot", figsize=figsize, dpi=dpi)
+            return fig, ax, True
+        return ax.figure, ax, True
+    missing = [c for c in required_cols if c not in getattr(df, "columns", [])]
+    if missing:
+        logger.warning("%s: missing columns %s", func_name, missing)
+        if ax is None:
+            fig, ax = _empty_placeholder_fig(
+                message or f"Missing columns: {', '.join(missing)}",
+                figsize=figsize,
+                dpi=dpi,
+            )
+            return fig, ax, True
+        return ax.figure, ax, True
+    return None, None, False
+
+
 def _venn_exclusive_region_counts(sets_list: list[set]) -> dict[tuple[int, ...], int]:
     """Element counts for each exclusive Venn region (one per non-empty subset of sets)."""
     n = len(sets_list)
@@ -408,6 +439,18 @@ def _parse_gene_ratio(x):
     return pd.to_numeric(x, errors="coerce")
 
 
+def _finite_scatter_values(values, fill: float = 0.0) -> np.ndarray:
+    """Coerce scatter size/color arrays to finite floats (avoids matplotlib size warnings)."""
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return arr
+    bad = ~np.isfinite(arr)
+    if bad.any():
+        arr = arr.copy()
+        arr[bad] = fill
+    return arr
+
+
 def _save_and_maybe_show(
     fig, save_path=None, dpi=300, show=True, created=True, transparent=True, close=False
 ):
@@ -418,8 +461,12 @@ def _save_and_maybe_show(
     notebook/interactive compatibility (user keeps the returned fig alive).
     """
     if save_path:
-        fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=transparent)
-        logger.info("Figure saved to %s", save_path)
+        from pathlib import Path
+
+        out = Path(str(save_path))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=dpi, bbox_inches="tight", transparent=transparent)
+        logger.info("Figure saved to %s", out)
     if created and show:
         plt.show()
     if created and close:
@@ -498,6 +545,27 @@ def comet_plot(
         _style_ctx = style_context()
         _style_ctx.__enter__()
 
+    if df is not None and hasattr(df, "columns"):
+        residual_col = _resolve_results_column(
+            df,
+            UNSPLICED_EXCESS_RESIDUAL_COL,
+            LEGACY_VELOCITY_RESIDUAL_COL,
+            required=False,
+        )
+    else:
+        residual_col = UNSPLICED_EXCESS_RESIDUAL_COL
+    guard_cols = ["logFC", "active_score", residual_col]
+    fig_g, ax_g, guarded = _guard_plot_dataframe(
+        df, guard_cols, "comet_plot", ax=ax, figsize=figsize, dpi=dpi
+    )
+    if guarded:
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(
+            fig_g, save_path=save_path, dpi=dpi, show=show, created=ax is None, close=close
+        )
+        return fig_g, ax_g
+
     residual_col = _excess_residual_col(df)
     _require_columns(df, ["logFC", residual_col, "active_score"], "comet_plot")
 
@@ -559,6 +627,7 @@ def comet_plot(
         )
         raw_sizes = score_for_size**1.6 * 35 * point_scale + 3 * point_scale
         sizes = np.clip(raw_sizes, min_size, max_size)
+    sizes = _finite_scatter_values(sizes, fill=float(min_size))
 
     # Light omicverse-style diagnostics (non-intrusive)
     if len(plot_df) > 500 and (s is None) and point_scale > 0.3 and min_size > 3:
@@ -568,10 +637,11 @@ def comet_plot(
             len(plot_df),
         )
 
+    color_vals = _finite_scatter_values(plot_df["active_score"], fill=0.0)
     scatter = ax.scatter(
         x=plot_df["logFC"],
         y=plot_df[residual_col],
-        c=plot_df["active_score"],
+        c=color_vals,
         s=sizes,
         cmap=cmap,
         alpha=alpha,
@@ -826,7 +896,7 @@ def enrich_dotplot(
     dpi=300,
     fontsize=12,
     x="GeneRatio",
-    color_by="Adjusted P-value",
+    color_by="p.adjust",
     size_by="Count",
     cmap="viridis_r",
     dot_max: float | None = None,
@@ -849,7 +919,7 @@ def enrich_dotplot(
           You can also pass any other numeric column present in the dataframe.
           Example: `x="NES"` for GSEA results.
       - `size_by`: controls dot size (default "Count"). Common: "Count", "GeneRatio".
-      - `color_by`: controls dot color (default "Adjusted P-value" or "p.adjust" for ORA;
+      - `color_by`: controls dot color (default "p.adjust" for ORA;
         for GSEA results with "NES" it will default to "NES" with a diverging colormap).
         Smaller p-values are usually more interesting.
       - `dot_max`, `dot_min`, `smallest_dot`: omicverse-style controls for dot size range
@@ -882,10 +952,27 @@ def enrich_dotplot(
     Supports `ax` for embedding in publication multi-panel figures.
     """
     _style_ctx = None
-    if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
-        logger.warning("Enrichment dataframe is empty. Nothing to plot.")
+    fig_g, ax_g, guarded = _guard_plot_dataframe(
+        enrich_df,
+        [],
+        "enrich_dotplot",
+        message="No enrichment terms to plot",
+        ax=ax,
+        figsize=figsize,
+        dpi=dpi,
+    )
+    if guarded:
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(
+            fig_g, save_path=save_path, dpi=dpi, show=show, created=ax is None, close=close
+        )
+        return fig_g, ax_g
+
+    if "Term" not in enrich_df.columns and "Description" not in enrich_df.columns:
+        logger.warning("enrich_dotplot: missing 'Term' and 'Description' columns.")
         if ax is None:
-            fig, ax = _empty_placeholder_fig("No enrichment terms to plot")
+            fig, ax = _empty_placeholder_fig("Missing Term/Description columns")
             _created_fig = True
         else:
             fig = ax.figure
@@ -1013,15 +1100,14 @@ def enrich_dotplot(
             if has_cluster:
                 selected_idx = []
                 for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
-                    try:
-                        padj = pd.to_numeric(sub.get(padj_col, 1.0), errors="coerce").fillna(1.0)
-                    except Exception:
+                    if padj_col in sub.columns:
+                        padj = pd.to_numeric(sub[padj_col], errors="coerce").fillna(1.0)
+                    else:
                         padj = pd.Series(1.0, index=sub.index)
-                    cnt = (
-                        pd.to_numeric(sub.get(count_col, 0), errors="coerce").fillna(0)
-                        if count_col
-                        else pd.Series(0, index=sub.index)
-                    )
+                    if count_col and count_col in sub.columns:
+                        cnt = pd.to_numeric(sub[count_col], errors="coerce").fillna(0)
+                    else:
+                        cnt = pd.Series(0, index=sub.index)
                     auto_mask = (padj < 0.05) & (cnt >= 2)
                     if auto_mask.any():
                         sub_cand = sub[auto_mask].copy()
@@ -1037,15 +1123,14 @@ def enrich_dotplot(
                 # per-cluster selection already performed; avoid order-dependent global head
                 # that can drop entire later clusters from the union.
             else:
-                try:
-                    padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(1.0)
-                except Exception:
+                if padj_col in enrich_df.columns:
+                    padj = pd.to_numeric(enrich_df[padj_col], errors="coerce").fillna(1.0)
+                else:
                     padj = pd.Series(1.0, index=enrich_df.index)
-                cnt = (
-                    pd.to_numeric(enrich_df.get(count_col, 0), errors="coerce").fillna(0)
-                    if count_col
-                    else pd.Series(0, index=enrich_df.index)
-                )
+                if count_col and count_col in enrich_df.columns:
+                    cnt = pd.to_numeric(enrich_df[count_col], errors="coerce").fillna(0)
+                else:
+                    cnt = pd.Series(0, index=enrich_df.index)
                 auto_mask = (padj < 0.05) & (cnt >= 2)
                 if auto_mask.sum() == 0:
                     if padj_col in enrich_df.columns:
@@ -1343,7 +1428,7 @@ def enrich_dotplot(
     # shrink/aspect/pad tuned following gseapy/omicverse-style dotplots for clean stacking with size legend.
     cbar = fig.colorbar(scatter, ax=ax, shrink=0.28, aspect=12, pad=0.02)
     cbar_label = color_col
-    if color_col == "Adjusted P-value":
+    if color_col in ("Adjusted P-value", "p.adjust"):
         cbar_label = "Adjusted P-value (smaller = more sig.)"
     cbar.set_label(cbar_label, fontsize=fontsize - 1, fontweight="bold", rotation=270, labelpad=18)
     cbar.outline.set_visible(False)
@@ -2027,11 +2112,6 @@ def gseaplot(
                 else:
                     running -= miss
                 RES.append(running)
-            # normalize like classic (optional)
-            max_es = max(RES) if RES else 1
-            min_es = min(RES) if RES else 0
-            RES = [(r - min_es) / (max_es - min_es) if (max_es - min_es) > 0 else 0 for r in RES]
-
     # Now plot
     if ax is not None:
         logger.warning(
@@ -2050,7 +2130,6 @@ def gseaplot(
         ax1, ax2, ax3 = axes  # RES, hits, ranked
         _created = True
     else:
-        fig = ax.figure
         fig, axes = plt.subplots(3, 1, figsize=figsize, dpi=dpi, sharex=True)
         ax1, ax2, ax3 = axes
         _created = True
@@ -2097,7 +2176,6 @@ def gseaplot(
     ax3.set_xlim(-0.5, len(x) - 0.5)
 
     # labels for pos/neg
-    len(x) // 2
     ax3.text(0.02, 0.95, pheno_pos, transform=ax3.transAxes, fontsize=8, color="red")
     ax3.text(0.98, 0.05, pheno_neg, transform=ax3.transAxes, ha="right", fontsize=8, color="blue")
 
@@ -2168,6 +2246,17 @@ def volcano_plot(
     if use_style:
         _style_ctx = style_context()
         _style_ctx.__enter__()
+
+    fig_g, ax_g, guarded = _guard_plot_dataframe(
+        df, ["logFC", "p_adj"], "volcano_plot", ax=ax, figsize=figsize, dpi=dpi
+    )
+    if guarded:
+        if _style_ctx is not None:
+            _style_ctx.__exit__(None, None, None)
+        _save_and_maybe_show(
+            fig_g, save_path=save_path, dpi=dpi, show=show, created=ax is None, close=close
+        )
+        return fig_g, ax_g
 
     _require_columns(df, ["logFC", "p_adj"], "volcano_plot")
     if pval_cutoff <= 0 or pval_cutoff >= 1:
@@ -2265,6 +2354,7 @@ def volcano_plot(
             size_val = plot_df.get("neg_log_pval", pd.Series(4, index=plot_df.index))
         raw_sizes = size_val**1.3 * 8 * point_scale + 3 * point_scale
         sizes = np.clip(raw_sizes, min_size, max_size)
+    sizes = _finite_scatter_values(sizes, fill=float(min_size))
 
     # Light diagnostic (omicverse style)
     if len(plot_df) > 1000 and (s is None) and point_scale > 0.25:
@@ -2287,7 +2377,8 @@ def volcano_plot(
         # Classic up/down/ns: provide explicit color list (do not pass c= together with color=)
         scatter = ax.scatter(c=[colors_for_scatter[int(c)] for c in color_values], **scatter_kwargs)
     else:
-        scatter = ax.scatter(c=color_values, cmap=cmap, **scatter_kwargs)
+        scatter_kwargs["c"] = _finite_scatter_values(color_values, fill=0.0)
+        scatter = ax.scatter(cmap=cmap, **scatter_kwargs)
 
     ax.axhline(
         float(_safe_neg_log10(pval_cutoff)),
@@ -2446,8 +2537,13 @@ def bias_diagnostic_plot(
         ax1 = axes[0]
         ax2 = axes[1]
     else:
-        if len(axes) != 2:
-            raise ValueError("axes must be a sequence of exactly two matplotlib Axes")
+        from matplotlib.axes import Axes
+
+        if len(axes) != 2 or not all(isinstance(a, Axes) for a in axes):
+            raise ValueError(
+                "axes must be a sequence of exactly two matplotlib Axes instances "
+                "(before-panel, after-panel). Omit axes= to create a new 1×2 figure."
+            )
         fig = axes[0].figure
         _created_fig = False
         ax1 = axes[0]
@@ -2669,10 +2765,14 @@ def active_genes_heatmap(
             **kwargs,
         )
         if save_path:
+            from pathlib import Path
+
+            out = Path(str(save_path))
+            out.parent.mkdir(parents=True, exist_ok=True)
             import matplotlib.pyplot as plt
 
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
-            logger.info("Heatmap saved → %s", save_path)
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            logger.info("Heatmap saved → %s", out)
         if show:
             plt.show()
         return fig, None

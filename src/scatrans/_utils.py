@@ -24,6 +24,77 @@ from sklearn.linear_model import HuberRegressor
 logger = logging.getLogger(__name__)
 
 
+def _normalize_group_label(val: Any) -> str | None:
+    """Normalize a single group label for stable string matching (handles NaN, 1.0 vs '1')."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (bool, np.bool_)):
+        return str(val)
+    if isinstance(val, (int, np.integer)):
+        return str(int(val))
+    if isinstance(val, (float, np.floating)):
+        fv = float(val)
+        if np.isnan(fv):
+            return None
+        if fv.is_integer():
+            return str(int(fv))
+        return str(fv)
+    s = str(val).strip()
+    if s.lower() in ("nan", "<na>", "none", ""):
+        return None
+    return s
+
+
+def _validate_group_contrast(
+    obs_col: pd.Series,
+    *,
+    groupby: str,
+    target_group: str,
+    reference_group: str,
+) -> tuple[str, str, pd.Series]:
+    """Validate target/reference exist; return normalized labels and per-cell series."""
+    target_norm = _normalize_group_label(target_group)
+    reference_norm = _normalize_group_label(reference_group)
+    if target_norm is None or reference_norm is None:
+        raise ValueError(
+            f"target_group and reference_group must be valid labels for adata.obs['{groupby}']."
+        )
+    if target_norm.lower() == "nan" or reference_norm.lower() == "nan":
+        raise ValueError(
+            "target_group and reference_group cannot be the string 'nan' "
+            f"(check missing values in adata.obs['{groupby}'])."
+        )
+    if target_norm == reference_norm:
+        raise ValueError("target_group and reference_group must be different.")
+
+    norm_groups = obs_col.map(_normalize_group_label)
+    n_missing = int(norm_groups.isna().sum())
+    if n_missing:
+        logger.warning(
+            "%d cells have missing %s labels and will be excluded from the contrast.",
+            n_missing,
+            groupby,
+        )
+
+    unique_valid = set(norm_groups.dropna().unique())
+    if target_norm not in unique_valid:
+        raise ValueError(
+            f"target_group '{target_group}' not found in adata.obs['{groupby}']. "
+            f"Available (non-missing): {sorted(unique_valid)[:20]}"
+        )
+    if reference_norm not in unique_valid:
+        raise ValueError(
+            f"reference_group '{reference_group}' not found in adata.obs['{groupby}']. "
+            f"Available (non-missing): {sorted(unique_valid)[:20]}"
+        )
+    return target_norm, reference_norm, norm_groups
+
+
 # Re-export for modules that need it without importing math directly
 # Primary result column names (public API); legacy velocity_* aliases are kept in sync.
 UNSPLICED_EXCESS_DELTA_COL = "unspliced_excess_delta"
@@ -81,6 +152,10 @@ __all__ = [
     "_pseudobulk_with_layers",
     "_fit_huber_bias_correction",
     "_resolve_aligned_raw_counts",
+    "_x_looks_log_normalized",
+    "_clear_log_preprocess_metadata",
+    "_reconcile_log1p_marker",
+    "_apply_de_preprocess",
     "_prepare_log_normalized_expression",
 ]
 
@@ -117,6 +192,90 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6)
     # Tolerant check: allows tiny floating point noise from summation / cast
     rounded = np.round(vals)
     return np.all(vals >= 0) and np.allclose(vals, rounded, atol=atol, rtol=1e-5)
+
+
+def _dense_expression_matrix(X: Any) -> np.ndarray:
+    if sparse.issparse(X):
+        return np.asarray(X.toarray(), dtype=float)
+    return np.asarray(X, dtype=float)
+
+
+def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
+    """Return True when *X* is unlikely to be raw integer counts needing normalize+log1p."""
+    if _is_integer_counts_like(X, max_check=max_check):
+        return False
+    arr = _dense_expression_matrix(X)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return False
+    mx = float(np.nanmax(finite))
+    has_neg = bool(np.any(finite < 0))
+    return has_neg or mx <= 20.0
+
+
+def _clear_log_preprocess_metadata(adata: ad.AnnData) -> None:
+    """Drop scanpy log-transform markers after restoring raw counts into .X."""
+    adata.uns.pop("log1p", None)
+
+
+def _reconcile_log1p_marker(adata: ad.AnnData) -> bool:
+    """Align ``uns['log1p']`` with the current ``.X`` scale.
+
+    Mutates ``adata.uns`` when the marker is stale (common after ``restore_raw_counts``
+    or manual reassignment of ``.X`` without clearing metadata).
+
+    Returns True when callers should treat ``.X`` as already log-normalized and skip
+    normalize_total + log1p.
+    """
+    has_marker = "log1p" in adata.uns
+    x_is_log = _x_looks_log_normalized(adata.X)
+
+    if has_marker and not x_is_log:
+        _clear_log_preprocess_metadata(adata)
+        logger.warning(
+            "Removed stale uns['log1p'] metadata: .X appears to be raw or non-log "
+            "counts while the log1p marker was still set. Downstream DE preprocessing "
+            "will re-apply normalize_total + log1p when de_preprocess='auto'."
+        )
+        return False
+
+    if x_is_log:
+        if not has_marker:
+            logger.debug(
+                "DE preprocess: .X appears log-normalized without uns['log1p']; "
+                "skipping re-normalization."
+            )
+        return True
+
+    return False
+
+
+def _apply_de_preprocess(
+    adata: ad.AnnData,
+    de_preprocess: str,
+    *,
+    skip_auto: bool = False,
+) -> None:
+    """Apply normalize_total + log1p according to ``de_preprocess`` mode."""
+    if de_preprocess == "normalize_log1p":
+        logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+        adata.uns["log1p"] = {"base": None}
+    elif de_preprocess == "auto" and not skip_auto:
+        if _reconcile_log1p_marker(adata):
+            logger.debug("DE preprocessing: 'auto' — .X already log-normalized, skipping.")
+        else:
+            logger.info(
+                "DE preprocessing: 'auto' detected non-log .X; applying normalize_total + log1p."
+            )
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
+            adata.uns["log1p"] = {"base": None}
+    elif de_preprocess == "none":
+        logger.debug("DE preprocessing: 'none' requested — no normalization applied.")
+    elif de_preprocess == "auto" and skip_auto:
+        logger.debug("DE preprocessing: 'auto' skipped for count-based pseudobulk backend.")
 
 
 def _warn_if_not_integer_counts_matrix(X: Any, max_check: int = 100000) -> None:
@@ -200,55 +359,39 @@ def _prepare_log_normalized_expression(ad_expr: ad.AnnData) -> np.ndarray:
     This is an internal helper for the LMM (mixedlm) DE path only.
 
     Logic (best-effort):
-    1. If adata.uns has "log1p" marker (standard scanpy), trust and return X as-is.
-    2. Else if matrix looks like integer (non-neg) counts (via _is_integer_counts_like,
-       which tolerates float pseudobulk sums), run normalize_total + log1p.
-    3. Else fall back to a simple heuristic on the observed max value:
-       - has negative values or max <= 20  => assume already log-transformed (return raw)
-       - max > 20 => assume raw-ish, apply log1p (with warning)
+    1. Reconcile ``uns['log1p']`` with ``.X`` scale; if already log-normalized, return as-is.
+    2. Else if matrix looks like integer counts, run normalize_total + log1p.
+    3. Else if ``_x_looks_log_normalized`` is True, return as-is.
+    4. Else apply log1p with a warning (large non-integer values).
 
-    Limitations / caveats (see issue analysis):
-    - The mx<=20 heuristic is fragile for non-integer data (e.g. already scaled floats with
-      small dynamic range, or very low-depth raw counts that failed integer detection).
-    - It only uses global max; does not inspect distribution or fractional parts deeply.
-    - For outer DE (rank_genes_groups, pydeseq2 etc) use the documented ``de_preprocess``
-      parameter ("auto" | "normalize_log1p" | "none") which has its own (more visible) logic.
-    - This function is deliberately silent on most paths; errors only surface in mixed model.
-
-    If you see surprising LMM results, pass explicit preprocessed data or use other DE backends.
+    For rank_genes_groups / pydeseq2 etc. use the documented ``de_preprocess`` parameter,
+    which shares the same reconciliation helpers via :func:`_apply_de_preprocess`.
     """
     ad_work = ad_expr.copy()
-    if "log1p" in ad_work.uns:
-        X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
-        return np.asarray(X, dtype=float)
+    if _reconcile_log1p_marker(ad_work):
+        return _dense_expression_matrix(ad_work.X)
 
     if _is_integer_counts_like(ad_work.X):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sc.pp.normalize_total(ad_work, target_sum=1e4)
             sc.pp.log1p(ad_work)
-        X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
-        return np.asarray(X, dtype=float)
+        return _dense_expression_matrix(ad_work.X)
 
-    X = ad_work.X.toarray() if sparse.issparse(ad_work.X) else np.asarray(ad_work.X)
-    X = np.asarray(X, dtype=float)
+    X = _dense_expression_matrix(ad_work.X)
+    if _x_looks_log_normalized(X):
+        return X
+
     finite = X[np.isfinite(X)]
     if finite.size:
-        mx = np.nanmax(finite)
-        has_neg = np.any(finite < 0)
-        # Heuristic for already log-transformed data (e.g. log1p, scran, SCT residuals):
-        # - negatives or max <=20 : treat as already transformed (closes the 5<mx<=20 gap)
-        # - mx >20 on non-negative: likely raw-ish counts, apply log1p + warn
-        if has_neg or mx <= 20:
-            return X
-        if mx > 20:
-            logger.warning(
-                "Mixed model input is neither marked log1p nor integer counts; applying log1p "
-                "for stability (max value=%.1f). If this is already log-scale, set de_preprocess='none' "
-                "or pre-log the input.",
-                mx,
-            )
-            return np.log1p(np.clip(X, 0, None))
+        mx = float(np.nanmax(finite))
+        logger.warning(
+            "Mixed model input is neither log-normalized nor integer counts; applying log1p "
+            "for stability (max value=%.1f). If this is already log-scale, set de_preprocess='none' "
+            "or pre-log the input.",
+            mx,
+        )
+        return np.log1p(np.clip(X, 0, None))
     return X
 
 
@@ -376,15 +519,36 @@ def _pseudobulk_with_layers(
         X_source = adata.X if x_layer is None else adata.layers[x_layer]
         x_source_name = "adata.X" if x_layer is None else f"layer '{x_layer}'"
 
+    valid_mask = adata.obs[sample_col].notna() & adata.obs[groupby].notna()
+    if not valid_mask.any():
+        raise ValueError(
+            f"No observations with both '{sample_col}' and '{groupby}' labels for pseudobulk."
+        )
+    n_invalid = int((~valid_mask).sum())
+    if n_invalid:
+        logger.warning(
+            "Excluding %d cells with missing %s or %s labels from pseudobulk aggregation.",
+            n_invalid,
+            sample_col,
+            groupby,
+        )
+        adata = adata[valid_mask].copy()
+
     group_df = adata.obs[[sample_col, groupby]].copy()
-    group_df[sample_col] = group_df[sample_col].astype(str)
-    group_df[groupby] = group_df[groupby].astype(str)
+    sample_labels = group_df[sample_col].map(_normalize_group_label).astype(str)
+    group_labels = group_df[groupby].map(_normalize_group_label).astype(str)
+    if (
+        sample_labels.isin(["nan", "None", ""]).any()
+        or group_labels.isin(["nan", "None", ""]).any()
+    ):
+        raise ValueError("Invalid sample/group labels remain after normalization for pseudobulk.")
 
     # Use a per-run UUID separator (printable, no embedded NUL) that is vanishingly unlikely
     # to appear in real sample/group names. Avoids pandas str-concat truncation with \0 and
     # eliminates "||" injection / mis-split risk from earlier fragile separator.
     _pb_sep = f"__scAT_PB_{uuid.uuid4().hex}__"
-    pb_key = group_df[sample_col] + _pb_sep + group_df[groupby]
+    # Force plain str (AnnData obs often stores Categorical; Categorical + str raises TypeError).
+    pb_key = sample_labels + _pb_sep + group_labels
     unique_keys = pd.Index(pb_key.unique())
 
     X_rows, obs_rows = [], []
@@ -403,7 +567,7 @@ def _pseudobulk_with_layers(
         if float(x_sum.sum()) < min_counts:
             continue
 
-        sample_id, group_value = key.split(_pb_sep, 1)
+        sample_id, group_value = str(key).split(_pb_sep, 1)
         X_rows.append(sparse.csr_matrix(x_sum.reshape(1, -1)))
         obs_rows.append(
             {
@@ -433,9 +597,9 @@ def _pseudobulk_with_layers(
             var=adata.var.copy(),
         )
         # Use AnnData's obs_names setter (preferred)
-        adata_pb.obs_names = (
-            adata_pb.obs[sample_col].astype(str) + "_" + adata_pb.obs[groupby].astype(str)
-        )
+        adata_pb.obs[sample_col] = adata_pb.obs[sample_col].astype(str)
+        adata_pb.obs[groupby] = adata_pb.obs[groupby].astype(str)
+        adata_pb.obs_names = adata_pb.obs[sample_col] + "_" + adata_pb.obs[groupby]
         for layer in layers:
             adata_pb.layers[layer] = sparse.vstack(layer_rows[layer]).tocsr()
         adata_pb.obs_names_make_unique()
@@ -541,7 +705,7 @@ def _fit_huber_bias_correction(
                 bias_info["coef_intron_number"] = float(model.coef_[1])
             if hasattr(model, "intercept_"):
                 bias_info["intercept"] = float(model.intercept_)
-        except Exception as e:
+        except (ValueError, TypeError, np.linalg.LinAlgError, ArithmeticError) as e:
             logger.warning("Bias correction failed. Falling back to median. Reason: %s", e)
             bias_info["fallback_reason"] = (
                 f"huber_regression_failed: {type(e).__name__}: {str(e)[:200]}"

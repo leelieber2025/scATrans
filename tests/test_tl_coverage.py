@@ -1,11 +1,29 @@
 """Tests for tl module: DE, raw counts, design diagnosis, permutation backends."""
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
 
 import scatrans as scat
+
+
+def test_differential_expression_delta_variance_warning(adata_de_only, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        scat.differential_expression(
+            adata_de_only,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            de_method="wilcoxon",
+            use_delta_variance_pval=True,
+            delta_var_pval_cutoff=0.01,
+        )
+    assert any("use_delta_variance_pval=True is not enforced" in r.message for r in caplog.records)
 
 
 def test_differential_expression_basic(adata_de_only):
@@ -69,6 +87,77 @@ def test_store_and_restore_raw_counts(adata_de_only):
     sc.pp.log1p(ad)
     restored = scat.restore_raw_counts(ad, layer="counts", inplace=False)
     assert np.allclose(np.asarray(restored.X), X_raw)
+    assert "log1p" not in restored.uns
+
+
+def test_reconcile_log1p_marker_detects_stale_metadata(adata_de_only):
+    from scatrans._utils import _reconcile_log1p_marker, _x_looks_log_normalized
+
+    ad = adata_de_only.copy()
+    scat.store_raw_counts(ad, layer="counts", save_raw=False)
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    ad.X = ad.layers["counts"].copy()
+    assert "log1p" in ad.uns
+    assert not _x_looks_log_normalized(ad.X)
+
+    assert _reconcile_log1p_marker(ad) is False
+    assert "log1p" not in ad.uns
+
+
+def test_de_preprocess_auto_after_restore_raw_counts(adata_de_only):
+    ad = adata_de_only.copy()
+    scat.store_raw_counts(ad, layer="counts", save_raw=False)
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    restored = scat.restore_raw_counts(ad, layer="counts", inplace=False)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _, res = scat.differential_expression(
+            restored,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            de_method="t-test_overestim_var",
+            de_preprocess="auto",
+        )
+
+    raw_count_msgs = [
+        w.message
+        for w in caught
+        if "raw count" in str(w.message).lower() or "logarithmize" in str(w.message).lower()
+    ]
+    assert not raw_count_msgs
+    assert "logFC" in res.columns
+
+
+def test_de_preprocess_auto_strips_stale_log1p_marker_inplace(adata_de_only):
+    ad = adata_de_only.copy()
+    scat.store_raw_counts(ad, layer="counts", save_raw=False)
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    ad.X = ad.layers["counts"].copy()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        scat.differential_expression(
+            ad,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            de_method="t-test_overestim_var",
+            de_preprocess="auto",
+            copy_input=False,
+        )
+
+    raw_count_msgs = [
+        w.message
+        for w in caught
+        if "raw count" in str(w.message).lower() or "logarithmize" in str(w.message).lower()
+    ]
+    assert not raw_count_msgs
+    assert "log1p" in ad.uns
 
 
 def test_ensure_raw_counts_from_raw_attr(adata_de_only):
@@ -236,15 +325,16 @@ def test_gamma_shrinkage_plot(adata_basic):
 
 
 def test_active_score_prioritize_velocity(adata_basic):
-    _, _, allr = scat.active_score(
-        adata_basic,
-        groupby="condition",
-        target_group="Disease",
-        reference_group="Control",
-        prioritize_velocity=True,
-        use_permutation=False,
-        show_plot=False,
-    )
+    with pytest.warns(DeprecationWarning, match="prioritize_velocity"):
+        _, _, allr = scat.active_score(
+            adata_basic,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            prioritize_velocity=True,
+            use_permutation=False,
+            show_plot=False,
+        )
     assert "active_score" in allr.columns
 
 
