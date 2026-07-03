@@ -183,6 +183,47 @@ def test_concat_compare_results_skips_none_and_empty_clusters():
     assert len(combined.attrs["clusters"]) == combined.attrs["n_clusters"]
 
 
+def test_resolve_gseapy_weight_broad_semantics():
+    from scatrans.enrich import _resolve_gseapy_weight
+
+    assert _resolve_gseapy_weight() == 1.0
+    assert _resolve_gseapy_weight(weighted_score_type="classic") == 0.0
+    assert _resolve_gseapy_weight(weighted_score_type="weighted") == 1.0
+    assert _resolve_gseapy_weight(weighted_score_type="unweighted") == 0.0
+
+
+def test_compare_enrichment_attrs_clusters_match_returned_rows(tiny_gene_sets):
+    """After global padj filter, attrs['clusters'] must match rows actually returned."""
+    clusters = {"clusterA": ["GeneA", "GeneB"], "clusterB": ["GeneC"]}
+    res = scat.compare_enrichment(
+        clusters,
+        gene_sets=tiny_gene_sets,
+        padj_cutoff=1e-12,
+        min_size=1,
+        adjust_across_clusters=True,
+        return_all=False,
+        verbose=False,
+    )
+    if res.empty:
+        assert res.attrs.get("clusters") == []
+        assert res.attrs.get("n_clusters") == 0
+    else:
+        assert set(res.attrs["clusters"]) == set(res["Cluster"].astype(str).unique())
+        assert res.attrs["n_clusters"] == len(res.attrs["clusters"])
+
+
+def test_concat_compare_results_duplicate_cluster_names():
+    from scatrans.enrich import concat_compare_results
+
+    df1 = pd.DataFrame({"Term": ["t1"], "p.adjust": [0.01], "Count": [5]})
+    df2 = pd.DataFrame({"Term": ["t2"], "p.adjust": [0.02], "Count": [3]})
+    # dict keys cannot repeat; use list-of-tuples API for duplicate display names.
+    combined = concat_compare_results([("dup", df1), ("dup", df2)])
+    assert combined.attrs["n_clusters"] == 2
+    assert combined.attrs["clusters"] == ["dup", "dup"]
+    assert len(combined.attrs["clusters"]) == combined.attrs["n_clusters"]
+
+
 def test_concat_compare_results(tiny_gene_sets):
     r1 = scat.run_enrichment(
         ["GeneA", "GeneB"],

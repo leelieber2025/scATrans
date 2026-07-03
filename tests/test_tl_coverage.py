@@ -132,6 +132,27 @@ def test_de_preprocess_auto_after_restore_raw_counts(adata_de_only):
     assert "logFC" in res.columns
 
 
+def test_copy_input_false_subset_no_implicit_modification_warning(adata_de_only):
+    """copy_input=False with obs subset must not warn on .obs view assignment."""
+    import warnings
+
+    ad = adata_de_only.copy()
+    ad.obs["batch"] = ["B1" if i % 2 == 0 else "B2" for i in range(ad.n_obs)]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        scat.differential_expression(
+            ad,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            subset_col="batch",
+            subset_values="B1",
+            copy_input=False,
+        )
+    view_msgs = [w for w in caught if "view" in str(w.message).lower()]
+    assert not view_msgs
+
+
 def test_de_preprocess_auto_strips_stale_log1p_marker_inplace(adata_de_only):
     ad = adata_de_only.copy()
     scat.store_raw_counts(ad, layer="counts", save_raw=False)

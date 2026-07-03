@@ -52,8 +52,13 @@ def test_mixedlm_logfc_respects_target_reference_order():
         sample_col="sample",
         n_jobs=1,
     )
-    assert np.all(a_vs_z["logFC"] > 0)
-    assert np.all(z_vs_a["logFC"] < 0)
+    # Exclude degenerate fits (logFC=0, p_val=1) — MixedLM can fail on ~constant genes.
+    fitted_a = a_vs_z["p_val"] < 1.0
+    fitted_z = z_vs_a["p_val"] < 1.0
+    assert fitted_a.sum() >= 4
+    assert fitted_z.sum() >= 4
+    assert np.all(a_vs_z.loc[fitted_a, "logFC"] > 0)
+    assert np.all(z_vs_a.loc[fitted_z, "logFC"] < 0)
     assert np.allclose(a_vs_z["logFC"], -z_vs_a["logFC"])
 
 

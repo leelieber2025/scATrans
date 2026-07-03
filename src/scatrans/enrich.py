@@ -400,9 +400,9 @@ def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
 def _resolve_gseapy_weight(
     *,
     weight: float | None = None,
-    weighted_score_type: str | float | None = "classic",
+    weighted_score_type: str | float | None = None,
 ) -> float:
-    """Map legacy GSEA score-type names to gseapy's numeric ``weight`` parameter."""
+    """Map Broad/GSEA score-type names to gseapy's numeric ``weight`` (p exponent) parameter."""
     if weight is not None:
         return float(weight)
     if weighted_score_type is None:
@@ -410,16 +410,16 @@ def _resolve_gseapy_weight(
     if isinstance(weighted_score_type, (int, float)):
         return float(weighted_score_type)
     wst = str(weighted_score_type).strip().lower()
-    if wst in {"classic", "weighted", "1", "1.0"}:
-        return 1.0
-    if wst in {"0", "0.0", "unweighted", "none"}:
+    if wst in {"classic", "0", "0.0", "unweighted", "none"}:
         return 0.0
+    if wst in {"weighted", "1", "1.0"}:
+        return 1.0
     try:
         return float(wst)
     except ValueError as e:
         raise ValueError(
             "weighted_score_type must be numeric or one of "
-            f"'classic'/'unweighted', got {weighted_score_type!r}"
+            f"'classic'/'weighted'/'unweighted', got {weighted_score_type!r}"
         ) from e
 
 
@@ -2009,7 +2009,7 @@ def run_gsea(
     threads: int = 4,
     ascending: bool = False,
     weight: float | None = None,
-    weighted_score_type: str | float | None = "classic",
+    weighted_score_type: str | float | None = None,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -2050,9 +2050,10 @@ def run_gsea(
     ascending : bool
         If True, lower ranked metric = more enriched (gseapy convention).
     weight : float, optional
-        GSEA enrichment weight passed to gseapy (default ``1.0``, classic weighted mode).
+        GSEA enrichment weight passed to gseapy (Broad ``p`` exponent; default ``1.0`` = weighted).
     weighted_score_type : str or float, optional
-        Deprecated alias for ``weight``. ``"classic"`` maps to ``1.0``; ``0`` is unweighted.
+        Deprecated alias for ``weight``. Broad/GSEA naming: ``"classic"`` → ``0.0`` (unweighted KS);
+        ``"weighted"`` → ``1.0``. When omitted, defaults to weighted (``1.0``).
     **kwargs
         Additional arguments forwarded to ``gseapy.prerank`` (e.g. ``graph_num``).
 
@@ -2692,16 +2693,19 @@ def concat_compare_results(
     items = list(results.items()) if isinstance(results, Mapping) else list(results)
 
     frames = []
-    per_cluster_attrs = {}
+    clusters_in_frames: list[str] = []
+    per_cluster_attrs: dict[str, Any] = {}
     for name, df in items:
         if df is None or (hasattr(df, "empty") and df.empty):
             continue
+        cname = str(name)
         out = df.copy()
         if cluster_col not in out.columns:
-            out.insert(0, cluster_col, str(name))
+            out.insert(0, cluster_col, cname)
         frames.append(out)
+        clusters_in_frames.append(cname)
         if hasattr(df, "attrs"):
-            per_cluster_attrs[str(name)] = dict(df.attrs)
+            per_cluster_attrs[cname] = dict(df.attrs)
 
     if not frames:
         empty = _empty_ora_result()
@@ -2719,8 +2723,7 @@ def concat_compare_results(
     combined.attrs["cluster_col"] = cluster_col
     combined.attrs["per_cluster_attrs"] = per_cluster_attrs
     combined.attrs["n_clusters"] = len(frames)
-    # Align with frames actually concatenated (exclude None and empty DataFrames).
-    combined.attrs["clusters"] = list(per_cluster_attrs.keys())
+    combined.attrs["clusters"] = clusters_in_frames
     return combined
 
 
@@ -2989,6 +2992,13 @@ def compare_enrichment(
     if not return_all and not combined.empty and "p.adjust" in combined.columns:
         sig = combined[combined["p.adjust"] < eff_cut].copy().reset_index(drop=True)
         sig.attrs.update(combined.attrs)
+        if "Cluster" in sig.columns:
+            clusters_returned = sig["Cluster"].astype(str).unique().tolist()
+            sig.attrs["clusters"] = clusters_returned
+            sig.attrs["n_clusters"] = len(clusters_returned)
+        else:
+            sig.attrs["clusters"] = []
+            sig.attrs["n_clusters"] = 0
         if verbose:
             _log_info(
                 f"compare_enrichment: returning {len(sig)} significant rows at padj < {eff_cut}"

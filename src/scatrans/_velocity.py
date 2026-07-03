@@ -211,7 +211,10 @@ def _compute_velocity_delta(
     gamma_method: str = "heuristic_shrink",
     eb_prior: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
-    """Classic (global ratio) velocity delta used by the heuristic track.
+    """Groupwise velocity delta (U_t - gamma_ref * S_t) on arbitrary expression layers.
+
+    Used by the heuristic track (normalized unspliced/spliced) and, after scVelo
+    moments smoothing, by the advanced track (Mu/Ms).
 
     gamma_method:
         - "heuristic_shrink": original global ratio + additive shrinkage using prior_weight

@@ -579,6 +579,15 @@ def _run_memento_de(
             else:
                 raise ValueError(f"counts='{counts}' layer not found in adata.layers")
         elif isinstance(counts, ad.AnnData):
+            if not np.array_equal(counts.obs_names, ad_temp.obs_names):
+                missing = ad_temp.obs_names.difference(counts.obs_names)
+                if len(missing):
+                    raise ValueError(
+                        f"counts AnnData is missing {len(missing)} cell(s) required by the "
+                        f"comparison subset (first missing: {missing[0]!r}). "
+                        "Pass counts aligned to adata.obs_names or use a matrix layer."
+                    )
+                counts = counts[ad_temp.obs_names]
             raw_counts = counts.X
             if counts.var_names.tolist() != ad_temp.var_names.tolist():
                 common = counts.var_names.intersection(ad_temp.var_names)

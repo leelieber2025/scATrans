@@ -28,6 +28,45 @@ from ._velocity import _compute_velocity_delta
 logger = logging.getLogger(__name__)
 
 
+def _compute_perm_velocity_delta(
+    *,
+    velocity_source: str,
+    uns_layer: Any,
+    spl_layer: Any,
+    t_mask: np.ndarray,
+    r_mask: np.ndarray,
+    prior_weight: float,
+    gamma_method: str,
+    eb_prior: dict[str, Any] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Velocity delta for one permutation replicate.
+
+    For ``scvelo_moments*`` sources the layers are pre-smoothed Mu/Ms from the main
+    analysis (label permutation keeps smoothed values fixed). For heuristic sources
+    they are library-size-normalized unspliced/spliced layers.
+    """
+    if velocity_source.startswith("scvelo_moments"):
+        # Same groupwise ratio estimator as _compute_moments_velocity_delta (on Mu/Ms).
+        return _compute_velocity_delta(
+            uns_layer,
+            spl_layer,
+            t_mask,
+            r_mask,
+            prior_weight,
+            gamma_method=gamma_method,
+            eb_prior=eb_prior,
+        )
+    return _compute_velocity_delta(
+        uns_layer,
+        spl_layer,
+        t_mask,
+        r_mask,
+        prior_weight,
+        gamma_method=gamma_method,
+        eb_prior=eb_prior,
+    )
+
+
 def _single_permutation_task(
     seed: int,
     original_labels: np.ndarray,
@@ -60,6 +99,7 @@ def _single_permutation_task(
     memento_capture_rate: float = 0.07,
     memento_num_boot: int = 5000,
     memento_n_cpus: int = -1,
+    velocity_source: str = "heuristic_global_ratio",
 ) -> tuple[np.ndarray, np.ndarray]:
     """One permutation replicate.
 
@@ -108,12 +148,13 @@ def _single_permutation_task(
 
     t_mask = shuffled_labels == target_group
     r_mask = shuffled_labels == reference_group
-    delta_velocity, _, _gamma_ref, _ = _compute_velocity_delta(
-        uns_layer,
-        spl_layer,
-        t_mask,
-        r_mask,
-        prior_weight,
+    delta_velocity, _, _gamma_ref, _ = _compute_perm_velocity_delta(
+        velocity_source=velocity_source,
+        uns_layer=uns_layer,
+        spl_layer=spl_layer,
+        t_mask=t_mask,
+        r_mask=r_mask,
+        prior_weight=prior_weight,
         gamma_method=gamma_method,
         eb_prior=eb_prior,
     )
@@ -177,6 +218,7 @@ def run_permutation_test(
     real_score: np.ndarray,
     real_residual: np.ndarray,
     eb_prior: dict[str, Any] | None = None,
+    velocity_source: str = "heuristic_global_ratio",
     bias_correction: str = "huber_length_intron",
     # Memento forwarding for advanced consistent permutation
     use_memento_de: bool = False,
@@ -224,6 +266,7 @@ def run_permutation_test(
                 de_preprocess,
                 strict_pydeseq2_counts,
                 eb_prior,
+                velocity_source=velocity_source,
                 bias_correction=bias_correction,
                 use_memento_de=use_memento_de,
                 memento_capture_rate=memento_capture_rate,
@@ -287,7 +330,7 @@ def run_permutation_test(
     # - For very small permutation spaces (n_perm < 100, common in pseudobulk with few samples),
     #   we mark use_fdr=False and provide reason so callers can avoid using FDR for significance
     #   (p-values become coarse; BH adjustment less reliable). This eliminates vestigial logic in tl.py.
-    use_fdr = n_perm >= 100
+    use_fdr = n_success >= 100
     disabled_reason = None if use_fdr else "small_permutation_space"
 
     return (

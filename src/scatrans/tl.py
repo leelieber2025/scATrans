@@ -61,6 +61,13 @@ except (ImportError, AttributeError):
 logger = logging.getLogger(__name__)
 
 
+def _materialize_if_view(adata: ad.AnnData) -> ad.AnnData:
+    """Return a writable AnnData when ``adata`` is an obs/var view (needed before in-place ``.obs`` writes)."""
+    if getattr(adata, "is_view", False):
+        return adata.copy()
+    return adata
+
+
 def _select_obs(
     adata: ad.AnnData,
     mask: pd.Series,
@@ -566,6 +573,7 @@ def active_score(
             f"Check target_group='{target_group}' and reference_group='{reference_group}' "
             f"against adata.obs['{groupby}'] (missing labels are excluded)."
         )
+    adata = _materialize_if_view(adata)
     adata.obs[groupby] = norm_groups.loc[obs_filter].values
 
     # Perform layer remapping on the working adata (copy_input=True isolates caller's object).
@@ -1129,6 +1137,7 @@ def active_score(
                 real_score=real_score,
                 real_residual=residual,
                 eb_prior=eb_prior_for_perm,
+                velocity_source=velocity_source,
                 bias_correction=bias_correction,
                 use_memento_de=perm_memento_de,
                 memento_capture_rate=memento_capture_rate,
@@ -1553,6 +1562,7 @@ def differential_expression(
             f"Check target_group='{target_group}' and reference_group='{reference_group}' "
             f"against adata.obs['{groupby}'] (missing labels are excluded)."
         )
+    adata_input = _materialize_if_view(adata_input)
     adata_input.obs[groupby] = norm_groups.loc[obs_filter].values
 
     if gene_type_filter:
@@ -2297,11 +2307,20 @@ def filter_active_genes(
 
     # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
-        mask &= df["active_score_fdr"] < active_score_fdr_cutoff
+        fdr = pd.to_numeric(df["active_score_fdr"], errors="coerce")
+        if math.isinf(active_score_fdr_cutoff):
+            # Permissive: NaN FDR = not computed / no permutation — do not drop.
+            mask &= fdr.isna() | (fdr < active_score_fdr_cutoff)
+        else:
+            mask &= fdr.notna() & (fdr < active_score_fdr_cutoff)
 
     # Permutation FDR on unspliced excess residual (recommended significance filter)
     if unspliced_excess_fdr_cutoff is not None and UNSPLICED_EXCESS_FDR_COL in df.columns:
-        mask &= df[UNSPLICED_EXCESS_FDR_COL] < unspliced_excess_fdr_cutoff
+        fdr = pd.to_numeric(df[UNSPLICED_EXCESS_FDR_COL], errors="coerce")
+        if math.isinf(unspliced_excess_fdr_cutoff):
+            mask &= fdr.isna() | (fdr < unspliced_excess_fdr_cutoff)
+        else:
+            mask &= fdr.notna() & (fdr < unspliced_excess_fdr_cutoff)
 
     # effective_gamma
     if "effective_gamma" in df.columns:

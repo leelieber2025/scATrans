@@ -161,6 +161,24 @@ def test_filter_active_genes_permissive_inf_logfc(adata_basic):
     assert len(out) == len(allr)
 
 
+def test_filter_active_genes_permissive_keeps_nan_fdr():
+    """Permissive mode must not drop genes with NaN permutation FDR columns."""
+    df = pd.DataFrame(
+        {
+            "logFC": [1.0, 0.5, -0.5],
+            "p_adj": [0.01, 1.0, 0.5],
+            "active_score": [10, 5, 3],
+            "active_score_fdr": [0.01, float("nan"), 0.5],
+            "unspliced_excess_fdr": [0.01, 0.5, float("nan")],
+            "unspliced_excess_residual": [1, 1, 1],
+            "effective_gamma": [1, 1, 1],
+        },
+        index=["G1", "G2", "G3"],
+    )
+    out = scat.filter_active_genes(df, preset="permissive")
+    assert set(out.index) == set(df.index)
+
+
 def test_filter_active_genes_permissive_keeps_padj_one():
     """Default/permissive mode must not drop genes with p_adj or FDR exactly 1.0."""
     df = pd.DataFrame(

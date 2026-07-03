@@ -8,9 +8,11 @@ import scanpy as sc
 
 from scatrans._de import (
     _run_de_wrapper,
+    _run_memento_de,
     _run_mixedlm_de,
     _validate_de_result,
 )
+from scatrans._permutation import run_permutation_test
 
 
 def test_validate_de_result_raises_on_missing_columns():
@@ -100,3 +102,115 @@ def test_de_wrapper_finite_output_on_all_zero_gene():
     for col in ("logFC", "p_val", "p_adj"):
         assert col in res.columns
         assert np.isfinite(res[col].to_numpy()).all()
+
+
+def test_memento_counts_ann_data_obs_names_alignment():
+    """counts=<AnnData> must align by obs_names, not positional index."""
+    pytest.importorskip("memento")
+    np.random.seed(4)
+    n = 24
+    X = np.random.poisson(8, size=(n, 6)).astype(float)
+    obs = pd.DataFrame({"condition": ["T"] * 12 + ["R"] * 12})
+    adata = ad.AnnData(X, obs=obs, var=pd.DataFrame(index=[f"g{i}" for i in range(6)]))
+    counts_ad = ad.AnnData(X, obs=obs.copy(), var=adata.var.copy())
+    counts_ad.obs_names = counts_ad.obs_names[::-1]
+
+    res = _run_memento_de(
+        adata,
+        groupby="condition",
+        target_group="T",
+        reference_group="R",
+        counts=counts_ad,
+        num_boot=50,
+        n_cpus=1,
+    )
+    assert "logFC" in res.columns
+    assert len(res) == adata.n_vars
+
+
+def test_memento_counts_ann_data_missing_obs_raises():
+    pytest.importorskip("memento")
+    np.random.seed(5)
+    n = 20
+    X = np.random.poisson(4, size=(n, 4)).astype(float)
+    obs = pd.DataFrame({"condition": ["T"] * 10 + ["R"] * 10})
+    adata = ad.AnnData(X, obs=obs, var=pd.DataFrame(index=[f"g{i}" for i in range(4)]))
+    partial = ad.AnnData(X[:8], obs=obs.iloc[:8].copy(), var=adata.var.copy())
+
+    with pytest.raises(ValueError, match="missing"):
+        _run_memento_de(
+            adata,
+            groupby="condition",
+            target_group="T",
+            reference_group="R",
+            counts=partial,
+            num_boot=20,
+            n_cpus=1,
+        )
+
+
+def test_run_permutation_test_use_fdr_based_on_n_success(monkeypatch):
+    """use_fdr must reflect successful shuffles, not requested n_perm."""
+    import scatrans._permutation as perm_mod
+
+    np.random.seed(6)
+    n_cells, n_genes = 30, 8
+    X = np.random.poisson(3, size=(n_cells, n_genes)).astype(float)
+    adata = ad.AnnData(
+        X,
+        obs=pd.DataFrame({"group": ["T"] * 15 + ["R"] * 15}),
+        var=pd.DataFrame(index=[f"g{i}" for i in range(n_genes)]),
+    )
+    adata.var["gene_length"] = np.linspace(800, 4000, n_genes)
+    adata.var["intron_number"] = np.arange(n_genes)
+    uns = X.copy()
+    spl = X * 0.5
+    real_score = np.linspace(10, 90, n_genes)
+    real_residual = np.linspace(0.1, 2.0, n_genes)
+    valid_feat = np.ones(n_genes, dtype=bool)
+    valid_expr = np.ones(n_genes, dtype=bool)
+
+    orig_task = perm_mod._single_permutation_task
+    call_n = {"i": 0}
+
+    def flaky_task(*args, **kwargs):
+        call_n["i"] += 1
+        if call_n["i"] <= 80:
+            return np.full(n_genes, np.nan), np.full(n_genes, np.nan)
+        return orig_task(*args, **kwargs)
+
+    monkeypatch.setattr(perm_mod, "_single_permutation_task", flaky_task)
+
+    *_, use_fdr, reason = run_permutation_test(
+        n_perm=150,
+        effective_n_jobs=1,
+        random_seed=0,
+        obs_labels=adata.obs["group"].to_numpy(),
+        target_group="T",
+        reference_group="R",
+        adata=adata,
+        X_features=None,
+        valid_feat=valid_feat,
+        velocity_layer_for_perm_uns=uns,
+        velocity_layer_for_perm_spl=spl,
+        total_us_raw=uns.sum(axis=0) + spl.sum(axis=0),
+        min_total_counts=1,
+        weight_fc=1.0,
+        weight_unspliced=1.0,
+        weight_pval=1.0,
+        lambda_fc=1.0,
+        lambda_res=1.0,
+        lambda_pval=1.0,
+        is_pseudobulk=False,
+        perm_pb_backend="scanpy",
+        perm_de_method="t-test_overestim_var",
+        prior_weight=5.0,
+        gamma_method="heuristic_shrink",
+        de_preprocess="none",
+        strict_pydeseq2_counts=True,
+        real_score=real_score,
+        real_residual=real_residual,
+        valid_expr=valid_expr,
+    )
+    assert use_fdr is False
+    assert reason == "small_permutation_space"
