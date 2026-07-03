@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from contextlib import contextmanager
 from importlib.metadata import version
 from typing import Any
 
@@ -29,6 +30,43 @@ from ._utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DE_REQUIRED_COLS = frozenset({"logFC", "p_val", "p_adj"})
+
+# Suppress noisy deprecation/future warnings from scanpy/anndata/PyDESeq2 during DE,
+# but keep convergence/runtime/user warnings visible to callers.
+_DE_SUPPRESS_WARNING_CATEGORIES = (
+    DeprecationWarning,
+    FutureWarning,
+    PendingDeprecationWarning,
+)
+
+
+@contextmanager
+def _de_warning_context():
+    with warnings.catch_warnings():
+        for cat in _DE_SUPPRESS_WARNING_CATEGORIES:
+            warnings.simplefilter("ignore", category=cat)
+        yield
+
+
+def _validate_de_result(de_df: pd.DataFrame, *, backend: str) -> pd.DataFrame:
+    """Assert all DE backends return the minimal schema expected downstream."""
+    missing = _DE_REQUIRED_COLS - set(de_df.columns)
+    if missing:
+        raise RuntimeError(
+            f"DE backend '{backend}' returned incomplete results; "
+            f"missing columns: {sorted(missing)}"
+        )
+    if len(de_df) == 0:
+        return de_df
+    for col in _DE_REQUIRED_COLS:
+        vals = pd.to_numeric(de_df[col], errors="coerce")
+        if not np.isfinite(vals.to_numpy()).any():
+            raise RuntimeError(
+                f"DE backend '{backend}' returned no finite values in column {col!r}."
+            )
+    return de_df
 
 
 def _pydeseq2_uses_design_factors() -> bool:
@@ -94,15 +132,18 @@ def _run_de_wrapper(
     if use_mixed_model:
         if sample_col is None:
             raise ValueError("sample_col must be provided when use_mixed_model=True")
-        return _run_mixedlm_de(
-            adata,
-            groupby=groupby,
-            target_group=target_group,
-            reference_group=reference_group,
-            sample_col=sample_col,
-            n_jobs=n_jobs,
-            labels=labels,
-            mixed_model_pval=mixed_model_pval,
+        return _validate_de_result(
+            _run_mixedlm_de(
+                adata,
+                groupby=groupby,
+                target_group=target_group,
+                reference_group=reference_group,
+                sample_col=sample_col,
+                n_jobs=n_jobs,
+                labels=labels,
+                mixed_model_pval=mixed_model_pval,
+            ),
+            backend="mixedlm",
         )
 
     if use_memento_de:
@@ -111,16 +152,19 @@ def _run_de_wrapper(
                 "use_memento_de=True is not supported with use_pseudobulk=True "
                 "(Memento is a cell-level method-of-moments estimator; use PyDESeq2 for pseudobulk)."
             )
-        return _run_memento_de(
-            adata,
-            groupby=groupby,
-            target_group=target_group,
-            reference_group=reference_group,
-            labels=labels,
-            capture_rate=memento_capture_rate,
-            num_boot=memento_num_boot,
-            n_cpus=memento_n_cpus,
-            counts=counts,
+        return _validate_de_result(
+            _run_memento_de(
+                adata,
+                groupby=groupby,
+                target_group=target_group,
+                reference_group=reference_group,
+                labels=labels,
+                capture_rate=memento_capture_rate,
+                num_boot=memento_num_boot,
+                n_cpus=memento_n_cpus,
+                counts=counts,
+            ),
+            backend="memento",
         )
 
     ad_temp = adata.copy() if labels is not None else adata
@@ -220,8 +264,7 @@ def _run_de_wrapper(
             index=counts_use.index,
         )
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        with _de_warning_context():
             if _pydeseq2_uses_design_factors():
                 dds = DeseqDataSet(
                     counts=counts_use,
@@ -262,13 +305,12 @@ def _run_de_wrapper(
         de_df["logFC"] = res2["log2FoldChange"].fillna(0.0)
         de_df["p_val"] = res2.get("pvalue", pd.Series(1.0, index=res2.index)).fillna(1.0)
         de_df["p_adj"] = res2.get("padj", pd.Series(1.0, index=res2.index)).fillna(1.0)
-        return de_df
+        return _validate_de_result(de_df, backend="pydeseq2")
 
     else:
         # Standard scanpy path (works for both regular and pseudobulk when not using pydeseq2)
         rank_key = "_scatrans_rank_genes_groups"
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        with _de_warning_context():
             sc.tl.rank_genes_groups(
                 ad_temp,
                 groupby=use_groupby,
@@ -288,7 +330,7 @@ def _run_de_wrapper(
         de_df["logFC"] = raw_lfc
         de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names).fillna(1.0)
         de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names).fillna(1.0)
-        return de_df
+        return _validate_de_result(de_df, backend=f"scanpy:{de_method}")
 
 
 def _run_mixedlm_de(
@@ -354,13 +396,12 @@ def _run_mixedlm_de(
     # The explicit flag avoids counting truly neutral (logFC~0, p~1, dvar~0) biological genes as "failed".
     def _fit_gene_mixed(idx: int):
         y = expr_mat[:, idx].astype(float)
-        # guard against all-zero / constant (mixedlm will be singular)
-        if np.allclose(y, y[0]):
+        # guard against near-constant expression (mixedlm will be singular)
+        if float(np.nanvar(y)) < 1e-12:
             return idx, 0.0, 1.0, 1.0, 0.0, True
         df = pd.DataFrame({"y": y, "condition": condition, "sample": samples})
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+            with _de_warning_context():
                 # Full model
                 md_full = smf.mixedlm("y ~ C(condition)", df, groups=df["sample"])
                 m_full = md_full.fit(reml=False, maxiter=200, disp=False)
@@ -368,6 +409,9 @@ def _run_mixedlm_de(
                 # Reduced (null) for LRT on condition contribution
                 md_null = smf.mixedlm("y ~ 1", df, groups=df["sample"])
                 m_null = md_null.fit(reml=False, maxiter=200, disp=False)
+
+            if not getattr(m_full, "converged", True) or not getattr(m_null, "converged", True):
+                return idx, 0.0, 1.0, 1.0, 0.0, True
 
             # LRT statistic and p (chi2 df=1 for the added fixed effect term(s))
             lrt_stat = -2.0 * (m_null.llf - m_full.llf)
@@ -381,11 +425,7 @@ def _run_mixedlm_de(
                     coef_name = pname
                     break
             if coef_name is None:
-                # fallback: take the second coef if intercept + one more
-                if len(m_full.params) >= 2:
-                    coef_name = m_full.params.index[1]
-                else:
-                    coef_name = m_full.params.index[0]
+                return idx, 0.0, 1.0, 1.0, 0.0, True
             logfc = float(m_full.params.get(coef_name, 0.0))
             p_wald = float(m_full.pvalues.get(coef_name, 1.0))
 
@@ -441,8 +481,7 @@ def _run_mixedlm_de(
             logger.warning("mixed_model_pval must be 'wald' or 'lrt'; falling back to 'wald'.")
         main_pvals = p_walds
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    with _de_warning_context():
         p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
 
     de_df = pd.DataFrame(index=var_names)
@@ -456,14 +495,19 @@ def _run_mixedlm_de(
     # Use explicit failure flag returned from workers (avoids counting true biological
     # neutral genes (logFC~0, p~1, dvar~0) as "failed fits").
     n_failed = int(np.sum(failed_flags))
+    n_total = len(de_df)
+    failed_rate = (n_failed / n_total) if n_total else 0.0
     de_df.attrs["n_genes_failed_fit"] = n_failed
+    de_df.attrs["failed_fit_rate"] = failed_rate
     if n_failed > 0:
         logger.warning(
-            "MixedLM: %d/%d genes had degenerate fits (e.g. small n per group, collinearity) "
+            "MixedLM: %d/%d genes (%.1f%%) had degenerate or non-convergent fits "
+            "(near-constant expression, singular Hessian, missing condition coefficient, etc.) "
             "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
             "See diagnostics['mixed_model']['n_genes_failed_fit'].",
             n_failed,
-            len(de_df),
+            n_total,
+            100.0 * failed_rate,
         )
     return de_df
 
@@ -640,9 +684,15 @@ def _run_memento_de(
     pvals = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index).fillna(1.0)
     de_df["p_val"] = pvals
 
-    # BH adjustment (Memento may return raw p; we make p_adj consistent with other backends)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    # Preserve Memento-native adjusted p if present (audit trail); package p_adj uses BH for consistency.
+    for native_col in ("de_padj", "de_padjs", "padj", "p_adj", "de_fdr"):
+        if isinstance(result, pd.DataFrame) and native_col in result.columns:
+            de_df["memento_p_adj_native"] = pd.to_numeric(
+                result[native_col], errors="coerce"
+            ).reindex(res_index)
+            break
+
+    with _de_warning_context():
         de_df["p_adj"] = multipletests(pvals.values, method="fdr_bh")[1]
 
     # Expose Memento's native columns for users who want mean + variability signals

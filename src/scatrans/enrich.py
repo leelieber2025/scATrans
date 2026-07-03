@@ -2719,11 +2719,8 @@ def concat_compare_results(
     combined.attrs["cluster_col"] = cluster_col
     combined.attrs["per_cluster_attrs"] = per_cluster_attrs
     combined.attrs["n_clusters"] = len(frames)
-    combined.attrs["clusters"] = [
-        str(n)
-        for n, _ in items
-        if not (getattr(_, "empty", False) if hasattr(_, "empty") else False)
-    ]
+    # Align with frames actually concatenated (exclude None and empty DataFrames).
+    combined.attrs["clusters"] = list(per_cluster_attrs.keys())
     return combined
 
 
@@ -2824,6 +2821,7 @@ def compare_enrichment(
         eff_return_all = True
 
     frames = []
+    clusters_with_data: list[str] = []
     per_cluster: dict[str, Any] = {}
     cluster_names = list(gene_clusters.keys())
 
@@ -2895,6 +2893,7 @@ def compare_enrichment(
             out.insert(0, "Cluster", cname_str)
 
         frames.append(out)
+        clusters_with_data.append(cname_str)
         per_cluster[cname_str] = {
             "n_input_genes_raw": n_raw,
             "n_input_genes_clean": n_clean,
@@ -2939,7 +2938,7 @@ def compare_enrichment(
     combined.attrs["method"] = "compare_enrichment"
     combined.attrs["cluster_col"] = "Cluster"
     combined.attrs["n_clusters"] = len(frames)
-    combined.attrs["clusters"] = [str(c) for c in cluster_names if str(c) in per_cluster]
+    combined.attrs["clusters"] = list(clusters_with_data)
     combined.attrs["per_cluster"] = per_cluster
     combined.attrs["shared_universe_used"] = bool(shared_universe or shared_adata)
     combined.attrs["clusterprofiler_aligned"] = True

@@ -111,6 +111,31 @@ def test_extract_gene_lists_multi_and_separate_directions():
     assert any("_up" in k or "_down" in k for k in out)
 
 
+def test_compare_enrichment_clusters_attrs_only_successful(tiny_gene_sets):
+    """attrs['clusters'] must list only clusters that contributed rows, not skipped/failed/empty."""
+    clusters = {
+        "ClusterA": ["GeneA", "GeneB"],
+        "ClusterB_empty": [],
+        "ClusterC_badgenes": ["NOTAREALGENE123"],
+    }
+    res = scat.compare_enrichment(
+        clusters,
+        gene_sets=tiny_gene_sets,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        verbose=False,
+    )
+    if not res.empty:
+        assert sorted(res["Cluster"].unique()) == ["ClusterA"]
+    assert res.attrs["n_clusters"] == 1
+    assert res.attrs["clusters"] == ["ClusterA"]
+    assert len(res.attrs["clusters"]) == res.attrs["n_clusters"]
+    per_cluster = res.attrs.get("per_cluster", {})
+    assert "ClusterB_empty" in per_cluster
+    assert "ClusterC_badgenes" in per_cluster
+
+
 def test_compare_enrichment(tiny_gene_sets):
     clusters = {"C1": ["GeneA", "GeneB"], "C2": ["GeneC", "GeneE"]}
     res = scat.compare_enrichment(
@@ -140,6 +165,22 @@ def test_compare_enrichment_adjust_across_clusters(tiny_gene_sets):
     )
     sc_meta = res.attrs.get("scatrans", {})
     assert sc_meta.get("adjust_across_clusters") is True
+
+
+def test_concat_compare_results_skips_none_and_empty_clusters():
+    from scatrans.enrich import concat_compare_results
+
+    df1 = pd.DataFrame({"Term": ["t1"], "p.adjust": [0.01], "Count": [5]})
+    results = {
+        "GroupA": df1,
+        "GroupB_empty": pd.DataFrame(columns=["Term", "p.adjust", "Count"]),
+        "GroupC_none": None,
+    }
+    combined = concat_compare_results(results)
+    assert sorted(combined["Cluster"].unique()) == ["GroupA"]
+    assert combined.attrs["n_clusters"] == 1
+    assert combined.attrs["clusters"] == ["GroupA"]
+    assert len(combined.attrs["clusters"]) == combined.attrs["n_clusters"]
 
 
 def test_concat_compare_results(tiny_gene_sets):

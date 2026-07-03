@@ -463,6 +463,59 @@ def test_active_score_default_copy_preserves_input(adata_basic):
     assert "active_score" not in ad.var.columns
 
 
+def test_copy_input_false_avoids_ann_data_copy(adata_basic):
+    """copy_input=False should not call AnnData.copy() when no obs filtering is needed."""
+    import anndata as ad
+
+    calls: list[int] = []
+    orig_copy = ad.AnnData.copy
+
+    def traced_copy(self, *args, **kwargs):
+        calls.append(id(self))
+        return orig_copy(self, *args, **kwargs)
+
+    ad.AnnData.copy = traced_copy
+    try:
+        ad_zero = adata_basic.copy()
+        calls.clear()
+        scat.active_score(
+            ad_zero,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            use_permutation=False,
+            show_plot=False,
+            copy_input=False,
+        )
+        assert len(calls) == 0
+
+        ad_de = adata_basic.copy()
+        calls.clear()
+        scat.differential_expression(
+            ad_de,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            copy_input=False,
+        )
+        assert len(calls) == 0
+
+        ad_one = adata_basic.copy()
+        calls.clear()
+        scat.active_score(
+            ad_one,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            use_permutation=False,
+            show_plot=False,
+            copy_input=True,
+        )
+        assert len(calls) == 1
+    finally:
+        ad.AnnData.copy = orig_copy
+
+
 def test_ensure_raw_counts_exported():
     assert hasattr(scat, "ensure_raw_counts")
     assert callable(scat.ensure_raw_counts)

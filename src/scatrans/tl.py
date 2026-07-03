@@ -61,6 +61,35 @@ except (ImportError, AttributeError):
 logger = logging.getLogger(__name__)
 
 
+def _select_obs(
+    adata: ad.AnnData,
+    mask: pd.Series,
+    *,
+    copy_input: bool,
+) -> ad.AnnData:
+    """Subset to obs ``mask``; call ``AnnData.copy()`` only when ``copy_input=True``."""
+    mask = mask.reindex(adata.obs_names, fill_value=False)
+    if copy_input:
+        return adata[mask].copy()
+    if bool(mask.all()):
+        return adata
+    return adata[mask]
+
+
+def _select_var(
+    adata: ad.AnnData,
+    mask: pd.Series,
+    *,
+    copy_input: bool,
+) -> ad.AnnData:
+    """Subset to var ``mask``; call ``AnnData.copy()`` only when ``copy_input=True``."""
+    if copy_input:
+        return adata[:, mask].copy()
+    if bool(mask.all()):
+        return adata
+    return adata[:, mask]
+
+
 def _validate_de_common_options(
     *,
     de_preprocess: str,
@@ -337,6 +366,14 @@ def active_score(
 
     Full usage, recommended workflow, and result interpretation are documented in
     the package README ("Statistical interpretation and reporting boundaries").
+
+    copy_input : bool, default True
+        If True (default), deep-copy the input once after combining obs filters
+        (``subset_col`` + target/reference groups) so the caller's object is not
+        mutated. If False, reuse the input in-place when no obs filtering is
+        required; otherwise subset without calling ``AnnData.copy()`` (lower memory
+        on large objects). The returned AnnData is always the working object and
+        may be mutated (new ``.var`` columns, layer remapping, etc.).
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
@@ -453,10 +490,8 @@ def active_score(
 
     logger.info("scATrans %s Analysis started. Mode: %s", VERSION, mode)
 
-    if copy_input:
-        adata_input = adata_input.copy()
-
     # ==================== SUBSET & BASIC VALIDATION ====================
+    obs_filter = pd.Series(True, index=adata_input.obs_names)
     if subset_col is not None:
         if subset_col not in adata_input.obs.columns:
             raise ValueError(f"subset_col='{subset_col}' not found in adata.obs.columns")
@@ -468,10 +503,10 @@ def active_score(
             subset_values_list = [str(v) for v in subset_values]
         subset_mask = adata_input.obs[subset_col].astype(str).isin(subset_values_list)
         n_before = adata_input.n_obs
-        adata_input = adata_input[subset_mask].copy()
-        n_after = adata_input.n_obs
+        n_after = int(subset_mask.sum())
         if n_after == 0:
             raise ValueError(f"No cells remain after subsetting {subset_col}")
+        obs_filter &= subset_mask
         logger.info("Subsetted by %s (%d/%d cells remaining)", subset_col, n_after, n_before)
 
     if not adata_input.var_names.is_unique:
@@ -486,6 +521,8 @@ def active_score(
         target_group=str(target_group),
         reference_group=str(reference_group),
     )
+
+    obs_filter &= norm_groups.isin([target_group, reference_group])
 
     # Automatic design guidance for small-sample or replicate-structured data
     if sample_col or use_pseudobulk:
@@ -522,17 +559,16 @@ def active_score(
                 f"Available layers: {available_layers}"
             )
 
-    keep_mask = norm_groups.isin([target_group, reference_group])
-    adata = adata_input[keep_mask].copy()
+    adata = _select_obs(adata_input, obs_filter, copy_input=copy_input)
     if adata.n_obs == 0:
         raise ValueError(
             "No cells match target/reference groups after filtering. "
             f"Check target_group='{target_group}' and reference_group='{reference_group}' "
             f"against adata.obs['{groupby}'] (missing labels are excluded)."
         )
-    adata.obs[groupby] = norm_groups.loc[keep_mask].values
+    adata.obs[groupby] = norm_groups.loc[obs_filter].values
 
-    # Perform layer remapping only on the copied adata to avoid mutating the caller's original object.
+    # Perform layer remapping on the working adata (copy_input=True isolates caller's object).
     if (
         (spliced_layer != "spliced" or unspliced_layer != "unspliced")
         and spliced_layer in adata.layers
@@ -552,7 +588,9 @@ def active_score(
     if gene_type_filter:
         if "gene_type" not in adata.var.columns:
             raise ValueError("'gene_type_filter' provided but 'gene_type' column is missing.")
-        adata = adata[:, adata.var["gene_type"] == gene_type_filter].copy()
+        adata = _select_var(
+            adata, adata.var["gene_type"] == gene_type_filter, copy_input=copy_input
+        )
 
     if adata.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
@@ -727,14 +765,24 @@ def active_score(
         adata.var["delta_var_pval"] = de_df["delta_var_pval"]
 
     # Surface Memento-specific columns when the memento backend was used (for variability etc.)
-    for extra_col in ["memento_de_se", "memento_dv_coef", "memento_dv_se", "memento_dv_pval"]:
+    for extra_col in [
+        "memento_de_se",
+        "memento_dv_coef",
+        "memento_dv_se",
+        "memento_dv_pval",
+        "memento_p_adj_native",
+    ]:
         if extra_col in de_df.columns:
             adata.var[extra_col] = de_df[extra_col]
 
     n_mixed_failed = 0
+    mixed_failed_rate = 0.0
     if use_mixed_model:
         n_mixed_failed = int(
             de_df.attrs.get("n_genes_failed_fit", 0) if hasattr(de_df, "attrs") else 0
+        )
+        mixed_failed_rate = float(
+            de_df.attrs.get("failed_fit_rate", 0.0) if hasattr(de_df, "attrs") else 0.0
         )
 
     # ==================== QC: global unspliced fraction (integrated high-value diagnostic) ====================
@@ -956,6 +1004,13 @@ def active_score(
             if "delta_variance" in adata.var.columns
             else np.nan,
             "n_genes_failed_fit": n_mixed_failed if use_mixed_model else 0,
+            "failed_fit_rate": mixed_failed_rate if use_mixed_model else 0.0,
+            "note": (
+                "Lightweight LMM analogue (log1p + Wald/LRT); not NB-GLMM/voom. "
+                "Inspect failed_fit_rate before publication claims."
+                if use_mixed_model
+                else None
+            ),
         },
     }
     if mode == "advanced" and moments_info:
@@ -1446,6 +1501,10 @@ def differential_expression(
     (use ``active_score(..., use_permutation=True)`` when velocity layers are available).
     For a minimal-parameter entry point see ``active_score_simple`` or ``run_default_pipeline``.
 
+    copy_input : bool, default True
+        Same semantics as :func:`active_score`: one combined obs-filter copy when
+        True; zero ``AnnData.copy()`` calls when False and no obs filtering is needed.
+
     Returns
     -------
     (adata_with_results, results_df)
@@ -1458,6 +1517,7 @@ def differential_expression(
     _require_explicit_groups(target_group, reference_group, func_name="differential_expression")
 
     # --- minimal shared validation (subset + group checks) ---
+    obs_filter = pd.Series(True, index=adata_input.obs_names)
     if subset_col is not None:
         if subset_col not in adata_input.obs.columns:
             raise ValueError(f"subset_col='{subset_col}' not found in adata.obs.columns")
@@ -1468,9 +1528,9 @@ def differential_expression(
         else:
             subset_values_list = [str(v) for v in subset_values]
         subset_mask = adata_input.obs[subset_col].astype(str).isin(subset_values_list)
-        adata_input = adata_input[subset_mask].copy()
-        if adata_input.n_obs == 0:
+        if int(subset_mask.sum()) == 0:
             raise ValueError("No cells remain after subsetting.")
+        obs_filter &= subset_mask
 
     if not adata_input.var_names.is_unique:
         raise ValueError("adata.var_names must be unique.")
@@ -1485,20 +1545,22 @@ def differential_expression(
         reference_group=str(reference_group),
     )
 
-    keep_mask = norm_groups.isin([target_group, reference_group])
-    adata_input = adata_input[keep_mask].copy()
+    obs_filter &= norm_groups.isin([target_group, reference_group])
+    adata_input = _select_obs(adata_input, obs_filter, copy_input=copy_input)
     if adata_input.n_obs == 0:
         raise ValueError(
             "No cells match target/reference groups after filtering. "
             f"Check target_group='{target_group}' and reference_group='{reference_group}' "
             f"against adata.obs['{groupby}'] (missing labels are excluded)."
         )
-    adata_input.obs[groupby] = norm_groups.loc[keep_mask].values
+    adata_input.obs[groupby] = norm_groups.loc[obs_filter].values
 
     if gene_type_filter:
         if "gene_type" not in adata_input.var.columns:
             raise ValueError("'gene_type_filter' provided but 'gene_type' column is missing.")
-        adata_input = adata_input[:, adata_input.var["gene_type"] == gene_type_filter].copy()
+        adata_input = _select_var(
+            adata_input, adata_input.var["gene_type"] == gene_type_filter, copy_input=copy_input
+        )
 
     if adata_input.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
@@ -1551,9 +1613,6 @@ def differential_expression(
             "results['delta_var_pval'] < delta_var_pval_cutoff (currently %.4g).",
             delta_var_pval_cutoff,
         )
-
-    if copy_input:
-        adata_input = adata_input.copy()
 
     # Auto-resolve aligned raw counts for count-based backends (Memento / PyDESeq2).
     if counts is None and (
@@ -1634,6 +1693,7 @@ def differential_expression(
         "memento_dv_coef",
         "memento_dv_se",
         "memento_dv_pval",
+        "memento_p_adj_native",
     ]:
         if extra in de_df.columns:
             adata.var[extra] = de_df[extra]
@@ -1642,6 +1702,11 @@ def differential_expression(
         int(de_df.attrs.get("n_genes_failed_fit", 0))
         if (use_mixed_model and hasattr(de_df, "attrs"))
         else 0
+    )
+    mixed_failed_rate_de = (
+        float(de_df.attrs.get("failed_fit_rate", 0.0))
+        if (use_mixed_model and hasattr(de_df, "attrs"))
+        else 0.0
     )
 
     # Build clean results table (no velocity columns)
@@ -1653,6 +1718,7 @@ def differential_expression(
         "memento_dv_coef",
         "memento_dv_se",
         "memento_dv_pval",
+        "memento_p_adj_native",
     ]:
         if c in adata.var.columns:
             cols.append(c)
@@ -1712,6 +1778,10 @@ def differential_expression(
             "delta_var_pval_cutoff": delta_var_pval_cutoff,
             "mixed_model_pval": mixed_model_pval if use_mixed_model else None,
             "n_genes_failed_mixed_fit": n_mixed_failed_de,
+            "failed_fit_rate_mixed": mixed_failed_rate_de,
+            "memento_has_native_padj": bool(
+                use_memento_de and "memento_p_adj_native" in de_df.columns
+            ),
             "memento_num_boot": memento_num_boot if use_memento_de else None,
             "memento_n_cpus": memento_n_cpus if use_memento_de else None,
             "n_jobs": n_jobs,

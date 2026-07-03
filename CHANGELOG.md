@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.2 bugfix 2026-07-02]
 
 ### Fixed
+- **compare_enrichment / concat_compare_results metadata**: `attrs["clusters"]` now lists only clusters that contributed rows to the combined table (skipped, failed, and empty per-cluster runs remain in `per_cluster` diagnostics only). Fixes ghost cluster names in both the main compare API and the concat wrapper.
+- **DE schema validation**: `_run_de_wrapper` validates that all backends return `logFC`, `p_val`, `p_adj` with at least one finite value per column.
+- **MixedLM robustness**: near-constant genes use variance threshold; non-converged fits and missing condition coefficients are counted as failed fits instead of guessing the second coefficient; `failed_fit_rate` added to result attrs with percentage in warning log.
+- **DE warnings**: selective `_de_warning_context()` suppresses deprecation/future noise only (scanpy/PyDESeq2/MixedLM/BH), no longer blanket `ignore` on all warning categories.
+- **Memento audit column**: native adjusted p-values preserved as `memento_p_adj_native` when returned by memento-de; package `p_adj` still uses BH for cross-backend consistency.
+- **DE edge-case tests**: new `tests/test_de_edge_cases.py` (schema validation, constant-gene MixedLM failure counting, scanpy direction agreement, all-zero gene finiteness).
+- **Diagnostics / docs**: `failed_fit_rate` exposed in `active_score` mixed-model diagnostics and `differential_expression` metadata; README adds a short DE backend decision guide.
+- **copy_input performance**: `active_score` and `differential_expression` now honor `copy_input=False` — combined obs filters (subset + target/reference) perform at most one `AnnData.copy()` when `copy_input=True`, and zero when `copy_input=False` and no obs filtering is required (previously an unconditional `[keep_mask].copy()` always ran).
 - **filter_active_genes permissive mode**: default/permissive thresholds for `pval_cutoff`, `active_score_fdr_cutoff`, and `unspliced_excess_fdr_cutoff` now use `float("inf")` instead of `1.0`, so genes with adjusted p-value or permutation FDR exactly equal to 1.0 are no longer silently dropped (strict `<` vs `1.0` bug).
 - **CI lint**: removed unused `import scanpy as sc` from `tl.py` and `_permutation.py` (leftover from permutation refactor); fixed `test_enrich_api.py` formatting.
 - **CI tests**: `test_pp_bias_cli` GTF generator tests now `pytest.importorskip("gtfparse")` so base installs without `scatrans[gene_features]` skip instead of failing.
