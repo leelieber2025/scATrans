@@ -304,6 +304,30 @@ def _require_columns(df, columns, func_name="plot"):
         )
 
 
+def _placeholder_for_unplottable(
+    df,
+    required_cols,
+    *,
+    ax=None,
+    figsize=(6, 4),
+    dpi=150,
+    message="No valid data to plot",
+):
+    """Return (fig, ax, created_fig) placeholder when df cannot be plotted; else None."""
+    if df is None:
+        if ax is None:
+            fig, ax = _empty_placeholder_fig(message, figsize=figsize, dpi=dpi)
+            return fig, ax, True
+        return ax.figure, ax, False
+    missing = [c for c in required_cols if c not in getattr(df, "columns", [])]
+    if missing or (hasattr(df, "empty") and df.empty):
+        if ax is None:
+            fig, ax = _empty_placeholder_fig(message, figsize=figsize, dpi=dpi)
+            return fig, ax, True
+        return ax.figure, ax, False
+    return None
+
+
 def _safe_neg_log10(x, minval=1e-300):
     """Safe -log10 with clipping for zero/near-zero p-values and non-numeric safety.
 
@@ -419,8 +443,21 @@ def comet_plot(
     with _style_context_if(use_style):
         logger.info("Generating comet plot...")
 
-        residual_col = _excess_residual_col(df)
-        _require_columns(df, ["logFC", residual_col, "active_score"], "comet_plot")
+        residual_col = _resolve_results_column(
+            df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL, required=False
+        )
+        placeholder = _placeholder_for_unplottable(
+            df,
+            ["logFC", residual_col, "active_score"],
+            ax=ax,
+            figsize=figsize,
+            dpi=dpi,
+            message="No genes to plot after filtering",
+        )
+        if placeholder is not None:
+            fig, ax, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, ax
 
         if top_n <= 0:
             raise ValueError("top_n must be positive.")
@@ -586,8 +623,21 @@ def volcano_3d(
     with _style_context_if(use_style):
         logger.info("Generating 3D volcano plot...")
 
-        residual_col = _excess_residual_col(df)
-        _require_columns(df, ["logFC", "p_adj", residual_col, "active_score"], "volcano_3d")
+        residual_col = _resolve_results_column(
+            df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL, required=False
+        )
+        placeholder = _placeholder_for_unplottable(
+            df,
+            ["logFC", "p_adj", residual_col, "active_score"],
+            ax=ax,
+            figsize=(8, 6),
+            dpi=dpi,
+            message="No valid genes to plot",
+        )
+        if placeholder is not None:
+            fig, ax, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, ax
 
         plot_df = df.copy()
         for c in ["logFC", "p_adj", residual_col, "active_score"]:
@@ -2090,7 +2140,18 @@ def volcano_plot(
     with _style_context_if(use_style):
         logger.info("Generating 2D volcano plot...")
 
-        _require_columns(df, ["logFC", "p_adj"], "volcano_plot")
+        placeholder = _placeholder_for_unplottable(
+            df,
+            ["logFC", "p_adj"],
+            ax=ax,
+            figsize=figsize,
+            dpi=dpi,
+            message="No valid genes to plot",
+        )
+        if placeholder is not None:
+            fig, ax, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, ax
         if pval_cutoff <= 0 or pval_cutoff >= 1:
             raise ValueError("pval_cutoff must be between 0 and 1 (exclusive).")
         if logfc_cutoff < 0:
@@ -2363,7 +2424,7 @@ def bias_diagnostic_plot(
         ax1 = axes[0]
         ax2 = axes[1]
     else:
-        if len(axes) != 2:
+        if len(axes) != 2 or not all(isinstance(a, mpl.axes.Axes) for a in axes):
             raise ValueError("axes must be a sequence of exactly two matplotlib Axes")
         fig = axes[0].figure
         _created_fig = False
