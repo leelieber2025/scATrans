@@ -125,7 +125,7 @@ def _run_de_wrapper(
     This is treated as a third parallel cell-level backend (alongside scanpy-style and mixed-model).
 
     logFC is normalized toward log2 scale for cross-backend comparability of logfc_cutoff:
-      - PyDESeq2 + scanpy backends (wilcoxon, t-test, logreg, etc.): native log2
+      - PyDESeq2 + scanpy backends (wilcoxon, t-test, t-test_overestim_var): native log2
       - mixedlm + memento: converted from natural/log1p scale (/ log(2))
 
     Internal function: type hints strengthened for mypy/pyright.
@@ -208,17 +208,26 @@ def _run_de_wrapper(
         # but are integer-valued. Use a tolerant check + pre-coercion so users don't have to set
         # strict_pydeseq2_counts=False for normal aggregated data.
         if is_pseudobulk:
-            # Coerce a tolerant view for the "looks like counts" decision
-            try:
-                if sparse.issparse(ad_temp.X):
-                    X_check_arr = np.asarray(ad_temp.X.todense())
-                else:
-                    X_check_arr = np.asarray(ad_temp.X)
-                X_check_arr = np.clip(np.round(np.nan_to_num(X_check_arr)), 0, None)
-                is_count_like = _is_integer_counts_like(X_check_arr)
-            except Exception as _e:
-                logger.debug("Count-like check fallback: %s", _e)
-                is_count_like = _is_integer_counts_like(ad_temp.X)
+            if "pb_x_is_count_like" in ad_temp.uns:
+                # Authoritative verdict computed by _pseudobulk_with_layers on the
+                # pre-aggregation, pre-rounding source matrix. Summing+rounding after
+                # aggregation always yields integer-valued output, so checking ad_temp.X
+                # here (post-rounding) would always pass and defeat strict_pydeseq2_counts.
+                is_count_like = bool(ad_temp.uns["pb_x_is_count_like"])
+            else:
+                # Fallback for pseudobulk AnnData not built via _pseudobulk_with_layers
+                # (e.g. user-supplied pseudobulk). No pre-aggregation matrix is available,
+                # so we check the (already rounded) X as a best effort.
+                try:
+                    if sparse.issparse(ad_temp.X):
+                        X_check_arr = np.asarray(ad_temp.X.todense())
+                    else:
+                        X_check_arr = np.asarray(ad_temp.X)
+                    X_check_arr = np.clip(np.nan_to_num(X_check_arr), 0, None)
+                    is_count_like = _is_integer_counts_like(X_check_arr)
+                except Exception as _e:
+                    logger.debug("Count-like check fallback: %s", _e)
+                    is_count_like = _is_integer_counts_like(ad_temp.X)
         else:
             is_count_like = _is_integer_counts_like(ad_temp.X)
 
@@ -341,16 +350,45 @@ def _run_de_wrapper(
 
     else:
         # Standard scanpy path (works for both regular and pseudobulk when not using pydeseq2)
+        if de_method == "logreg":
+            raise ValueError(
+                "de_method='logreg' is not supported: scanpy's logreg ranks genes by logistic "
+                "regression scores and does not produce logFC, p-values, or adjusted p-values. "
+                "Use 'wilcoxon', 't-test', or 't-test_overestim_var' instead."
+            )
+        labels = ad_temp.obs[use_groupby].astype(str)
+        n_target = int((labels == str(target_group)).sum())
+        n_reference = int((labels == str(reference_group)).sum())
+        if n_target < 2 or n_reference < 2:
+            raise ValueError(
+                f"scanpy DE (method='{de_method}') requires at least 2 cells per group. "
+                f"Found {n_target} in target '{target_group}' and {n_reference} in reference "
+                f"'{reference_group}'. With a single cell per group, no valid statistics can be "
+                f"computed. Consider pseudobulk aggregation (use_pseudobulk=True with sample_col) "
+                f"if you have multiple biological replicates per condition."
+            )
         rank_key = "_scatrans_rank_genes_groups"
         with _de_warning_context():
-            sc.tl.rank_genes_groups(
-                ad_temp,
-                groupby=use_groupby,
-                groups=[target_group],
-                reference=reference_group,
-                method=de_method,
-                key_added=rank_key,
-            )
+            try:
+                sc.tl.rank_genes_groups(
+                    ad_temp,
+                    groupby=use_groupby,
+                    groups=[target_group],
+                    reference=reference_group,
+                    method=de_method,
+                    key_added=rank_key,
+                )
+            except Exception as exc:
+                msg = str(exc)
+                if "only contain one sample" in msg or "one sample" in msg.lower():
+                    raise ValueError(
+                        f"scanpy could not compute DE statistics: each group needs at least 2 "
+                        f"cells (found {n_target} target, {n_reference} reference for "
+                        f"'{use_groupby}'). For single-cell-per-group designs, use pseudobulk "
+                        f"with biological replicates (use_pseudobulk=True, sample_col=...) or "
+                        f"add more cells per group."
+                    ) from exc
+                raise
         de_raw = sc.get.rank_genes_groups_df(ad_temp, group=target_group, key=rank_key).set_index(
             "names"
         )

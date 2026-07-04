@@ -45,6 +45,7 @@ from ._utils import (
     _resolve_aligned_raw_counts,
     _soft_scale,
     _validate_group_contrast,
+    _warn_if_negative_layer_values,
     _write_unspliced_excess_columns,
     comb,  # for small-n permutation space calculation
 )
@@ -622,6 +623,9 @@ def active_score(
 
     if "spliced" not in adata.layers or "unspliced" not in adata.layers:
         raise ValueError("Both 'spliced' and 'unspliced' layers are required after layer handling.")
+
+    _warn_if_negative_layer_values(adata.layers["unspliced"], "unspliced")
+    _warn_if_negative_layer_values(adata.layers["spliced"], "spliced")
 
     if gene_type_filter:
         if "gene_type" not in adata.var.columns:
@@ -1345,15 +1349,18 @@ def _finalize_active_score_results(
         )
         if extra_metadata.get("use_fdr_for_significance", True):
             mask = mask & (adata.var[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff)
-        if "active_score_fdr" in adata.var.columns and sig_active_fdr is not None:
-            mask = mask & (
-                adata.var["active_score_fdr"].notna()
-                & (adata.var["active_score_fdr"] < sig_active_fdr)
-            )
+            if "active_score_fdr" in adata.var.columns and sig_active_fdr is not None:
+                mask = mask & (
+                    adata.var["active_score_fdr"].notna()
+                    & (adata.var["active_score_fdr"] < sig_active_fdr)
+                )
         else:
+            reason = extra_metadata.get("perm_disabled_reason", "small_permutation_space")
             logger.warning(
-                "Permutation space is very small; unspliced_excess_fdr was not applied "
-                "to the built-in significant list."
+                "Permutation space is very small (%s); unspliced_excess_fdr and active_score_fdr "
+                "were not applied to the built-in significant list. Inspect all_results and use "
+                "filter_active_genes for custom thresholds.",
+                reason,
             )
         # Apply delta_variance pval filter only in the permutation path where a meaningful
         # significant mask can be produced (avoids dead-code application to the all-False mask).
@@ -1852,6 +1859,41 @@ def differential_expression(
                 history = history[-5:]
     existing["history"] = history
 
+    de_diagnostics: dict[str, Any] = {
+        "n_cells": int(adata.n_obs),
+        "n_genes_input": int(adata.n_vars),
+        "mixed_model": {
+            "used": bool(use_mixed_model),
+            "sample_col": sample_col if use_mixed_model else None,
+            "n_samples": int(adata.obs[sample_col].nunique())
+            if (use_mixed_model and sample_col and sample_col in adata.obs.columns)
+            else None,
+            "delta_variance_available": "delta_variance" in adata.var.columns,
+            "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"]))
+            if "delta_variance" in adata.var.columns
+            else np.nan,
+            "n_genes_failed_fit": n_mixed_failed_de if use_mixed_model else 0,
+            "failed_fit_rate": mixed_failed_rate_de if use_mixed_model else 0.0,
+            "note": (
+                "Lightweight LMM analogue (log1p + Wald/LRT); not NB-GLMM/voom. "
+                "Inspect failed_fit_rate before publication claims."
+                if use_mixed_model
+                else None
+            ),
+        },
+        "pydeseq2": pydeseq2_diag or {"used": False},
+        "memento": {
+            "used": bool(use_memento_de),
+            "n_genes_not_returned": n_memento_not_returned,
+            "note": (
+                "Genes dropped by memento internal filters appear as logFC=0, p_adj=1 "
+                "after reindexing and were not tested."
+                if use_memento_de
+                else None
+            ),
+        },
+    }
+
     existing.update(
         {
             "mode": "differential_expression",
@@ -1887,6 +1929,7 @@ def differential_expression(
             "pydeseq2": pydeseq2_diag or None,
             "n_jobs": n_jobs,
             "gene_type_filter": gene_type_filter,
+            "diagnostics": de_diagnostics,
         }
     )
     adata.uns["scatrans"] = existing

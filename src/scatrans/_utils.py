@@ -143,6 +143,7 @@ __all__ = [
     "_resolve_results_column",
     "_write_unspliced_excess_columns",
     "_is_integer_counts_like",
+    "_warn_if_negative_layer_values",
     "_warn_if_not_integer_counts_matrix",
     "_warn_if_low_counts_matrix",
     "_safe_add_matrices",
@@ -159,6 +160,32 @@ __all__ = [
     "_apply_de_preprocess",
     "_prepare_log_normalized_expression",
 ]
+
+
+def _warn_if_negative_layer_values(
+    layer: Any, layer_name: str, *, max_check: int = 100000
+) -> None:
+    """Warn when a count layer contains negative values (physically invalid for RNA counts)."""
+    if sparse.issparse(layer):
+        vals = np.asarray(layer.data, dtype=float)
+    else:
+        vals = np.asarray(layer, dtype=float).ravel()
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return
+    if vals.size > max_check:
+        rng = np.random.default_rng(0)
+        vals = rng.choice(vals, size=max_check, replace=False)
+    if np.any(vals < 0):
+        n_neg = int(np.sum(vals < 0))
+        logger.warning(
+            "Layer '%s' contains %d negative value(s) (min=%.4g). "
+            "RNA count layers should be non-negative; results may be unreliable. "
+            "Check for data corruption or incorrect layer assignment.",
+            layer_name,
+            n_neg,
+            float(np.min(vals)),
+        )
 
 
 def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6) -> bool:
@@ -223,7 +250,74 @@ def _x_looks_zscore_scaled(finite: np.ndarray) -> bool:
     return abs(mean) < 1.0 and 0.25 < std < 5.0 and mn < -0.1
 
 
-def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
+def _x_carries_library_size_signal(X: Any, *, min_cv: float = 0.12, max_cells: int = 5000) -> bool:
+    """Return True when per-cell library sizes show meaningful sequencing-depth variation.
+
+    Raw counts (including kallisto/salmon decimal UMIs) retain depth signal in row sums;
+    normalize_total+log1p data does not. Used to avoid false 'already log-normalized'
+    detection on small-magnitude decimal count matrices.
+    """
+    if sparse.issparse(X):
+        lib = np.asarray(X.sum(axis=1)).ravel(dtype=float)
+    else:
+        lib = np.asarray(X, dtype=float).sum(axis=1)
+    lib = lib[np.isfinite(lib)]
+    if lib.size < 2:
+        return False
+    if lib.size > max_cells:
+        rng = np.random.default_rng(0)
+        lib = rng.choice(lib, size=max_cells, replace=False)
+    mean = float(np.mean(lib))
+    if mean <= 0:
+        return False
+    cv = float(np.std(lib) / mean)
+    return cv >= min_cv
+
+
+def _x_gene_dispersion_looks_raw(
+    X: Any, *, slope_threshold: float = 1.0, min_genes: int = 20, max_cells: int = 5000
+) -> bool:
+    """Return True when the cross-gene mean-variance relationship looks like raw counts.
+
+    Raw RNA-seq counts (Poisson/NB) have variance that grows roughly linearly-to-quadratically
+    with the mean across genes (log-log slope >= ~1). normalize_total+log1p compresses this
+    relationship to a much flatter slope. Unlike per-cell library-size CV
+    (``_x_carries_library_size_signal``), this is a cross-gene statistic and is not confounded
+    by real biological heterogeneity between cells/cell types, which can inflate per-cell
+    library-size CV even in properly log-normalized data (e.g. after ``anndata.concat`` drops
+    the ``uns['log1p']`` marker). Returns False (conservatively "not raw-looking") when there
+    are too few informative genes to estimate the relationship reliably.
+    """
+    if sparse.issparse(X):
+        n_cells = X.shape[0]
+        if n_cells > max_cells:
+            rng = np.random.default_rng(0)
+            idx = rng.choice(n_cells, size=max_cells, replace=False)
+            X = X[idx]
+        mean = np.asarray(X.mean(axis=0)).ravel()
+        mean_sq = np.asarray(X.multiply(X).mean(axis=0)).ravel()
+    else:
+        arr = np.asarray(X, dtype=float)
+        if arr.shape[0] > max_cells:
+            rng = np.random.default_rng(0)
+            idx = rng.choice(arr.shape[0], size=max_cells, replace=False)
+            arr = arr[idx]
+        mean = arr.mean(axis=0)
+        mean_sq = (arr**2).mean(axis=0)
+    var = np.clip(mean_sq - mean**2, 0, None)
+
+    mask = np.isfinite(mean) & np.isfinite(var) & (mean > 0.05) & (var > 0)
+    if int(mask.sum()) < min_genes:
+        return False
+    log_mean = np.log(mean[mask])
+    log_var = np.log(var[mask])
+    slope = float(np.polyfit(log_mean, log_var, 1)[0])
+    return slope >= slope_threshold
+
+
+def _x_looks_log_normalized(
+    X: Any, *, max_check: int = 100000, has_log1p_marker: bool = False
+) -> bool:
     """Return True when *X* is unlikely to be raw integer counts needing normalize+log1p."""
     if _is_integer_counts_like(X, max_check=max_check):
         return False
@@ -235,7 +329,18 @@ def _x_looks_log_normalized(X: Any, *, max_check: int = 100000) -> bool:
         return False
     mx = float(np.nanmax(finite))
     has_neg = bool(np.any(finite < 0))
-    return has_neg or mx <= 20.0
+    if has_neg:
+        return True
+    if has_log1p_marker and mx <= 20.0:
+        return True
+    if mx > 20.0:
+        return False
+    # Per-cell library-size CV alone is unreliable: real biological heterogeneity (different
+    # cell types/states with different expression breadth) can produce high CV even in data
+    # that is already correctly log-normalized, most commonly after anndata.concat() drops the
+    # uns['log1p'] marker. Require corroboration from the cross-gene mean-variance dispersion
+    # check (robust to cell-level heterogeneity) before concluding "still needs normalization".
+    return not (_x_carries_library_size_signal(X) and _x_gene_dispersion_looks_raw(X))
 
 
 def _clear_log_preprocess_metadata(adata: ad.AnnData) -> None:
@@ -286,7 +391,7 @@ def _reconcile_log1p_marker(adata: ad.AnnData) -> bool:
     arr = _dense_expression_matrix(adata.X)
     finite = arr[np.isfinite(arr)]
     x_is_scaled = _x_looks_zscore_scaled(finite) if finite.size else False
-    x_is_log = _x_looks_log_normalized(adata.X)
+    x_is_log = _x_looks_log_normalized(adata.X, has_log1p_marker=has_marker)
 
     if has_marker and x_is_scaled:
         _clear_log_preprocess_metadata(adata)
@@ -308,9 +413,10 @@ def _reconcile_log1p_marker(adata: ad.AnnData) -> bool:
 
     if x_is_log:
         if not has_marker:
-            logger.debug(
-                "DE preprocess: .X appears log-normalized without uns['log1p']; "
-                "skipping re-normalization."
+            logger.warning(
+                "DE preprocess: .X appears log-normalized without uns['log1p'] metadata; "
+                "skipping re-normalization. If this is raw decimal counts (e.g. kallisto/salmon "
+                "UMIs), pass de_preprocess='normalize_log1p' explicitly."
             )
         return True
 
@@ -595,6 +701,11 @@ def _pseudobulk_with_layers(
         X_source = adata.X if x_layer is None else adata.layers[x_layer]
         x_source_name = "adata.X" if x_layer is None else f"layer '{x_layer}'"
 
+    # Check count-likeness on the pre-aggregation, pre-rounding source matrix.
+    # Summing+rounding below always produces integer-valued output, so checking
+    # after aggregation would always pass and defeat strict_pydeseq2_counts.
+    x_source_is_count_like = _is_integer_counts_like(X_source)
+
     valid_mask = adata.obs[sample_col].notna() & adata.obs[groupby].notna()
     if not valid_mask.any():
         raise ValueError(
@@ -679,6 +790,10 @@ def _pseudobulk_with_layers(
         for layer in layers:
             adata_pb.layers[layer] = sparse.vstack(layer_rows[layer]).tocsr()
         adata_pb.obs_names_make_unique()
+        # Carry the pre-aggregation count-likeness verdict so downstream consumers
+        # (e.g. PyDESeq2 strict_pydeseq2_counts check) don't re-check the already-rounded X.
+        adata_pb.uns["pb_x_is_count_like"] = bool(x_source_is_count_like)
+        adata_pb.uns["pb_x_source_desc"] = x_source_name
     return adata_pb
 
 
@@ -721,10 +836,10 @@ def _fit_huber_bias_correction(
         the basic analysis clean for users who do not want the correction.
 
     Returns (residual, bias_info_dict) where bias_info contains:
-      - "bias_corrected": bool
+      - "bias_corrected": bool — True only when Huber length+intron regression succeeded
       - "method": the effective method used ("huber_length_intron" or "none")
       - "n_genes_used_for_fit": int
-      - "fallback_to_median": bool
+      - "fallback_to_median": bool — median centering used instead of Huber regression
       - "coef_gene_length", "coef_intron_number" (if regression succeeded)
       - "intercept" (if available)
     """
@@ -790,7 +905,8 @@ def _fit_huber_bias_correction(
     if not regression_succeeded and valid_expr.sum() > 0:
         residual[valid_expr] = delta_velocity[valid_expr] - np.nanmedian(delta_velocity[valid_expr])
         bias_info["fallback_to_median"] = True
-        bias_info["bias_corrected"] = True  # median correction still applied
+        # Median centering is a safe fallback but is not length/intron Huber correction.
+        bias_info["bias_corrected"] = False
 
     residual[~valid_expr] = 0.0
     return residual, bias_info

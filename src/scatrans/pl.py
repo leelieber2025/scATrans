@@ -1885,6 +1885,13 @@ def gseaplot(
     pheno_pos, pheno_neg : labels for phenotype (shown in plot).
     """
     with _style_context_if(use_style):
+        if isinstance(ranked_genes, pd.DataFrame):
+            raise TypeError(
+                "ranked_genes must be a one-dimensional pd.Series, dict, or gene list, "
+                f"but received a DataFrame with shape {ranked_genes.shape}. "
+                "Did you mean to pass the run_gsea() result as the second argument "
+                "(gsea_result=...) instead of the first positional argument?"
+            )
         # Normalize ranked input to Series
         if isinstance(ranked_genes, (list, tuple)):
             # assume order high->low, make scores

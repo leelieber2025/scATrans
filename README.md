@@ -1181,6 +1181,8 @@ adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
 
 `ensure_raw_counts()` will also try to recover from `adata.raw`. The functions emit clear warnings when they detect this situation.
 
+**Note on `anndata.concat()` and `de_preprocess="auto"`:** `ad.concat()` drops `.uns` by default, including the `uns['log1p']` marker that scATrans uses to detect already-log-normalized data. This is common when combining multiple samples for a case-vs-control comparison — each sample may be correctly `normalize_total` + `log1p`'d before concatenation, but the marker is gone afterward. `de_preprocess="auto"` still guards against double-log1p in this case via heuristics on `.X`, but for certainty, either re-set the marker after concatenating (`combined.uns["log1p"] = {"base": None}`) or pass `de_preprocess="none"` explicitly when you know `.X` is already log-normalized.
+
 ---
 
 ## Limitations

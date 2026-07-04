@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -257,6 +258,7 @@ def generate_gene_features_from_gtf(
         )
 
     n_before_names = len(gene_df)
+    gene_df["gene_name"] = gene_df["gene_name"].replace("", np.nan)
     gene_df = gene_df.dropna(subset=["gene_name"])
     n_missing_names = n_before_names - len(gene_df)
     if n_missing_names:
@@ -409,5 +411,18 @@ def add_gene_features(
 
     valid_count = int(adata.var["gene_length"].notna().sum())
     logger.info("Successfully mapped features for %d out of %d genes.", valid_count, adata.n_vars)
+
+    mapping_rate = valid_count / max(int(adata.n_vars), 1)
+    if mapping_rate < 0.2:
+        example_input = [str(g) for g in adata.var_names[:5]]
+        example_feat = [str(g) for g in gf.index[:5]]
+        msg = (
+            f"Low gene feature mapping rate ({mapping_rate:.1%}). "
+            f"Input examples: {example_input}; feature table examples: {example_feat}. "
+            "Check gene symbol casing (e.g. ACTB vs actb), organism, and whether "
+            "adata.var_names match the annotation used to build the feature table."
+        )
+        warnings.warn(msg, UserWarning, stacklevel=2)
+        logger.warning(msg)
 
     return adata

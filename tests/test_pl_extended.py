@@ -28,6 +28,12 @@ def test_volcano_plot_label_genes(results_df):
     plt.close(fig)
 
 
+def test_gseaplot_dataframe_first_arg_type_error():
+    gsea_res = pd.DataFrame({"Term": ["TERM1"], "NES": [1.5], "pvalue": [0.01]})
+    with pytest.raises(TypeError, match="gsea_result"):
+        scat.pl.gseaplot(gsea_res, show=False)
+
+
 def test_gseaplot_with_stored_curves():
     # gseapy-sorted ranking (descending scores)
     ranking = pd.Series(

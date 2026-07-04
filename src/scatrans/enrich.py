@@ -366,23 +366,25 @@ def _warn_user(msg: str) -> None:
 
 
 def _resolve_enrichment_padj_cutoff(
-    pval_cutoff: float,
+    pval_cutoff: float | None,
     padj_cutoff: float | None,
 ) -> float:
     """Resolve the effective adjusted-p cutoff; warn on legacy ``pval_cutoff`` usage."""
     if padj_cutoff is not None:
         cutoff = float(padj_cutoff)
-        if pval_cutoff != 0.05:
+        if pval_cutoff is not None:
             _warn_user(
                 "Both pval_cutoff and padj_cutoff were provided. "
                 "Using padj_cutoff; pval_cutoff is ignored."
             )
         return cutoff
-    _warn_user(
-        "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
-        "Please use `padj_cutoff` instead for clarity."
-    )
-    return float(pval_cutoff)
+    if pval_cutoff is not None:
+        _warn_user(
+            "`pval_cutoff` is deprecated (it applies to *adjusted* p-values, not raw p-values). "
+            "Please use `padj_cutoff` instead for clarity."
+        )
+        return float(pval_cutoff)
+    return 0.05
 
 
 def _apply_gene_case(genes: Iterable[Any], gene_case: str | None) -> list[str]:
@@ -659,7 +661,7 @@ def run_enrichment(
     background: Iterable[Any] | None = None,
     adata: Any
     | None = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
-    pval_cutoff: float = 0.05,
+    pval_cutoff: float | None = None,
     padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
@@ -1071,7 +1073,7 @@ def run_kegg(
     universe: Iterable[Any] | None = None,
     background: Iterable[Any] | None = None,
     adata: Any | None = None,  # forwarded to run_enrichment for smart universe default
-    pval_cutoff: float = 0.05,
+    pval_cutoff: float | None = None,
     padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
@@ -1152,7 +1154,7 @@ def run_go(
     universe: Iterable[Any] | None = None,
     background: Iterable[Any] | None = None,
     adata: Any | None = None,
-    pval_cutoff: float = 0.05,
+    pval_cutoff: float | None = None,
     padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
@@ -1279,7 +1281,7 @@ def run_go(
     # "ALL" case: run three and concat
     frames = []
     per_ontology_attrs: dict[str, dict] = {}
-    eff_cut = padj_cutoff if padj_cutoff is not None else pval_cutoff
+    eff_cut = _resolve_enrichment_padj_cutoff(pval_cutoff, padj_cutoff)
 
     for o in ont_list:
         gs_name = ont_map[o]
@@ -1961,6 +1963,25 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
             base_cols = ["Ontology"] + base_cols
         return pd.DataFrame(columns=base_cols)
 
+    base_cols = [
+        "Term",
+        "Description",
+        "Gene",
+        "Count",
+        "GeneRatio",
+        "GeneRatio_str",
+        "BgRatio",
+        "BgRatio_str",
+        "FoldEnrichment",
+        "RichFactor",
+        "Overlap",
+        "pvalue",
+        "p.adjust",
+        "TermSize",
+    ]
+    if has_ontology:
+        base_cols = ["Ontology"] + base_cols
+
     rows = []
     for _, row in res.iterrows():
         genes_str = str(row.get("Genes", "") or "")
@@ -1994,7 +2015,7 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
             )
             rows.append(rec)
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=base_cols) if not rows else pd.DataFrame(rows)
     # Ensure Ontology first if present
     if "Ontology" in df.columns:
         cols = ["Ontology"] + [c for c in df.columns if c != "Ontology"]
@@ -2738,7 +2759,7 @@ def compare_enrichment(
     gene_clusters: Mapping[str, Iterable[Any]],
     *,
     fun: Callable | None = None,
-    pval_cutoff: float = 0.05,
+    pval_cutoff: float | None = None,
     padj_cutoff: float | None = None,
     min_size: int = 5,
     max_size: int = 500,
@@ -2818,7 +2839,7 @@ def compare_enrichment(
             "For best cross-cluster comparability, pass the same adata (after store_raw_counts) or explicit universe."
         )
 
-    eff_cut = padj_cutoff if padj_cutoff is not None else pval_cutoff
+    eff_cut = _resolve_enrichment_padj_cutoff(pval_cutoff, padj_cutoff)
     eff_return_all = return_all
     if adjust_across_clusters:
         if not return_all:

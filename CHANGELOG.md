@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8 bugfix 2026-07-04]
+
+### Fixed
+- **Pseudobulk `strict_pydeseq2_counts` check ran on already-rounded data**: `_pseudobulk_with_layers`
+  always rounds aggregated sums to integers, so the PyDESeq2 count-likeness check in
+  `_run_de_wrapper` (which inspected the rounded pseudobulk `.X`) could never detect that the
+  underlying per-cell source (e.g. a `pb_x_layer` pointing at log-normalized data) was not raw
+  counts. The check now runs on the pre-aggregation, pre-rounding source matrix inside
+  `_pseudobulk_with_layers` and the verdict is carried via `adata.uns["pb_x_is_count_like"]` to
+  `_run_de_wrapper`, so `strict_pydeseq2_counts=True` correctly rejects non-count pseudobulk input.
+- **`de_preprocess="auto"` false "already log-normalized" detection regressed by real cell
+  heterogeneity**: the per-cell library-size CV heuristic added to detect raw counts when
+  `uns['log1p']` is missing (e.g. after `anndata.concat()`, which drops `.uns`) could misfire on
+  correctly log-normalized data from heterogeneous cell populations (different cell types/states
+  varying in expression breadth inflate per-cell CV even post-log1p), triggering a spurious
+  second `normalize_total` + `log1p` pass that systematically compresses effect sizes. Added a
+  cross-gene mean-variance dispersion check (`_x_gene_dispersion_looks_raw`), which is not
+  confounded by cell-level heterogeneity, and now require it to corroborate the library-size CV
+  signal before concluding data still needs normalization.
+
+### Documentation
+- README: noted that `anndata.concat()` drops `uns['log1p']` and recommends re-setting the marker
+  or passing `de_preprocess="none"` explicitly after combining pre-normalized samples.
+
 ## [0.9.8] - 2026-07-03
 
 ### Changed (user-visible default behavior)
