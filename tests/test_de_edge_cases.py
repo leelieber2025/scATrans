@@ -57,18 +57,24 @@ def test_scanpy_backends_agree_direction_on_toy():
 def test_mixedlm_constant_gene_counted_as_failed():
     """Near-constant genes must increment n_genes_failed_fit, not silently pass as significant."""
     np.random.seed(2)
-    n_cells = 24
+    n_samples_per_group = 4
+    cells_per_sample = 3
+    n_cells = n_samples_per_group * cells_per_sample * 2
     X = np.random.exponential(1.0, size=(n_cells, 3))
     X[:, 2] = 5.0  # constant column
+    samples_a = [f"A_s{i}" for i in range(n_samples_per_group) for _ in range(cells_per_sample)]
+    samples_b = [f"B_s{i}" for i in range(n_samples_per_group) for _ in range(cells_per_sample)]
     obs = pd.DataFrame(
         {
-            "condition": ["A"] * 12 + ["B"] * 12,
-            "sample": (["s1"] * 6 + ["s2"] * 6) * 2,
+            "condition": ["A"] * (n_cells // 2) + ["B"] * (n_cells // 2),
+            "sample": samples_a + samples_b,
         }
     )
     adata = ad.AnnData(X, obs=obs, var=pd.DataFrame(index=["v0", "v1", "const"]))
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
+    # Post-preprocess constant column (raw 5.0 is not constant after library-size norm).
+    adata.X[:, 2] = 3.0
 
     res = _run_mixedlm_de(
         adata,

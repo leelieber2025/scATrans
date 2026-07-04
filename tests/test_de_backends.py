@@ -105,9 +105,10 @@ def test_active_score_pb_x_layer_sentinel(adata_pb):
 )
 @pytest.mark.slow
 def test_differential_expression_pseudobulk_pydeseq2(adata_pb):
-    scat.store_raw_counts(adata_pb, layer="counts")
+    ad = adata_pb.copy()
+    scat.store_raw_counts(ad, layer="counts")
     ad, res = scat.differential_expression(
-        adata_pb,
+        ad,
         groupby="condition",
         target_group="Disease",
         reference_group="Control",
@@ -115,6 +116,9 @@ def test_differential_expression_pseudobulk_pydeseq2(adata_pb):
         sample_col="sample",
         pseudobulk_de_backend="pydeseq2",
         de_preprocess="none",
+        # PyDESeq2 needs integer counts; spliced+unspliced sums are often non-integer.
+        pb_use_total_for_x=False,
+        pb_x_layer="counts",
     )
     assert "logFC" in res.columns
     assert ad.uns["scatrans"]["use_pseudobulk"] is True
@@ -188,17 +192,21 @@ def test_active_score_subset_and_gene_type(adata_basic):
 )
 @pytest.mark.slow
 def test_active_score_pseudobulk_pydeseq2(adata_pb):
-    scat.store_raw_counts(adata_pb, layer="counts")
+    ad = adata_pb.copy()
+    scat.store_raw_counts(ad, layer="counts")
     res, _, allr = scat.active_score(
-        adata_pb,
+        ad,
         groupby="condition",
         target_group="Disease",
         reference_group="Control",
         use_pseudobulk=True,
         sample_col="sample",
+        pseudobulk_de_backend="pydeseq2",
         de_preprocess="none",
         use_permutation=False,
         show_plot=False,
+        pb_use_total_for_x=False,
+        pb_x_layer="counts",
     )
     assert "active_score" in allr.columns
     assert res.uns["scatrans"]["use_pseudobulk"] is True

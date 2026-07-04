@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Documented in README §3.4 and API reference.
 
 ### Fixed
+- **PyDESeq2 pseudobulk tests**: use ``pb_x_layer="counts"`` + ``pb_use_total_for_x=False``
+  (``spliced+unspliced`` sums are non-integer and correctly fail ``strict_pydeseq2_counts``).
+- **MixedLM edge-case test**: design meets ≥4 samples/group after stricter mixed-model gates.
+- **Small-sample edge tests** (`tests/test_small_sample_edges.py`): 1–2 cells/group, all-zero genes.
+- **Regression tests**: ``max_avoid_points`` volcano subsampling, numpy ``raw_gene_list`` enrichment
+  universe, and ``recommend_workflow`` auto-disabling ``use_permutation`` on small pseudobulk designs.
+- **README**: mixed-model small-sample guidance (≥4 samples/group); documented ``paired_replicates``
+  and ``filter_active_genes(preset='significant')``.
 - **`run_enrichment` / `run_kegg` DataFrame `gene_list`**: gene symbols read from index
   (or ``gene`` / ``names`` columns), not column names.
 - **`run_gsea` DataFrame `ranked_genes`**: index-based ``all_results`` support.

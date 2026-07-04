@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import anndata as ad
 import matplotlib as mpl
@@ -717,6 +717,84 @@ def test_mixedlm_keeps_raw_groups_when_sample_labels_are_globally_unique():
     assert meta["grouping"] == "sample_col_raw"
     assert meta["overlapping_sample_labels"] == []
     assert meta["n_random_groups"] == 6
+
+
+def test_maybe_repel_labels_subsamples_avoid_points_for_large_volcanoes():
+    """Genome-wide volcanoes must subsample avoid-points before adjustText (MemoryError guard)."""
+    from scatrans.pl import _maybe_repel_labels
+
+    n_total = 25_000
+    x = np.arange(n_total, dtype=float)
+    y = np.arange(n_total, dtype=float) * 0.01
+    texts = [MagicMock()]
+    ax = MagicMock()
+
+    with patch("adjustText.adjust_text") as mock_adjust:
+        _maybe_repel_labels(
+            texts,
+            x,
+            y,
+            ax,
+            label_repel=True,
+            max_avoid_points=5000,
+        )
+
+    mock_adjust.assert_called_once()
+    passed_x = mock_adjust.call_args.kwargs["x"]
+    passed_y = mock_adjust.call_args.kwargs["y"]
+    assert len(passed_x) == 5000
+    assert len(passed_y) == 5000
+
+
+def test_run_enrichment_reads_numpy_raw_gene_list_after_h5ad_roundtrip(adata_basic):
+    """raw_gene_list stored as ndarray (h5ad reload) must not break universe auto-detection."""
+    ad = adata_basic.copy()
+    scat.store_raw_counts(ad, layer="counts")
+    # AnnData/h5py round-trip deserializes string lists as numpy arrays.
+    ad.uns["scatrans"]["raw_gene_list"] = np.asarray(ad.var_names, dtype=str)
+    genes = ad.var_names[:3].tolist()
+    gene_sets = {f"TERM_{g}": [g] for g in genes}
+
+    res = scat.run_enrichment(
+        genes,
+        gene_sets=gene_sets,
+        adata=ad,
+        pval_cutoff=1.0,
+        min_size=1,
+        return_all=True,
+        verbose=False,
+    )
+    ui = res.attrs.get("universe_info", {})
+    assert ui.get("provided_size") == ad.n_vars
+    assert ui.get("effective_universe_size", 0) > 0
+
+
+def test_recommend_workflow_disables_permutation_on_small_pseudobulk_design():
+    """Few exact pseudobulk shuffles must auto-set use_permutation=False (avoid runaway runtime)."""
+    rng = np.random.default_rng(0)
+    n_cells, n_genes = 48, 50
+    X = rng.negative_binomial(4, 0.45, size=(n_cells, n_genes)).astype(float)
+    ad = sc.AnnData(X)
+    ad.obs["condition"] = ["Disease"] * 24 + ["Control"] * 24
+    ad.obs["sample"] = ["T0", "T1", "T2"] * 8 + ["R0", "R1", "R2"] * 8
+    ad.layers["spliced"] = X.copy()
+    ad.layers["unspliced"] = X * 0.5
+
+    rec = scat.recommend_workflow(
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        sample_col="sample",
+    )
+
+    assert rec["workflow_preset"] == "pseudobulk_report"
+    assert rec["suggested_kwargs"].get("use_pseudobulk") is True
+    assert rec["use_permutation"] is False
+    assert rec["suggested_kwargs"]["use_permutation"] is False
+    assert rec["filter_preset"] == "pseudobulk"
+    assert (rec["power_summary"] or {}).get("max_exact_permutations_pseudobulk", 999) < 100
+    assert any("use_permutation=False" in w for w in rec["warnings"])
 
 
 def test_mixed_model_rejects_too_few_samples_per_group():

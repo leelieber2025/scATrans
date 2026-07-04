@@ -325,11 +325,21 @@ candidates = scat.filter_active_genes(
 # Or use presets that choose reasonable defaults for common analysis styles
 candidates = scat.filter_active_genes(all_results, preset="heuristic")
 
+# Reproduce the built-in `significant` list exactly (requires use_permutation=True upstream)
+builtin_again = scat.filter_active_genes(all_results, preset="significant")
+assert builtin_again.index.tolist() == significant.index.tolist()
+
 # Advanced usage
 mask = scat.filter_active_genes(all_results, return_mask=True)  # boolean Series
 filtered_inplace = scat.filter_active_genes(all_results, preset="heuristic", inplace=True)
 # or preset="pseudobulk" after aggregation, or preset="permissive"
 ```
+
+**`preset="significant"`** (aliases: `"builtin"`, `"active_score_significant"`) replays the
+built-in `significant` mask from `active_score` using metadata in
+`all_results.attrs["scatrans_filter_context"]`. It requires `use_permutation=True` on the
+upstream run. When permutation FDR was disabled (e.g. too few pseudobulk shuffles),
+`preset="heuristic"` is often a better exploratory fallback than `preset="significant"`.
 
 For pure differential_expression() results you can also select downregulated genes:
 ```python
@@ -779,7 +789,11 @@ Primary result columns use **unspliced / nascent excess** terminology (not RNA v
 
 When `use_permutation=True`, the built-in mask uses the same default thresholds as
 `filter_active_genes(..., preset="heuristic")` (see `HEURISTIC_FILTER_DEFAULTS` in
-`tl.py`). Under default parameters it requires **all** of:
+`tl.py`). To recover that exact list later from `all_results`, use
+`filter_active_genes(all_results, preset="significant")` — it reads the stored filter
+context rather than re-guessing cutoffs.
+
+Under default parameters the built-in mask requires **all** of:
 
 - `logFC > logfc_cutoff` (default **0.35**)
 - `p_adj < pval_cutoff` (default 0.05)
@@ -919,7 +933,30 @@ Requires `sample_col` (the column identifying biological replicates/individuals)
 - `delta_variance` is always available in `all_results` when the flag is on; you can use it post-hoc as an additional filter.
 - Use `use_delta_variance_pval=True` only if you want the LRT p-value to participate in the built-in `significant` mask.
 
-**Practical note on small numbers of samples:** With very few biological replicates, pseudobulk aggregation can drive most `unspliced_excess_residual` values close to zero. In such regimes the cell-level mixed-model path (`use_mixed_model=True`, `use_pseudobulk=False`) often preserves more of the nascent-excess signal while still respecting sample structure.
+**Small-sample guidance:** The mixed-model path requires **≥4 biological samples per group**
+and **≥6 total random-effect groups**; otherwise `active_score(..., use_mixed_model=True)`
+raises `ValueError`. With fewer replicates, use **`use_pseudobulk=True`** +
+`pseudobulk_de_backend="pydeseq2"` instead (and prefer `filter_active_genes(preset="pseudobulk")`
+or DE `p_adj` for significance). `recommend_workflow()` and `diagnose_design()` surface
+this automatically when `sample_col` is provided.
+
+**Paired replicate designs:** When the same `sample_col` IDs appear in both conditions
+(e.g. `rep1`/`rep2` reused as labels in Disease and Control), the default mixed-model
+grouping uses composite `{condition}::{sample}` random effects so unpaired samples are not
+merged. For true paired/blocking designs (same individual measured in both conditions),
+pass **`paired_replicates=True`** so the raw `sample_col` IDs define the random intercept.
+
+```python
+adata_res, significant, all_results = scat.active_score(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    sample_col="mouse_id",
+    use_mixed_model=True,       # only when >=4 samples/group
+    paired_replicates=True,     # paired/blocking: same ID in both conditions
+)
+```
 
 The mixed-model settings and median `delta_variance` are recorded in diagnostics.
 
@@ -937,7 +974,7 @@ Use when you have sufficient cells and want local smoothing. The function falls 
 
 - `active_score(...)` — main analysis for active transcription from velocity data. Returns `(adata_res, significant, all_results)`.
 - `differential_expression(...)` — standalone DE (no velocity data required). Supports the same backends as `active_score` (including optional Memento). Returns `(adata, results_df)`.
-- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset`, `logfc_direction="up"|"down"|"both"`, etc. Works for both `active_score` and `differential_expression` results (including downregulated candidates).
+- `filter_active_genes(results_df, ...)` — post-filter the full ranked table. Supports `preset` (`"heuristic"`, `"pseudobulk"`, **`"significant"`**, `"permissive"`), `logfc_direction="up"|"down"|"both"`, etc. `preset="significant"` reproduces the built-in `significant` list when `use_permutation=True` was used upstream. Works for both `active_score` and `differential_expression` results (including downregulated candidates).
 - `store_raw_counts` / `ensure_raw_counts` / `restore_raw_counts` — preserve the original full count matrix and spliced/unspliced layers (call early, before HVG/normalize). Essential for correct backgrounds in enrichment and for count-based DE backends.
 
 ### Common parameters
@@ -951,6 +988,7 @@ These are the common "free switches" for the basic pipeline (including pseudobul
 | `target_group` / `reference_group` | `"GA"` / `"Ctrl"` | The two conditions to compare |
 | `use_pseudobulk`           | `False`                  | Set to `True` + provide `sample_col` for pseudobulk analysis |
 | `sample_col`               | `None`                   | Required when `use_pseudobulk=True` (biological replicate identifier) |
+| `paired_replicates`        | `False`                  | Mixed model only: `True` when the same `sample_col` ID is the same individual across conditions (paired/blocking design). Default `False` uses `{condition}::{sample}` groups when labels overlap. |
 | `pseudobulk_de_backend`    | `"pydeseq2"`             | `"pydeseq2"` or `"scanpy"` (when `use_pseudobulk=True`) |
 | `de_method`                | `"t-test_overestim_var"` | DE method for scanpy path (e.g. `"wilcoxon"`, `"t-test"`, ...) |
 | `show_plot`                | `False`                  | Show a comet plot at the end |
@@ -961,7 +999,7 @@ These are the common "free switches" for the basic pipeline (including pseudobul
 - `use_permutation`, `n_perm`, `perm_de_backend` (default `"same"`), `unspliced_excess_fdr_cutoff` (and deprecated `active_fdr_cutoff`)
 - `bias_correction` ("huber_length_intron" or "none")
 - `show_effective_gamma`, `gamma_method` (including "empirical_bayes" hierarchical), `prior_weight`
-- `use_mixed_model`, `use_delta_variance_pval`, `mixed_model_pval`
+- `use_mixed_model`, `paired_replicates`, `use_delta_variance_pval`, `mixed_model_pval`
 - `mode` ("heuristic" or "advanced")
 
 Full signatures and all parameters are documented in the function docstrings and the source.
