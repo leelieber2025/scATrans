@@ -179,8 +179,20 @@ def _maybe_repel_labels(
     ax,
     *,
     label_repel: bool = True,
+    max_avoid_points: int = 5000,
 ) -> None:
-    """Apply adjustText when available; optional fallback with overlap warning."""
+    """Apply adjustText when available; optional fallback with overlap warning.
+
+    ``x``/``y`` are the full set of scatter-point coordinates that adjustText
+    should steer labels away from (not just the labeled points themselves).
+    adjustText builds a KDTree over these and runs ``query_pairs`` on them, which
+    scales very poorly (memory blows up into the GBs, eventually raising
+    ``MemoryError``) once there are tens of thousands of points — e.g. a
+    genome-wide volcano plot with ~25-30k genes. Since these points are only
+    used to *avoid* placing labels on top of them (not for exact rendering), we
+    randomly subsample down to ``max_avoid_points`` when there are more than
+    that, which keeps repelling effective without the memory blowup.
+    """
     if not texts:
         return
     if not label_repel:
@@ -193,6 +205,19 @@ def _maybe_repel_labels(
             "Install with: pip install adjustText — or pass label_repel=False."
         )
         return
+    x = np.asarray(x)
+    y = np.asarray(y)
+    if x.size > max_avoid_points:
+        logger.info(
+            "%d points to avoid for label repelling exceeds max_avoid_points=%d; "
+            "randomly subsampling to keep adjustText's memory usage bounded.",
+            x.size,
+            max_avoid_points,
+        )
+        rng = np.random.default_rng(0)
+        idx = rng.choice(x.size, size=max_avoid_points, replace=False)
+        x = x[idx]
+        y = y[idx]
     adjust_text(
         texts,
         x=x,
@@ -2100,6 +2125,88 @@ def gseaplot(
         return fig, ax1
 
 
+# ggVolcano palettes — https://github.com/BioSenior/ggVolcano (Down, Normal, Up)
+GGVOLCANO_FILLS_DEFAULT: tuple[str, str, str] = ("#00AFBB", "#999999", "#FC4E07")
+GGVOLCANO_GRADUAL_FILLS: tuple[str, ...] = (
+    "#39489f",
+    "#39bbec",
+    "#f9ed36",
+    "#f38466",
+    "#b81f25",
+)
+GGVOLCANO_GRADUAL_COLORS: tuple[str, ...] = (
+    "#17194e",
+    "#68bfe7",
+    "#f9ed36",
+    "#a22f27",
+    "#211f1f",
+)
+_GGVOLCANO_LEGEND_ANCHORS: dict[str, tuple[float, float, str, str]] = {
+    "UL": (0.01, 0.99, "left", "top"),
+    "UR": (0.99, 0.99, "right", "top"),
+    "DL": (0.01, 0.01, "left", "bottom"),
+    "DR": (0.99, 0.01, "right", "bottom"),
+}
+
+
+def _volcano_add_regulate(
+    plot_df: pd.DataFrame, *, logfc_cutoff: float, pval_cutoff: float
+) -> pd.Series:
+    """Classify genes as Up / Down / Normal (ggVolcano ``add_regulate``)."""
+    regulate = pd.Series("Normal", index=plot_df.index, dtype=object)
+    up = (plot_df["logFC"] > logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+    down = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
+    regulate.loc[up] = "Up"
+    regulate.loc[down] = "Down"
+    return regulate
+
+
+def _apply_ggvolcano_theme(ax, *, show_grid: bool = True) -> None:
+    """Matplotlib equivalent of ggplot2 ``theme_bw()`` used by ggVolcano."""
+    ax.set_facecolor("white")
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("black")
+        spine.set_linewidth(0.8)
+    if show_grid:
+        ax.grid(True, linestyle="-", linewidth=0.6, color="#E5E5E5", alpha=0.85, zorder=0)
+    ax.set_axisbelow(True)
+
+
+def _volcano_ggvolcano_cutoff_lines(
+    ax, *, logfc_cutoff: float, pval_cutoff: float, color: str = "#333333"
+) -> None:
+    y_cut = float(_safe_neg_log10(pval_cutoff))
+    for x in (-logfc_cutoff, logfc_cutoff):
+        ax.axvline(x, color=color, linestyle="--", linewidth=0.9, alpha=0.75, zorder=1)
+    ax.axhline(y_cut, color=color, linestyle="--", linewidth=0.9, alpha=0.75, zorder=1)
+
+
+def _volcano_collect_labels(
+    plot_df: pd.DataFrame,
+    *,
+    top_n: int,
+    label_genes: Optional[Iterable[str]],
+    label_by: str,
+    min_label_score: Optional[float],
+) -> pd.DataFrame:
+    genes_to_label: set[str] = set()
+    if label_genes is not None:
+        genes_to_label.update(str(g).strip() for g in label_genes if str(g).strip())
+    label_pool = plot_df
+    if min_label_score is not None and "active_score" in label_pool.columns:
+        label_pool = label_pool[label_pool["active_score"] >= float(min_label_score)]
+    if top_n > 0:
+        if label_by == "active_score" and "active_score" in label_pool.columns:
+            top_df = label_pool.nlargest(top_n, "active_score")
+        else:
+            top_df = label_pool.nsmallest(top_n, "p_adj")
+        genes_to_label.update(str(g) for g in top_df.index)
+    if not genes_to_label:
+        return pd.DataFrame()
+    return plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy()
+
+
 def volcano_plot(
     df,
     top_n=10,
@@ -2120,6 +2227,12 @@ def volcano_plot(
     logfc_cutoff=0.5,
     pval_cutoff=0.05,
     color_by="active_score",
+    style: str = "auto",
+    legend_position: str = "UL",
+    fills: Optional[tuple[str, str, str]] = None,
+    colors: Optional[tuple[str, str, str]] = None,
+    add_cutoff_lines: bool = True,
+    label_by: str = "p_adj",
     ax=None,
     show: bool = True,
     use_style: bool = False,
@@ -2149,9 +2262,27 @@ def volcano_plot(
       - `min_size` / `max_size`: bounds for the variable sizing case.
       - When no "active_score" (pure DE volcano), uses small p-value based base so points start small.
 
-    Style reference: https://github.com/BioSenior/ggVolcano (label control,
-    clean up/down distinction, readable labels with repel).
+    style : {"auto", "ggvolcano", "gradual"}, default "auto"
+        - ``"auto"``: legacy scATrans behaviour (active_score colormap when present).
+        - ``"ggvolcano"``: classic three-colour volcano from
+          `ggVolcano <https://github.com/BioSenior/ggVolcano>`_ (teal Down /
+          grey Normal / orange Up, ``theme_bw``, dashed cutoffs, labels by FDR).
+        - ``"gradual"``: ``gradual_volcano`` gradient fill/size by ``-log10(FDR)``.
+    legend_position : {"UL", "UR", "DL", "DR"}, default "UL"
+        In-axes legend anchor (ggVolcano styles only).
+    fills, colors : tuple of 3 hex colours, optional
+        Override Down / Normal / Up fill and stroke (``style="ggvolcano"``).
+    add_cutoff_lines : bool, default True
+        Draw dashed logFC and FDR threshold lines.
+    label_by : {"p_adj", "active_score"}, default "p_adj"
+        Rank genes for automatic labels (``top_n``). ggVolcano uses smallest FDR.
+
+    Style reference: https://github.com/BioSenior/ggVolcano
     """
+    style_norm = str(style).lower().strip()
+    if style_norm not in ("auto", "ggvolcano", "gradual"):
+        raise ValueError(f"style must be 'auto', 'ggvolcano', or 'gradual'; got {style!r}")
+
     with _style_context_if(use_style):
         logger.info("Generating 2D volcano plot...")
 
@@ -2199,9 +2330,166 @@ def volcano_plot(
                 fig = ax.figure
                 _created_fig = False
             _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            if return_data:
+                return fig, ax, plot_df
             return fig, ax
 
-        # ggVolcano-style classic coloring (up/down/ns) when not using active_score
+        if style_norm in ("ggvolcano", "gradual"):
+            if ax is None:
+                fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+                _created_fig = True
+            else:
+                fig = ax.figure
+                _created_fig = False
+
+            if style_norm == "ggvolcano":
+                fill_map = dict(
+                    zip(
+                        ("Down", "Normal", "Up"),
+                        fills or GGVOLCANO_FILLS_DEFAULT,
+                        strict=True,
+                    )
+                )
+                stroke_map = dict(
+                    zip(
+                        ("Down", "Normal", "Up"),
+                        colors or fills or GGVOLCANO_FILLS_DEFAULT,
+                        strict=True,
+                    )
+                )
+                regulate = _volcano_add_regulate(
+                    plot_df, logfc_cutoff=logfc_cutoff, pval_cutoff=pval_cutoff
+                )
+                pt_size = float(s) * point_scale if s is not None else max(8.0, 10.0 * point_scale)
+                for cat in ("Down", "Normal", "Up"):
+                    mask = regulate == cat
+                    if not mask.any():
+                        continue
+                    sub = plot_df.loc[mask]
+                    ax.scatter(
+                        sub["logFC"],
+                        sub["neg_log_pval"],
+                        s=pt_size,
+                        c=fill_map[cat],
+                        edgecolors=stroke_map[cat],
+                        linewidths=0.35,
+                        alpha=alpha,
+                        zorder=3,
+                    )
+                if add_cutoff_lines:
+                    _volcano_ggvolcano_cutoff_lines(
+                        ax, logfc_cutoff=logfc_cutoff, pval_cutoff=pval_cutoff
+                    )
+                legend_handles = [
+                    mpl.lines.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="",
+                        markersize=6,
+                        markerfacecolor=fill_map[c],
+                        markeredgecolor=stroke_map[c],
+                        markeredgewidth=0.4,
+                        label=c,
+                    )
+                    for c in ("Down", "Normal", "Up")
+                ]
+                leg_pos = legend_position.upper()
+                anchor = _GGVOLCANO_LEGEND_ANCHORS.get(leg_pos, _GGVOLCANO_LEGEND_ANCHORS["UL"])
+                ax.legend(
+                    handles=legend_handles,
+                    title="Regulate",
+                    frameon=True,
+                    facecolor="white",
+                    edgecolor="none",
+                    fontsize=max(8, fontsize - 2),
+                    title_fontsize=max(9, fontsize - 1),
+                    loc="upper left",
+                    bbox_to_anchor=(anchor[0], anchor[1]),
+                    bbox_transform=ax.transAxes,
+                )
+            else:  # gradual
+                from matplotlib.colors import LinearSegmentedColormap
+
+                vals = plot_df["neg_log_pval"].to_numpy(dtype=float)
+                vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                    vmin, vmax = 0.0, max(1.0, float(np.nanmax(vals)) if np.isfinite(np.nanmax(vals)) else 1.0)
+                fill_cmap = LinearSegmentedColormap.from_list(
+                    "ggvolcano_gradual_fill", list(GGVOLCANO_GRADUAL_FILLS), N=256
+                )
+                edge_cmap = LinearSegmentedColormap.from_list(
+                    "ggvolcano_gradual_edge", list(GGVOLCANO_GRADUAL_COLORS), N=256
+                )
+                norm = Normalize(vmin=vmin, vmax=vmax)
+                if s is not None:
+                    sizes = np.full(len(plot_df), float(s) * point_scale)
+                else:
+                    smin, smax = 5.0 * point_scale, 40.0 * point_scale
+                    sizes = smin + (vals - vmin) / (vmax - vmin + 1e-12) * (smax - smin)
+                scatter = ax.scatter(
+                    plot_df["logFC"],
+                    plot_df["neg_log_pval"],
+                    s=np.clip(sizes, min_size, max_size),
+                    c=vals,
+                    cmap=fill_cmap,
+                    norm=norm,
+                    edgecolors=edge_cmap(norm(vals)),
+                    linewidths=0.35,
+                    alpha=alpha,
+                    zorder=3,
+                )
+                if add_cutoff_lines:
+                    _volcano_ggvolcano_cutoff_lines(
+                        ax, logfc_cutoff=logfc_cutoff, pval_cutoff=pval_cutoff
+                    )
+                cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.02, aspect=20)
+                cbar.set_label(
+                    r"$-Log_{10}$ FDR",
+                    fontsize=max(9, fontsize - 1),
+                    rotation=270,
+                    labelpad=12,
+                )
+                cbar.outline.set_visible(False)
+
+            label_df = _volcano_collect_labels(
+                plot_df,
+                top_n=top_n,
+                label_genes=label_genes,
+                label_by=label_by if style_norm == "ggvolcano" else "p_adj",
+                min_label_score=min_label_score,
+            )
+            lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 3)
+            texts = []
+            for idx, row in label_df.iterrows():
+                txt = ax.text(
+                    row["logFC"],
+                    row["neg_log_pval"],
+                    str(idx),
+                    fontsize=lbl_fs,
+                    color="#111111",
+                )
+                texts.append(txt)
+            _maybe_repel_labels(
+                texts,
+                plot_df["logFC"].values,
+                plot_df["neg_log_pval"].values,
+                ax,
+                label_repel=label_repel,
+            )
+
+            ax.set_xlabel(r"$Log_2$ FC", fontsize=fontsize)
+            ax.set_ylabel(r"$-Log_{10}$ FDR", fontsize=fontsize)
+            if title:
+                ax.set_title(title, fontsize=fontsize + 1, pad=12)
+            _apply_ggvolcano_theme(ax, show_grid=True)
+
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            if return_data:
+                return fig, ax, plot_df
+            return fig, ax
+
+        # auto style: legacy scATrans coloring
         if color_by == "active_score" and "active_score" in plot_df.columns:
             color_values = plot_df["active_score"]
             cbar_label = "Active Score"

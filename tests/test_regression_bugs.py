@@ -532,3 +532,211 @@ def test_comet_plot_style_context_restored_on_validation_error():
         pytest.fail("expected ValueError for top_n=-1")
     assert float(mpl.rcParams["figure.dpi"]) == before
     plt.rcdefaults()
+
+
+def test_filter_significant_preset_matches_builtin_when_perm_fdr_disabled(adata_basic):
+    """Small n_perm disables FDR; filter must still match built-in significant list."""
+    _, sig, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_permutation=True,
+        n_perm=30,
+        random_seed=1,
+        n_jobs=1,
+        show_plot=False,
+    )
+    ctx = allr.attrs.get("scatrans_filter_context", {})
+    assert ctx.get("use_fdr_for_significance") is False
+    filt_sig = scat.filter_active_genes(allr, preset="significant")
+    filt_heu = scat.filter_active_genes(allr, preset="heuristic")
+    assert sig.index.tolist() == filt_sig.index.tolist()
+    assert sig.index.tolist() == filt_heu.index.tolist()
+
+
+def test_filter_heuristic_skips_fdr_when_context_disables_it(adata_basic):
+    """preset='heuristic' must not apply FDR cutoffs when perm FDR was disabled upstream."""
+    _, sig, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_permutation=True,
+        n_perm=30,
+        random_seed=2,
+        n_jobs=1,
+        show_plot=False,
+    )
+    assert "scatrans_filter_context" in allr.attrs
+    manual = scat.filter_active_genes(
+        allr,
+        preset="heuristic",
+        unspliced_excess_fdr_cutoff=0.05,
+        active_score_fdr_cutoff=0.25,
+    )
+    relaxed = scat.filter_active_genes(allr, preset="heuristic")
+    assert len(relaxed) >= len(sig)
+    assert len(manual) <= len(relaxed)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("gseapy") is None,
+    reason="gseapy not installed",
+)
+def test_run_gsea_accepts_all_results_dataframe_index():
+    """run_gsea must read gene symbols from DataFrame index, not column positions."""
+    all_results = pd.DataFrame(
+        {
+            "active_score": [90.0, 80.0, 10.0, 5.0],
+            "logFC": [1.5, 1.2, -0.8, -1.0],
+            "unspliced_excess_delta": [2.0, 1.5, -0.5, -0.3],
+        },
+        index=["Il1r2", "Hdc", "Gapdh", "Actb"],
+    )
+    gene_sets = {
+        "IMMUNE_UP": ["Il1r2", "Hdc", "Csf3r"],
+        "HOUSE": ["Gapdh", "Actb"],
+    }
+    res = scat.run_gsea(
+        all_results,
+        gene_sets,
+        score_column="logFC",
+        nperm=50,
+        min_size=1,
+        verbose=False,
+    )
+    assert not res.empty, res.attrs.get("reason")
+    assert "NES" in res.columns or "ES" in res.columns
+
+
+def test_clean_gene_list_accepts_all_results_dataframe_index():
+    """run_enrichment gene_list must read gene index, not column names."""
+    from scatrans.enrich import _clean_gene_list
+
+    df = pd.DataFrame(
+        {"logFC": [1.5, 1.2], "active_score": [90.0, 80.0]},
+        index=["Il1r2", "Hdc"],
+    )
+    assert _clean_gene_list(df) == ["Il1r2", "Hdc"]
+    assert _clean_gene_list(df) != ["logFC", "active_score"]
+
+
+def test_run_enrichment_accepts_filtered_dataframe_gene_list():
+    """Passing filter/significant DataFrame directly must not use column names as genes."""
+    df = pd.DataFrame(
+        {"logFC": [1.5, 1.2]},
+        index=["Il1r2", "Hdc"],
+    )
+    gene_sets = {"TERM": ["Il1r2", "Hdc", "Gapdh"]}
+    res = scat.run_enrichment(
+        df,
+        gene_sets,
+        universe=["Il1r2", "Hdc", "Gapdh", "Actb"],
+        min_size=1,
+        return_all=True,
+        verbose=False,
+    )
+    assert res.attrs.get("reason") != "gene_list_empty"
+    info = res.attrs.get("universe_info") or {}
+    assert info.get("n_input_raw") == 2
+    assert info.get("n_input_mapped") == 2
+    assert not res.empty
+
+
+def test_extract_gene_lists_from_all_results_index():
+    """extract_gene_lists must use gene index for standard all_results tables."""
+    all_results = pd.DataFrame(
+        {
+            "logFC": [1.5, 1.2, -0.9],
+            "p_adj": [0.01, 0.02, 0.01],
+            "active_score": [90.0, 80.0, 10.0],
+        },
+        index=["Il1r2", "Hdc", "Gapdh"],
+    )
+    out = scat.extract_gene_lists(all_results, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up")
+    assert "Il1r2" in out["contrast"]
+    assert "Hdc" in out["contrast"]
+    assert "logFC" not in out["contrast"]
+
+
+def test_run_gsea_legacy_two_column_dataframe_still_works():
+    """Legacy [gene, score] two-column tables without gene index remain supported."""
+    legacy = pd.DataFrame(
+        {
+            "gene": ["Il1r2", "Hdc", "Gapdh"],
+            "logFC": [1.5, 1.2, -0.2],
+        }
+    )
+    gene_sets = {"TERM": ["Il1r2", "Hdc"]}
+    if importlib.util.find_spec("gseapy") is None:
+        pytest.skip("gseapy not installed")
+    res = scat.run_gsea(legacy, gene_sets, nperm=20, min_size=1, verbose=False)
+    assert not res.empty, res.attrs.get("reason")
+
+
+def test_mixedlm_composite_groups_when_sample_labels_reused_across_conditions():
+    """rep1/rep2 reused per condition must not share one random effect (unpaired)."""
+    from scatrans._de import _resolve_mixedlm_random_groups
+
+    obs = pd.DataFrame(
+        {
+            "condition": ["A"] * 4 + ["B"] * 4,
+            "sample": ["rep1", "rep2", "rep1", "rep2"] * 2,
+        }
+    )
+    groups, meta = _resolve_mixedlm_random_groups(
+        obs, "condition", "sample", paired_replicates=False
+    )
+    assert meta["grouping"] == "condition_sample_composite"
+    assert meta["n_random_groups"] == 4
+    assert meta["n_random_groups_raw_sample_col"] == 2
+    assert set(groups) == {"A::rep1", "A::rep2", "B::rep1", "B::rep2"}
+
+    raw_groups, raw_meta = _resolve_mixedlm_random_groups(
+        obs, "condition", "sample", paired_replicates=True
+    )
+    assert raw_meta["grouping"] == "sample_col_raw"
+    assert raw_meta["n_random_groups"] == 2
+
+
+def test_mixedlm_keeps_raw_groups_when_sample_labels_are_globally_unique():
+    from scatrans._de import _resolve_mixedlm_random_groups
+
+    obs = pd.DataFrame(
+        {
+            "condition": ["GA"] * 3 + ["Ctrl"] * 3,
+            "individual": ["GA_Ind1", "GA_Ind2", "GA_Ind3", "Ctrl_Ind1", "Ctrl_Ind2", "Ctrl_Ind3"],
+        }
+    )
+    groups, meta = _resolve_mixedlm_random_groups(
+        obs, "condition", "individual", paired_replicates=False
+    )
+    assert meta["grouping"] == "sample_col_raw"
+    assert meta["overlapping_sample_labels"] == []
+    assert meta["n_random_groups"] == 6
+
+
+def test_mixed_model_rejects_too_few_samples_per_group():
+    """3 vs 3 biological replicates should fail fast with a clear error."""
+    rng = np.random.default_rng(0)
+    n_cells, n_genes = 40, 30
+    X = rng.negative_binomial(3, 0.5, size=(n_cells, n_genes)).astype(float)
+    adata = ad.AnnData(X)
+    adata.obs["condition"] = ["Disease"] * 20 + ["Control"] * 20
+    adata.obs["sample"] = (
+        ["D0"] * 7 + ["D1"] * 7 + ["D2"] * 6 + ["C0"] * 7 + ["C1"] * 7 + ["C2"] * 6
+    )
+    adata.layers["spliced"] = X.copy()
+    adata.layers["unspliced"] = X * 0.4
+    with pytest.raises(ValueError, match="Mixed linear model requires"):
+        scat.active_score(
+            adata,
+            groupby="condition",
+            target_group="Disease",
+            reference_group="Control",
+            use_mixed_model=True,
+            sample_col="sample",
+            show_plot=False,
+            use_permutation=False,
+        )

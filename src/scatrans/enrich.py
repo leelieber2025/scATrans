@@ -425,10 +425,48 @@ def _resolve_gseapy_weight(
         ) from e
 
 
+def _expand_gene_list_input(gene_list: Iterable[Any] | None) -> list[str]:
+    """Expand list/Series/DataFrame inputs to raw gene identifier strings."""
+    if gene_list is None:
+        return []
+    if isinstance(gene_list, pd.DataFrame):
+        work = gene_list
+        if work.empty:
+            return []
+        if "gene" in work.columns:
+            return work["gene"].astype(str).tolist()
+        if "names" in work.columns:
+            return work["names"].astype(str).tolist()
+        if (
+            isinstance(work.index, pd.Index)
+            and len(work.index) > 0
+            and not isinstance(work.index, pd.RangeIndex)
+        ):
+            return work.index.astype(str).tolist()
+        if work.shape[1] > 0:
+            return work.iloc[:, 0].astype(str).tolist()
+        return []
+    if isinstance(gene_list, pd.Series):
+        ser = gene_list
+        if (
+            isinstance(ser.index, pd.Index)
+            and len(ser.index) > 0
+            and not isinstance(ser.index, pd.RangeIndex)
+        ):
+            as_str = ser.index.astype(str)
+            numeric_frac = float(pd.to_numeric(as_str, errors="coerce").notna().mean())
+            if numeric_frac < 0.5:
+                return as_str.tolist()
+        return ser.dropna().astype(str).tolist()
+    if isinstance(gene_list, np.ndarray):
+        return gene_list.astype(str).tolist()
+    return [str(g) for g in gene_list]
+
+
 def _clean_gene_list(gene_list: Iterable[Any] | None, gene_case: str | None = None) -> list[str]:
     if gene_list is None:
         return []
-    s = pd.Series(list(gene_list))
+    s = pd.Series(_expand_gene_list_input(gene_list))
     s = s.dropna()
     s = s.astype(str).str.strip()
     s = s[(s != "") & (s.str.lower() != "nan")]
@@ -706,6 +744,11 @@ def run_enrichment(
     string helpers, TermSize, neg_log10_padj, plus detailed `.attrs["universe_info"]`
     and other diagnostics (including `gene_set_info` and `reason` on empty results).
 
+    gene_list : list-like, pd.Series, or pd.DataFrame
+        Genes to test for over-representation. Besides plain lists, accepts DE / filter
+        output tables with gene symbols in the **index** (``all_results``, ``significant``,
+        ``filter_active_genes(...)``), or explicit ``gene`` / ``names`` columns.
+
     pval_cutoff / padj_cutoff : float
         Cutoff applied to **adjusted p-values** (`p.adjust` column), **NOT** raw p-values.
         IMPORTANT: Despite the name, pval_cutoff filters on the BH-adjusted p-value.
@@ -849,16 +892,28 @@ def run_enrichment(
         try:
             if "scatrans" in adata.uns and "raw_gene_list" in adata.uns["scatrans"]:
                 preserved = adata.uns["scatrans"]["raw_gene_list"]
-                if preserved:
-                    provided = preserved
+                # `preserved` may be a plain list (fresh run) or a numpy array /
+                # pandas Index (after a round-trip through .h5ad, where h5py/anndata
+                # deserializes stored lists as arrays). `if preserved:` raises
+                # ValueError ("truth value of an array... is ambiguous") for those,
+                # which used to be swallowed below and silently fall back to the
+                # full GO/KEGG gene universe instead of the real measured genes.
+                # Use len() instead, which works for all of these container types.
+                if preserved is not None and len(preserved) > 0:
+                    provided = list(preserved)
                     if verbose:
                         _log_info(
                             "Using preserved raw_gene_list from adata.uns['scatrans'] "
-                            f"({len(preserved)} genes) as universe (from previous store_raw_counts)."
+                            f"({len(provided)} genes) as universe (from previous store_raw_counts)."
                         )
         except Exception as _e:
-            if verbose:
-                _log_info(f"Could not read raw_gene_list from adata: {_e}")
+            # This should now only trigger for genuinely malformed data; surface it
+            # as a warning (not just INFO) since it silently changes the background
+            # gene universe used for the hypergeometric test.
+            logger.warning(
+                "Could not read raw_gene_list from adata.uns['scatrans']; "
+                f"falling back to the full gene-set universe as background. Error: {_e}"
+            )
             # leave provided as-is
 
     provided_is_str_all = False
@@ -2023,6 +2078,109 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_GSEA_SCORE_COLUMN_PRIORITY: tuple[str, ...] = (
+    "logFC",
+    "active_score",
+    "score",
+    "logfoldchanges",
+    "t_stat",
+    "NES",
+)
+
+
+def _labels_look_like_gene_symbols(labels: pd.Index | pd.Series) -> bool:
+    """True when most labels are not plain numeric values (i.e. likely gene symbols)."""
+    if len(labels) == 0:
+        return False
+    if isinstance(labels, pd.RangeIndex):
+        return False
+    as_str = labels.astype(str)
+    numeric_frac = float(pd.to_numeric(as_str, errors="coerce").notna().mean())
+    return numeric_frac < 0.5
+
+
+def _pick_gsea_score_column(df: pd.DataFrame, *, prefer: str | None = None) -> str:
+    if prefer is not None:
+        if prefer not in df.columns:
+            raise ValueError(
+                f"score_column={prefer!r} not found in ranked_genes DataFrame columns: "
+                f"{list(df.columns)}"
+            )
+        return prefer
+    for col in _GSEA_SCORE_COLUMN_PRIORITY:
+        if col in df.columns:
+            return col
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if len(numeric_cols) == 1:
+        return numeric_cols[0]
+    if len(numeric_cols) > 1:
+        for col in numeric_cols:
+            low = str(col).lower()
+            if "logfc" in low or "log_fc" in low or "score" in low:
+                return col
+        return numeric_cols[0]
+    raise ValueError(
+        "Could not infer a numeric ranking column from ranked_genes DataFrame. "
+        f"Columns: {list(df.columns)}. Pass score_column= explicitly, or provide a "
+        "pd.Series indexed by gene names."
+    )
+
+
+def _coerce_ranked_genes_dataframe(
+    df: pd.DataFrame,
+    *,
+    score_column: str | None = None,
+) -> pd.Series:
+    """Normalize active_score / DE result tables to gene-indexed pd.Series."""
+    if df.empty:
+        raise ValueError("ranked_genes DataFrame is empty.")
+
+    gene_name_cols = [c for c in ("gene", "genes", "names", "symbol", "Gene") if c in df.columns]
+
+    # Standard scATrans output: gene symbols in the index (not a default RangeIndex).
+    if _labels_look_like_gene_symbols(df.index):
+        score_col = _pick_gsea_score_column(df, prefer=score_column)
+        scores = pd.to_numeric(df[score_col], errors="coerce")
+        return pd.Series(scores.values, index=df.index.astype(str))
+
+    # Explicit gene column + numeric score columns (e.g. CSV export with RangeIndex).
+    if gene_name_cols:
+        gene_col = gene_name_cols[0]
+        genes = df[gene_col].astype(str)
+        if score_column is not None:
+            score_col = score_column
+        elif len(gene_name_cols) == 1 and df.shape[1] == 2:
+            other = [c for c in df.columns if c != gene_col][0]
+            score_col = other
+        else:
+            score_col = _pick_gsea_score_column(df, prefer=None)
+        scores = pd.to_numeric(df[score_col], errors="coerce")
+        return pd.Series(scores.values, index=genes)
+
+    # Legacy: column 0 = gene names, column 1 = scores (no meaningful index).
+    if df.shape[1] >= 2:
+        col0 = df.iloc[:, 0]
+        col1 = df.iloc[:, 1]
+        if _labels_look_like_gene_symbols(col0) and pd.to_numeric(col1, errors="coerce").notna().any():
+            return pd.Series(
+                pd.to_numeric(col1, errors="coerce").values,
+                index=col0.astype(str).values,
+            )
+
+    if df.shape[1] == 1 and _labels_look_like_gene_symbols(df.index):
+        scores = pd.to_numeric(df.iloc[:, 0], errors="coerce")
+        return pd.Series(scores.values, index=df.index.astype(str))
+
+    raise ValueError(
+        "ranked_genes DataFrame format not recognized. Expected one of:\n"
+        "  - gene symbols as index + numeric score column (active_score / DE all_results)\n"
+        "  - columns ['gene', <score>] or legacy [gene_names, scores]\n"
+        "  - pd.Series indexed by gene names (recommended)\n"
+        f"Got index type {type(df.index).__name__}, columns={list(df.columns)}. "
+        "Pass score_column= to select the ranking metric explicitly."
+    )
+
+
 def run_gsea(
     ranked_genes: pd.Series | Mapping[str, float] | Iterable[str] | pd.DataFrame,
     gene_sets: Mapping[str, Iterable[Any]] | str,
@@ -2038,6 +2196,7 @@ def run_gsea(
     ascending: bool = False,
     weight: float | None = None,
     weighted_score_type: str | float | None = None,
+    score_column: str | None = None,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -2049,13 +2208,20 @@ def run_gsea(
 
     Parameters
     ----------
-    ranked_genes : pd.Series, dict, or list-like
+    ranked_genes : pd.Series, dict, DataFrame, or list-like
         - Preferred: pd.Series with gene names as index and numeric scores as values.
           Higher score = more "up" in target group (e.g. logFC).
           The function will sort internally if needed.
+        - pd.DataFrame from ``active_score`` / ``differential_expression`` ``all_results``:
+          gene symbols in the **index**, numeric score in a column (auto-prefers ``logFC``,
+          then ``active_score``). Use ``score_column=`` to override.
+        - Legacy DataFrame: two columns ``[gene_names, scores]`` with a default RangeIndex.
         - dict: gene -> score
         - list of genes: treated as pre-sorted from high to low (scores assigned decreasing).
         Gene names will be cleaned according to gene_case.
+    score_column : str, optional
+        When ``ranked_genes`` is a DataFrame, which column holds the ranking metric.
+        Defaults to ``logFC``, then ``active_score``, then the sole numeric column.
     gene_sets : str, dict or list
         Same as run_enrichment: bundled name (e.g. "GO_Biological_Process"), GMT path,
         dict of term->genes, or Enrichr library name.
@@ -2098,9 +2264,9 @@ def run_gsea(
     - Unlike ORA, GSEA does not use an explicit "universe" in the same way; the ranked
       list itself defines the background. min_size/max_size still apply.
     - Requires gseapy. Install via `pip install gseapy` or `pip install "scatrans[gsea]"`.
-    - For best results with scATrans, pass a Series derived from active_score results, e.g.:
-        ranked = all_results.set_index("gene")["logFC"]   # or suitable score
-        res = scat.run_gsea(ranked, gene_sets="GO_Biological_Process")
+    - ``all_results`` from active_score can be passed directly::
+        res = scat.run_gsea(all_results, gene_sets="GO_Biological_Process", score_column="logFC")
+      or as a Series: ``all_results["logFC"]`` (index = gene names).
     """
     try:
         import gseapy as gp
@@ -2115,13 +2281,7 @@ def run_gsea(
 
     # Normalize ranked_genes input to pd.Series (gene -> score)
     if isinstance(ranked_genes, pd.DataFrame):
-        if ranked_genes.shape[1] >= 2:
-            # Column 0 = gene names, Column 1 = scores (original intent)
-            gene_names = ranked_genes.iloc[:, 0].astype(str).values
-            scores = ranked_genes.iloc[:, 1].values
-            ranked_genes = pd.Series(scores, index=gene_names)
-        else:
-            ranked_genes = ranked_genes.iloc[:, 0]
+        ranked_genes = _coerce_ranked_genes_dataframe(ranked_genes, score_column=score_column)
     if isinstance(ranked_genes, (list, tuple)):
         # treat as pre-ordered high->low, assign descending ranks
         genes = _apply_gene_case([str(g).strip() for g in ranked_genes], gene_case)
@@ -2514,21 +2674,7 @@ def _clean_and_validate_gene_list_for_compare(
 
 def _row_gene_ids_from_df(work: pd.DataFrame) -> list[str]:
     """Return per-row gene identifiers, preferring explicit DE columns over index."""
-    if work is None or work.empty:
-        return []
-    if "gene" in work.columns:
-        return work["gene"].astype(str).tolist()
-    if "names" in work.columns:
-        return work["names"].astype(str).tolist()
-    if (
-        isinstance(work.index, pd.Index)
-        and len(work.index) > 0
-        and not isinstance(work.index, pd.RangeIndex)
-    ):
-        return work.index.astype(str).tolist()
-    if work.shape[1] > 0:
-        return work.iloc[:, 0].astype(str).tolist()
-    return []
+    return _expand_gene_list_input(work)
 
 
 def extract_gene_lists(

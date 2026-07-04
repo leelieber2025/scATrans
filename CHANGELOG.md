@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-07-04
+
+### Added
+- **`scat.pl.volcano_plot(style=...)`**: ggVolcano-inspired styles from
+  [BioSenior/ggVolcano](https://github.com/BioSenior/ggVolcano) — ``style="ggvolcano"``
+  (teal/grey/orange Up-Down-Normal, theme_bw, FDR labels) and ``style="gradual"``
+  (gradient by ``-log10 FDR``). Default ``style="auto"`` keeps the previous look.
+  Documented in README §3.4 and API reference.
+
+### Fixed
+- **`run_enrichment` / `run_kegg` DataFrame `gene_list`**: gene symbols read from index
+  (or ``gene`` / ``names`` columns), not column names.
+- **`run_gsea` DataFrame `ranked_genes`**: index-based ``all_results`` support.
+- **MixedLM**: NaN neutral-fill on degenerate fits; composite ``condition::sample``
+  random-effect groups when replicate labels are reused across conditions (``paired_replicates=True``
+  for paired designs).
+
 ## [0.9.8 bugfix 2026-07-04]
 
 ### Fixed

@@ -22,6 +22,7 @@ from scipy import sparse
 from scipy.sparse import csr_matrix
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from ._utils import (
     _is_integer_counts_like,
@@ -44,9 +45,9 @@ _DE_SUPPRESS_WARNING_CATEGORIES = (
 
 
 @contextmanager
-def _de_warning_context():
+def _de_warning_context(extra_categories: tuple = ()):
     with warnings.catch_warnings():
-        for cat in _DE_SUPPRESS_WARNING_CATEGORIES:
+        for cat in (*_DE_SUPPRESS_WARNING_CATEGORIES, *extra_categories):
             warnings.simplefilter("ignore", category=cat)
         yield
 
@@ -107,6 +108,7 @@ def _run_de_wrapper(
     use_mixed_model: bool = False,
     sample_col: str | None = None,
     mixed_model_pval: str = "wald",
+    paired_replicates: bool = False,
     # Memento (Cell 2024 method-of-moments) as independent cell-level DE backend
     use_memento_de: bool = False,
     memento_capture_rate: float = 0.07,
@@ -143,6 +145,7 @@ def _run_de_wrapper(
                 n_jobs=n_jobs,
                 labels=labels,
                 mixed_model_pval=mixed_model_pval,
+                paired_replicates=paired_replicates,
             ),
             backend="mixedlm",
         )
@@ -406,6 +409,66 @@ def _run_de_wrapper(
         return de_df
 
 
+def _resolve_mixedlm_random_groups(
+    obs: pd.DataFrame,
+    groupby: str,
+    sample_col: str,
+    *,
+    paired_replicates: bool = False,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build per-cell random-effect group IDs for MixedLM.
+
+    When the same ``sample_col`` string appears under multiple ``groupby`` levels
+    (e.g. both conditions use ``rep1``/``rep2`` for *different* individuals),
+    pooling them in one random intercept is wrong. Default: composite
+    ``{condition}::{sample}`` groups. Set ``paired_replicates=True`` when the same
+    ID intentionally denotes the *same* biological replicate in every condition
+    (paired / repeated-measures design).
+    """
+    cond = obs[groupby].astype(str)
+    raw = obs[sample_col].astype(str)
+    cross = (
+        pd.DataFrame({"condition": cond, "sample": raw})
+        .groupby("sample", observed=True)["condition"]
+        .nunique()
+    )
+    overlapping = cross[cross > 1].index.astype(str).tolist()
+
+    if overlapping and not paired_replicates:
+        groups = (cond + "::" + raw).to_numpy()
+        grouping = "condition_sample_composite"
+        logger.warning(
+            "sample_col=%r has %d label(s) reused across %r levels (e.g. %s). "
+            "MixedLM random effects use composite 'condition::sample' IDs so "
+            "distinct biological replicates are not pooled. For paired designs "
+            "where the same ID is the same individual in every condition, pass "
+            "paired_replicates=True.",
+            sample_col,
+            len(overlapping),
+            groupby,
+            overlapping[:5],
+        )
+    else:
+        groups = raw.to_numpy()
+        grouping = "sample_col_raw"
+        if overlapping and paired_replicates:
+            logger.info(
+                "sample_col=%r labels overlap across %r levels; paired_replicates=True "
+                "so identical sample IDs share one random effect.",
+                sample_col,
+                groupby,
+            )
+
+    meta = {
+        "grouping": grouping,
+        "paired_replicates": bool(paired_replicates),
+        "overlapping_sample_labels": overlapping,
+        "n_random_groups": int(pd.Series(groups).nunique()),
+        "n_random_groups_raw_sample_col": int(raw.nunique()),
+    }
+    return groups, meta
+
+
 def _run_mixedlm_de(
     adata: ad.AnnData,
     groupby: str,
@@ -415,6 +478,7 @@ def _run_mixedlm_de(
     n_jobs: int = 1,
     labels: Any | None = None,
     mixed_model_pval: str = "wald",
+    paired_replicates: bool = False,
 ) -> pd.DataFrame:
     """
     Mixed linear model (LMM) DE + Delta Variance using statsmodels mixedlm.
@@ -452,15 +516,39 @@ def _run_mixedlm_de(
     if sample_col not in ad_temp.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found in adata.obs")
 
+    # Keep in sync with scatrans.tl.MIXED_MODEL_MIN_SAMPLES_PER_GROUP / _TOTAL_SAMPLES.
+    _min_per_group = 4
+    _min_total = 6
+    obs = ad_temp.obs
+    cond_str = obs[use_groupby].astype(str)
+    group_ids, group_meta = _resolve_mixedlm_random_groups(
+        obs,
+        use_groupby,
+        sample_col,
+        paired_replicates=paired_replicates,
+    )
+    group_s = pd.Series(group_ids, index=obs.index)
+    samples_per_group = [
+        int(group_s.loc[cond_str == g].nunique()) for g in (reference_group, target_group)
+    ]
+    total_samples = int(group_s.nunique())
+    min_per_group = min(samples_per_group) if samples_per_group else 0
+    if min_per_group < _min_per_group or total_samples < _min_total:
+        raise ValueError(
+            f"Mixed linear model requires >= {_min_per_group} biological samples per group "
+            f"(found min={min_per_group}) and >= {_min_total} total random-effect groups "
+            f"(found {total_samples}). With few replicates, use use_pseudobulk=True with "
+            "pseudobulk_de_backend='pydeseq2' instead of use_mixed_model=True."
+        )
+
     # Prepare expression for LMM: log1p-normalized, without double-transforming already-log data
     expr_mat = _prepare_log_normalized_expression(ad_temp)
 
-    obs = ad_temp.obs
     condition = pd.Categorical(
-        obs[use_groupby].astype(str),
+        cond_str,
         categories=[reference_group, target_group],
     )
-    samples = obs[sample_col].astype(str).values
+    samples = group_ids
 
     n_genes = expr_mat.shape[1]
     var_names = ad_temp.var_names
@@ -474,7 +562,13 @@ def _run_mixedlm_de(
             return idx, 0.0, 1.0, 1.0, 0.0, True
         df = pd.DataFrame({"y": y, "condition": condition, "sample": samples})
         try:
-            with _de_warning_context():
+            # ConvergenceWarning is suppressed here: on small-sample/genome-wide runs,
+            # many genes hit near-singular covariance or non-convergence, which floods
+            # stdout with tens of thousands of per-gene statsmodels warnings. This is
+            # already tracked and surfaced to the caller in aggregate via the
+            # n_genes_failed_fit / failed_fit_rate metadata, so the raw per-gene
+            # warning is redundant noise rather than new information.
+            with _de_warning_context(extra_categories=(ConvergenceWarning,)):
                 # Full model
                 md_full = smf.mixedlm("y ~ C(condition)", df, groups=df["sample"])
                 m_full = md_full.fit(reml=False, maxiter=200, disp=False)
@@ -553,6 +647,14 @@ def _run_mixedlm_de(
     with _de_warning_context():
         p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
 
+    # statsmodels can return NaN p-values on degenerate fits; neutral-fill so downstream
+    # active_score / filter_active_genes always receive a valid DE table.
+    logfcs = np.where(np.isfinite(logfcs), logfcs, 0.0)
+    main_pvals = np.where(np.isfinite(main_pvals), main_pvals, 1.0)
+    p_adjs = np.where(np.isfinite(p_adjs), p_adjs, 1.0)
+    dvars = np.where(np.isfinite(dvars), dvars, 0.0)
+    p_lrts = np.where(np.isfinite(p_lrts), p_lrts, 1.0)
+
     de_df = pd.DataFrame(index=var_names)
     # mixedlm coefficient is on log1p scale (natural log). Convert to log2 for comparability.
     de_df["logFC"] = pd.Series(logfcs, index=var_names) / np.log(2)
@@ -568,6 +670,7 @@ def _run_mixedlm_de(
     failed_rate = (n_failed / n_total) if n_total else 0.0
     de_df.attrs["n_genes_failed_fit"] = n_failed
     de_df.attrs["failed_fit_rate"] = failed_rate
+    de_df.attrs["mixedlm_grouping"] = group_meta
     if n_failed > 0:
         logger.warning(
             "MixedLM: %d/%d genes (%.1f%%) had degenerate or non-convergent fits "
@@ -714,13 +817,17 @@ def _run_memento_de(
     # Effective cpus
     effective_cpus = n_cpus if n_cpus and n_cpus > 0 else -1
 
-    result = memento.binary_test_1d(
-        adata=ad_temp,
-        treatment_col="stim",
-        capture_rate=capture_rate,
-        num_boot=num_boot,
-        num_cpus=effective_cpus,
-    )
+    # memento-de's bootstrap internals emit a large volume of third-party
+    # UserWarning/FutureWarning noise (unrelated to anything the caller can act
+    # on); suppress it here so it doesn't flood stdout on genome-wide runs.
+    with _de_warning_context(extra_categories=(UserWarning,)):
+        result = memento.binary_test_1d(
+            adata=ad_temp,
+            treatment_col="stim",
+            capture_rate=capture_rate,
+            num_boot=num_boot,
+            num_cpus=effective_cpus,
+        )
 
     # result may be indexed by gene or have a 'gene' column (handle both)
     if isinstance(result, pd.DataFrame):

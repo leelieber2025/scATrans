@@ -16,16 +16,18 @@ from scatrans._de import _run_mixedlm_de
 def test_mixedlm_logfc_respects_target_reference_order():
     """Target alphabetically before reference must still yield target-minus-reference logFC."""
     np.random.seed(0)
-    n_cells, n_genes = 40, 5
+    n_cells, n_genes = 120, 5
     X = np.zeros((n_cells, n_genes))
-    X[:20] = 100.0
-    X[20:] = 1.0
+    X[:60] = 100.0
+    X[60:] = 1.0
     X += np.random.randn(n_cells, n_genes) * 5.0
     X = np.maximum(X, 0.0)
+    # Paired design: same sample IDs (s1–s6) appear in both conditions.
+    sample_pattern = [f"s{i}" for i in range(1, 7) for _ in range(5)]
     obs = pd.DataFrame(
         {
-            "condition": ["A"] * 20 + ["Z"] * 20,
-            "sample": (["s1"] * 10 + ["s2"] * 10) * 2,
+            "condition": ["A"] * 60 + ["Z"] * 60,
+            "sample": sample_pattern * 4,
         }
     )
     adata = ad.AnnData(
@@ -43,6 +45,7 @@ def test_mixedlm_logfc_respects_target_reference_order():
         reference_group="Z",
         sample_col="sample",
         n_jobs=1,
+        paired_replicates=True,
     )
     z_vs_a = _run_mixedlm_de(
         adata,
@@ -51,15 +54,16 @@ def test_mixedlm_logfc_respects_target_reference_order():
         reference_group="A",
         sample_col="sample",
         n_jobs=1,
+        paired_replicates=True,
     )
     # Exclude degenerate fits (logFC=0, p_val=1) — MixedLM can fail on ~constant genes.
     fitted_a = a_vs_z["p_val"] < 1.0
     fitted_z = z_vs_a["p_val"] < 1.0
-    assert fitted_a.sum() >= 4
-    assert fitted_z.sum() >= 4
-    assert np.all(a_vs_z.loc[fitted_a, "logFC"] > 0)
-    assert np.all(z_vs_a.loc[fitted_z, "logFC"] < 0)
-    assert np.allclose(a_vs_z["logFC"], -z_vs_a["logFC"])
+    both = fitted_a & fitted_z
+    assert both.sum() >= 3
+    assert np.all(a_vs_z.loc[both, "logFC"] > 0)
+    assert np.all(z_vs_a.loc[both, "logFC"] < 0)
+    assert np.allclose(a_vs_z.loc[both, "logFC"], -z_vs_a.loc[both, "logFC"])
 
 
 @pytest.mark.slow

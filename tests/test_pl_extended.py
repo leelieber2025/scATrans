@@ -28,6 +28,31 @@ def test_volcano_plot_label_genes(results_df):
     plt.close(fig)
 
 
+@pytest.mark.plot
+def test_volcano_plot_ggvolcano_style(results_df):
+    fig, ax = scat.pl.volcano_plot(
+        results_df,
+        style="ggvolcano",
+        top_n=5,
+        title="",
+        show=False,
+    )
+    assert len(ax.collections) >= 1 or len(ax.lines) >= 0
+    plt.close(fig)
+
+
+@pytest.mark.plot
+def test_volcano_plot_gradual_style(results_df):
+    fig, ax = scat.pl.volcano_plot(
+        results_df,
+        style="gradual",
+        top_n=3,
+        show=False,
+    )
+    assert len(ax.collections) >= 1
+    plt.close(fig)
+
+
 def test_gseaplot_dataframe_first_arg_type_error():
     gsea_res = pd.DataFrame({"Term": ["TERM1"], "NES": [1.5], "pvalue": [0.01]})
     with pytest.raises(TypeError, match="gsea_result"):

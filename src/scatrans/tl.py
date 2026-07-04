@@ -57,7 +57,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.9.8"
+    VERSION = "0.9.9"
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -76,6 +76,13 @@ HEURISTIC_FILTER_DEFAULTS: dict[str, float | None] = {
     "effective_gamma_max": 1.0,
     "delta_variance_min": None,
 }
+
+# MixedLM needs enough biological replicates for identifiable random effects.
+MIXED_MODEL_MIN_SAMPLES_PER_GROUP = 4
+MIXED_MODEL_MIN_TOTAL_SAMPLES = 6
+
+# Keep in sync with _permutation.run_permutation_test (n_success threshold for FDR).
+_PERM_FDR_MIN_SUCCESS = 100
 
 
 def _materialize_if_view(adata: ad.AnnData) -> ad.AnnData:
@@ -133,6 +140,7 @@ def _validate_de_common_options(
     n_perm: int,
     use_mixed_model: bool,
     mixed_model_pval: str,
+    paired_replicates: bool,
     use_memento_de: bool,
     memento_capture_rate: float,
     memento_num_boot: int,
@@ -174,6 +182,9 @@ def _validate_de_common_options(
 
     if not isinstance(use_mixed_model, bool):
         raise ValueError("use_mixed_model must be boolean.")
+
+    if not isinstance(paired_replicates, bool):
+        raise ValueError("paired_replicates must be boolean.")
 
     if not isinstance(use_memento_de, bool):
         raise ValueError("use_memento_de must be boolean.")
@@ -304,6 +315,7 @@ def active_score(
     use_delta_variance_pval: bool = False,
     delta_var_pval_cutoff: float = 0.05,
     mixed_model_pval: str = "wald",  # "wald" or "lrt" - which p-value to use for the DE part of active_score when use_mixed_model=True
+    paired_replicates: bool = False,  # mixed model: same sample_col ID = same individual across conditions
     # Memento (independent cell-level method-of-moments backend, Cell 2024)
     # Third parallel DE path (alongside scanpy-style and pseudobulk). Only used for the main DE statistics.
     use_memento_de: bool = False,
@@ -462,6 +474,7 @@ def active_score(
         n_perm=n_perm,
         use_mixed_model=use_mixed_model,
         mixed_model_pval=mixed_model_pval,
+        paired_replicates=paired_replicates,
         use_memento_de=use_memento_de,
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
@@ -791,6 +804,7 @@ def active_score(
         use_mixed_model=use_mixed_model,
         sample_col=sample_col if use_mixed_model else None,
         mixed_model_pval=mixed_model_pval,
+        paired_replicates=paired_replicates,
         use_memento_de=use_memento_de,
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
@@ -1057,8 +1071,14 @@ def active_score(
         "mixed_model": {
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
+            "paired_replicates": paired_replicates if use_mixed_model else None,
             "n_samples": int(adata.obs[sample_col].nunique())
             if (use_mixed_model and sample_col and sample_col in adata.obs.columns)
+            else None,
+            "mixedlm_grouping": (
+                de_df.attrs.get("mixedlm_grouping") if hasattr(de_df, "attrs") else None
+            )
+            if use_mixed_model
             else None,
             "delta_variance_available": "delta_variance" in adata.var.columns,
             "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"]))
@@ -1140,6 +1160,17 @@ def active_score(
                 de_method,
                 is_pseudobulk,
             )
+            n_genes_for_perm = int(np.sum(valid_feat)) if valid_feat is not None else 0
+            if is_pseudobulk and pseudobulk_de_backend == "pydeseq2" and n_genes_for_perm > 5000:
+                logger.warning(
+                    "use_pseudobulk=True + perm_de_backend='same' (default) refits PyDESeq2 "
+                    "from scratch on every permutation. With %d genes and n_perm=%d this can "
+                    "take many minutes with no progress output. Consider perm_de_backend='fast' "
+                    "(permutations use a scanpy t-test instead; much faster) if you don't need "
+                    "the null distribution to use PyDESeq2 exactly.",
+                    n_genes_for_perm,
+                    n_perm,
+                )
         else:
             raise ValueError("perm_de_backend must be 'fast' or 'same'")
 
@@ -1326,64 +1357,61 @@ def _finalize_active_score_results(
     cols = [c for c in cols if c in adata.var.columns]
 
     # Built-in significant list: DE significance + positive unspliced excess + permutation FDR.
-    # active_score is for ranking/visualization only (heuristic, not a p-value).
-    residual_col = (
-        UNSPLICED_EXCESS_RESIDUAL_COL
-        if UNSPLICED_EXCESS_RESIDUAL_COL in adata.var.columns
-        else LEGACY_VELOCITY_RESIDUAL_COL
-    )
     ue_fdr_cutoff = extra_metadata.get("unspliced_excess_fdr_cutoff", 0.05)
+    filter_context: dict[str, Any] = {
+        "use_permutation": bool(use_permutation),
+        "use_fdr_for_significance": bool(extra_metadata.get("use_fdr_for_significance", True))
+        if use_permutation
+        else False,
+        "perm_disabled_reason": extra_metadata.get("perm_disabled_reason"),
+        "is_pseudobulk": bool(extra_metadata.get("is_pseudobulk")),
+        "pval_cutoff": extra_metadata.get("pval_cutoff", HEURISTIC_FILTER_DEFAULTS["pval_cutoff"]),
+        "logfc_cutoff": extra_metadata.get(
+            "logfc_cutoff", HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"]
+        ),
+        "unspliced_excess_fdr_cutoff": ue_fdr_cutoff,
+        "use_delta_variance_pval": bool(extra_metadata.get("use_delta_variance_pval")),
+        "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff", 0.05),
+    }
 
     if use_permutation and UNSPLICED_EXCESS_FDR_COL in adata.var.columns:
-        sig_pval = extra_metadata.get("pval_cutoff", HEURISTIC_FILTER_DEFAULTS["pval_cutoff"])
-        sig_logfc = extra_metadata.get("logfc_cutoff", HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"])
-        sig_resid = HEURISTIC_FILTER_DEFAULTS["unspliced_excess_residual_cutoff"]
-        sig_active = HEURISTIC_FILTER_DEFAULTS["active_score_cutoff"]
-        sig_active_fdr = HEURISTIC_FILTER_DEFAULTS["active_score_fdr_cutoff"]
-        mask = (
-            (adata.var["p_adj"] < sig_pval)
-            & (adata.var["logFC"] > sig_logfc)
-            & (adata.var[residual_col] > sig_resid)
-            & (adata.var["active_score"] >= sig_active)
-            & (adata.var["valid_expr"])
-        )
-        if extra_metadata.get("use_fdr_for_significance", True):
-            mask = mask & (adata.var[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff)
-            if "active_score_fdr" in adata.var.columns and sig_active_fdr is not None:
-                mask = mask & (
-                    adata.var["active_score_fdr"].notna()
-                    & (adata.var["active_score_fdr"] < sig_active_fdr)
-                )
-        else:
+        if not extra_metadata.get("use_fdr_for_significance", True):
             reason = extra_metadata.get("perm_disabled_reason", "small_permutation_space")
             logger.warning(
                 "Permutation space is very small (%s); unspliced_excess_fdr and active_score_fdr "
-                "were not applied to the built-in significant list. Inspect all_results and use "
-                "filter_active_genes for custom thresholds.",
+                "were not applied to the built-in significant list. Use filter_active_genes("
+                "preset='significant') on all_results to reproduce this list, or preset="
+                "'pseudobulk'/'heuristic' for exploratory cutoffs.",
                 reason,
             )
-        # Apply delta_variance pval filter only in the permutation path where a meaningful
-        # significant mask can be produced (avoids dead-code application to the all-False mask).
-        if extra_metadata.get("use_delta_variance_pval") and "delta_var_pval" in adata.var.columns:
-            mask = mask & (
-                adata.var["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
-            )
+        mask = _builtin_significant_mask(
+            adata.var,
+            use_permutation=True,
+            extra_metadata=filter_context,
+        )
     else:
         mask = pd.Series(False, index=adata.var.index)
         if not use_permutation:
             logger.warning(
                 "Built-in 'significant' list requires use_permutation=True "
                 "(unspliced_excess_fdr_cutoff=%.3f). Returning empty significant; "
-                "inspect all_results and use filter_active_genes for custom thresholds.",
+                "inspect all_results and use filter_active_genes(preset='pseudobulk' or "
+                "'heuristic') for exploratory gene lists.",
                 ue_fdr_cutoff,
             )
 
     significant = adata.var.loc[mask, cols].copy().sort_values("active_score", ascending=False)
     all_results = adata.var.loc[:, cols].copy().sort_values("active_score", ascending=False)
+    all_results.attrs["scatrans_filter_context"] = filter_context
 
     logger.info(
         "Analysis completed in %s mode! Significant active genes: %d", mode, len(significant)
     )
+    if len(significant) == 0 and use_permutation:
+        logger.info(
+            "No genes passed the built-in significant thresholds. Inspect all_results "
+            "distributions or use filter_active_genes with relaxed cutoffs."
+        )
 
     # --- Rich metadata (merge to protect raw_gene_list etc.) ---
     velocity_delta_layer = (
@@ -1555,6 +1583,7 @@ def differential_expression(
     use_delta_variance_pval: bool = False,
     delta_var_pval_cutoff: float = 0.05,
     mixed_model_pval: str = "wald",
+    paired_replicates: bool = False,
     # Memento support (first-class, integrated backend)
     use_memento_de: bool = False,
     memento_capture_rate: float = 0.07,
@@ -1680,6 +1709,7 @@ def differential_expression(
         n_perm=0,
         use_mixed_model=use_mixed_model,
         mixed_model_pval=mixed_model_pval,
+        paired_replicates=paired_replicates,
         use_memento_de=use_memento_de,
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
@@ -1763,6 +1793,7 @@ def differential_expression(
         use_mixed_model=use_mixed_model,
         sample_col=sample_col if use_mixed_model else None,
         mixed_model_pval=mixed_model_pval,
+        paired_replicates=paired_replicates,
         use_memento_de=use_memento_de,
         memento_capture_rate=memento_capture_rate,
         memento_num_boot=memento_num_boot,
@@ -1865,8 +1896,14 @@ def differential_expression(
         "mixed_model": {
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
+            "paired_replicates": paired_replicates if use_mixed_model else None,
             "n_samples": int(adata.obs[sample_col].nunique())
             if (use_mixed_model and sample_col and sample_col in adata.obs.columns)
+            else None,
+            "mixedlm_grouping": (
+                de_df.attrs.get("mixedlm_grouping") if hasattr(de_df, "attrs") else None
+            )
+            if use_mixed_model
             else None,
             "delta_variance_available": "delta_variance" in adata.var.columns,
             "median_delta_variance": float(np.nanmedian(adata.var["delta_variance"]))
@@ -2172,6 +2209,59 @@ def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False)
 _NOT_PROVIDED = object()
 
 
+def _read_filter_context(results: pd.DataFrame) -> dict[str, Any]:
+    ctx = results.attrs.get("scatrans_filter_context")
+    return dict(ctx) if isinstance(ctx, dict) else {}
+
+
+def _builtin_significant_mask(
+    var_df: pd.DataFrame,
+    *,
+    use_permutation: bool,
+    extra_metadata: dict[str, Any],
+) -> pd.Series:
+    """Replicate the built-in ``significant`` mask from :func:`active_score`."""
+    index = var_df.index
+    if not use_permutation or UNSPLICED_EXCESS_FDR_COL not in var_df.columns:
+        return pd.Series(False, index=index)
+
+    residual_col = (
+        UNSPLICED_EXCESS_RESIDUAL_COL
+        if UNSPLICED_EXCESS_RESIDUAL_COL in var_df.columns
+        else LEGACY_VELOCITY_RESIDUAL_COL
+    )
+    ue_fdr_cutoff = extra_metadata.get("unspliced_excess_fdr_cutoff", 0.05)
+    sig_pval = extra_metadata.get("pval_cutoff", HEURISTIC_FILTER_DEFAULTS["pval_cutoff"])
+    sig_logfc = extra_metadata.get("logfc_cutoff", HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"])
+    sig_resid = HEURISTIC_FILTER_DEFAULTS["unspliced_excess_residual_cutoff"]
+    sig_active = HEURISTIC_FILTER_DEFAULTS["active_score_cutoff"]
+    sig_active_fdr = HEURISTIC_FILTER_DEFAULTS["active_score_fdr_cutoff"]
+
+    mask = pd.Series(True, index=index)
+    if "p_adj" in var_df.columns:
+        mask &= var_df["p_adj"] < sig_pval
+    if "logFC" in var_df.columns:
+        mask &= var_df["logFC"] > sig_logfc
+    if residual_col in var_df.columns:
+        mask &= var_df[residual_col] > sig_resid
+    if "active_score" in var_df.columns:
+        mask &= var_df["active_score"] >= sig_active
+    if "valid_expr" in var_df.columns:
+        mask &= var_df["valid_expr"]
+
+    if extra_metadata.get("use_fdr_for_significance", True):
+        mask &= var_df[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff
+        if "active_score_fdr" in var_df.columns and sig_active_fdr is not None:
+            mask &= var_df["active_score_fdr"].notna() & (
+                var_df["active_score_fdr"] < sig_active_fdr
+            )
+
+    if extra_metadata.get("use_delta_variance_pval") and "delta_var_pval" in var_df.columns:
+        mask &= var_df["delta_var_pval"] < extra_metadata.get("delta_var_pval_cutoff", 0.05)
+
+    return mask
+
+
 def filter_active_genes(
     results: pd.DataFrame,
     *,
@@ -2208,9 +2298,18 @@ def filter_active_genes(
     - preset="pseudobulk": more lenient defaults that account for the much smaller
       magnitude of unspliced_excess_residual and active_score after sample-level aggregation
       (active_score >= 5, unspliced_excess_residual > 0.05, logFC > 0.2, etc.).
+    - preset="significant" (aliases: "builtin", "active_score_significant"): exactly
+      reproduces the built-in ``significant`` list from :func:`active_score` using metadata
+      stored in ``all_results.attrs['scatrans_filter_context']``. Requires
+      ``use_permutation=True`` on the upstream run.
     - preset=None (or "permissive"/"none"): apply only explicitly provided cutoffs; this is the most
       permissive / backward-compatible mode and returns nearly the full table (subject to any
       user-supplied thresholds).
+
+    When ``all_results`` carries ``scatrans_filter_context`` with
+    ``use_fdr_for_significance=False`` (common for pseudobulk with few samples),
+    preset-based FDR cutoffs are skipped automatically unless you pass explicit
+    ``unspliced_excess_fdr_cutoff`` / ``active_score_fdr_cutoff``.
 
     Presets are oriented toward target-group "activated" / upregulated signals (positive
     logFC + positive unspliced_excess_residual; direction defaults to "up").
@@ -2237,7 +2336,7 @@ def filter_active_genes(
     results : pd.DataFrame
         The `all_results` table returned as the third element of `active_score`.
     preset : str or None
-        One of "heuristic", "pseudobulk", "permissive", "none".
+        One of "heuristic", "pseudobulk", "significant", "permissive", "none".
         When provided, supplies recommended cutoff values for that analysis style
         for any parameters you did not explicitly pass.
     active_score_cutoff : float
@@ -2294,9 +2393,35 @@ def filter_active_genes(
             f"{', '.join(sorted(deprecated_kwargs))}"
         )
 
+    df = results.copy()
+
     # Resolve values from preset + explicit overrides
     if preset is not None:
         p = preset.lower()
+        if p in ("significant", "builtin", "active_score_significant"):
+            ctx = _read_filter_context(df)
+            if not ctx:
+                raise ValueError(
+                    "preset='significant' requires all_results from active_score with "
+                    "attrs['scatrans_filter_context'] (re-run active_score on a recent version)."
+                )
+            mask = _builtin_significant_mask(
+                df,
+                use_permutation=bool(ctx.get("use_permutation")),
+                extra_metadata=ctx,
+            )
+            if return_mask:
+                return mask
+            filtered = df.loc[mask].copy()
+            if "active_score" in filtered.columns:
+                filtered = filtered.sort_values("active_score", ascending=False)
+            elif "p_adj" in filtered.columns:
+                filtered = filtered.sort_values("p_adj", ascending=True)
+            if inplace:
+                results.drop(results.index, inplace=True)
+                results.loc[filtered.index] = filtered
+                return results
+            return filtered
         if p in ("heuristic", "single_cell", "default"):
             preset_vals = {
                 **HEURISTIC_FILTER_DEFAULTS,
@@ -2337,6 +2462,9 @@ def filter_active_genes(
             )
     else:
         preset_vals = {}
+
+    user_set_ue_fdr = unspliced_excess_fdr_cutoff is not _NOT_PROVIDED
+    user_set_as_fdr = active_score_fdr_cutoff is not _NOT_PROVIDED
 
     # Apply preset only where user did not explicitly provide a value
     def _resolve(name: str, current: Any, default: Any) -> Any:
@@ -2401,7 +2529,20 @@ def filter_active_genes(
     effective_gamma_max = _resolve("effective_gamma_max", effective_gamma_max, None)
     delta_variance_min = _resolve("delta_variance_min", delta_variance_min, None)
 
-    df = results.copy()
+    ctx = _read_filter_context(df)
+    if ctx and not ctx.get("use_fdr_for_significance", True):
+        if not user_set_ue_fdr:
+            unspliced_excess_fdr_cutoff = float("inf")
+        if not user_set_as_fdr:
+            active_score_fdr_cutoff = float("inf")
+        logger.info(
+            "Permutation FDR was disabled for the built-in significant list (%s); "
+            "skipping preset FDR cutoffs in filter_active_genes. "
+            "Use preset='significant' to match the built-in list exactly, or pass explicit "
+            "FDR cutoffs to override.",
+            ctx.get("perm_disabled_reason", "small_permutation_space"),
+        )
+
     mask = pd.Series(True, index=df.index)
 
     # Core filters
@@ -2726,22 +2867,30 @@ def diagnose_design(
             result["warnings"].append(
                 f"Very few biological samples per group (target={n_s_t}, reference={n_s_r}). "
                 "Pseudobulk aggregation will have extremely low power for velocity delta. "
-                "Consider using the cell-level mixed-model path (use_mixed_model=True) "
-                "instead of use_pseudobulk=True, or interpret results with extreme caution."
+                "Prefer use_pseudobulk=True with PyDESeq2 and interpret results with caution."
             )
-        elif min(n_s_t, n_s_r) < 5:
+        elif min(n_s_t, n_s_r) < MIXED_MODEL_MIN_SAMPLES_PER_GROUP:
             result["warnings"].append(
                 f"Small number of biological samples per group (target={n_s_t}, reference={n_s_r}). "
                 "Power for detecting differential nascent RNA excess will be limited. "
-                "Permutation-based FDR (if used) will also have reduced reliability."
+                "Permutation-based FDR is unreliable with so few label shuffles — prefer "
+                "use_pseudobulk=True without permutation for ranking, then filter_active_genes "
+                "(preset='pseudobulk') or DE p_adj for significance."
             )
             result["suggested_preset"] = "pseudobulk"
 
-        result["recommendations"].append(
-            "With multiple samples per group, both pseudobulk (with PyDESeq2 or scanpy) "
-            "and cell-level mixed model (use_mixed_model=True) are viable. "
-            "See the small-sample guidance in the documentation."
-        )
+        if min(n_s_t, n_s_r) >= MIXED_MODEL_MIN_SAMPLES_PER_GROUP:
+            result["recommendations"].append(
+                "With sufficient biological replicates, pseudobulk (PyDESeq2) and "
+                "use_mixed_model=True are both viable. See the small-sample guidance "
+                "in the documentation."
+            )
+        else:
+            result["recommendations"].append(
+                f"With only {min(n_s_t, n_s_r)} sample(s) per group, use use_pseudobulk=True "
+                f"(pseudobulk_de_backend='pydeseq2') rather than use_mixed_model=True "
+                f"(requires >={MIXED_MODEL_MIN_SAMPLES_PER_GROUP} samples per group)."
+            )
     else:
         result["recommendations"].append(
             "No sample_col provided. The analysis will treat cells as independent. "
@@ -2879,6 +3028,24 @@ def recommend_workflow(
         de_backend = "scanpy"
         suggested_kwargs.setdefault("de_method", "wilcoxon")
 
+    warnings = list(diag.get("warnings", []))
+    recommendations = list(diag.get("recommendations", []))
+    power = diag.get("power_summary") or {}
+    max_exact = power.get("max_exact_permutations_pseudobulk")
+
+    if suggested_kwargs.get("use_permutation") and max_exact is not None:
+        if max_exact < _PERM_FDR_MIN_SUCCESS:
+            suggested_kwargs["use_permutation"] = False
+            filter_preset = diag.get("suggested_preset") or "pseudobulk"
+            warnings.append(
+                f"Only ~{max_exact} exact pseudobulk permutation shuffles are possible "
+                f"(<{_PERM_FDR_MIN_SUCCESS}); suggested_kwargs sets use_permutation=False. "
+                "Use filter_active_genes(preset='pseudobulk') on all_results for exploratory "
+                "gene lists, or DE p_adj from differential_expression()."
+            )
+        else:
+            filter_preset = "significant"
+
     rec = {
         "workflow_preset": workflow_key,
         "preset_config": preset_config,
@@ -2887,9 +3054,9 @@ def recommend_workflow(
         "de_backend": de_backend,
         "use_permutation": bool(suggested_kwargs.get("use_permutation", False)),
         "suggested_kwargs": suggested_kwargs,
-        "warnings": diag.get("warnings", []),
-        "recommendations": diag.get("recommendations", []),
-        "power_summary": diag.get("power_summary"),
+        "warnings": warnings,
+        "recommendations": recommendations,
+        "power_summary": power,
         "full_diagnosis": diag,
     }
 
@@ -3095,6 +3262,26 @@ def run_default_pipeline(
         show_plot=show_plot,
     )
     candidates = filter_active_genes(all_results, preset=filter_preset)
+
+    meta = adata_res.uns.get("scatrans", {})
+    if len(significant) == 0 and not meta.get("use_permutation"):
+        logger.info(
+            "Built-in significant is empty (use_permutation=False). "
+            "Candidate genes come from filter_active_genes(preset=%r). "
+            "For permutation-based lists, re-run with use_permutation=True only when "
+            "the design supports >=%d successful shuffles.",
+            filter_preset,
+            _PERM_FDR_MIN_SUCCESS,
+        )
+    elif (
+        len(significant) > 0
+        and filter_preset == "significant"
+        and not candidates.index.equals(significant.index)
+    ):
+        logger.warning(
+            "filter_active_genes(preset='significant') did not exactly match the built-in "
+            "significant list; prefer the significant return value directly."
+        )
 
     enrichment = None
     if run_go_enrichment and len(candidates) > 0:
