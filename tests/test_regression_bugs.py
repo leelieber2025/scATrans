@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import sys
 from unittest.mock import patch
@@ -194,6 +195,10 @@ def test_diagnose_design_kb_python_layers(adata_mature_nascent):
     assert 0.0 <= diag["unspliced_global_fraction"] <= 1.0
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("pydeseq2") is None,
+    reason="pydeseq2 not installed",
+)
 def test_strict_pydeseq2_counts_rejects_log_normalized_pseudobulk():
     """Rounding before integer check must not let log-normalized pb data through."""
     rng = np.random.default_rng(7)
@@ -238,6 +243,10 @@ def test_pseudobulk_with_layers_flags_non_count_source_before_rounding():
     assert pb.uns["pb_x_is_count_like"] is False
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("pydeseq2") is None,
+    reason="pydeseq2 not installed",
+)
 def test_strict_pydeseq2_counts_rejects_log_normalized_layer_end_to_end():
     """End-to-end: use_pseudobulk=True + pb_x_layer pointing at log-normalized data must raise,
     not silently round the log-normalized sums into look-alike integers."""

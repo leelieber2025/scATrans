@@ -185,6 +185,18 @@ def _run_de_wrapper(
             _ann_log.setLevel(_prev_ann)
 
     if is_pseudobulk and pb_backend == "pydeseq2":
+        try:
+            from pydeseq2.dds import DeseqDataSet
+            from pydeseq2.ds import DeseqStats
+        except ImportError as e:
+            raise ImportError(
+                "PyDESeq2 backend requested but 'pydeseq2' is not installed.\n"
+                "Install with:\n"
+                '    pip install "scatrans[pseudobulk]"\n'
+                "or\n"
+                "    pip install pydeseq2"
+            ) from e
+
         n_t = (ad_temp.obs[use_groupby] == target_group).sum()
         n_r = (ad_temp.obs[use_groupby] == reference_group).sum()
         if n_t < 2 or n_r < 2:
@@ -255,18 +267,6 @@ def _run_de_wrapper(
             raise ValueError(
                 f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
             )
-
-        try:
-            from pydeseq2.dds import DeseqDataSet
-            from pydeseq2.ds import DeseqStats
-        except ImportError as e:
-            raise ImportError(
-                "PyDESeq2 backend requested but 'pydeseq2' is not installed.\n"
-                "Install with:\n"
-                '    pip install "scatrans[pseudobulk]"\n'
-                "or\n"
-                "    pip install pydeseq2"
-            ) from e
 
         condition = ad_temp.obs[use_groupby].astype(str).values
         metadata = pd.DataFrame(

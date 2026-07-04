@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.8 bugfix 2026-07-04]
 
 ### Fixed
+- **CI pytest failure on matrix legs without `pydeseq2`**: two new pseudobulk regression tests
+  (`test_strict_pydeseq2_counts_rejects_log_normalized_*`) now use the same
+  `@pytest.mark.skipif(importlib.util.find_spec("pydeseq2") is None, ...)` guard as
+  `tests/test_de_backends.py`, instead of relying on production-code check ordering.
+  Restored PyDESeq2 `ImportError` (missing dependency) ahead of data-validation `ValueError`
+  in `_run_de_wrapper`, so users without `pydeseq2` see the install hint first.
 - **Pseudobulk `strict_pydeseq2_counts` check ran on already-rounded data**: `_pseudobulk_with_layers`
   always rounds aggregated sums to integers, so the PyDESeq2 count-likeness check in
   `_run_de_wrapper` (which inspected the rounded pseudobulk `.X`) could never detect that the
