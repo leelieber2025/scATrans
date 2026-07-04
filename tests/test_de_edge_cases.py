@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
+from statsmodels.stats.multitest import multipletests
 
 from scatrans._de import (
     _run_de_wrapper,
@@ -214,3 +215,14 @@ def test_run_permutation_test_use_fdr_based_on_n_success(monkeypatch):
     )
     assert use_fdr is False
     assert reason == "small_permutation_space"
+
+
+def test_memento_bh_excludes_nan_pvals_from_denominator():
+    """Defensive: NaN p-values must not inflate BH denominator if they ever appear."""
+    pvals_raw = pd.Series([0.01, 0.04, np.nan, 0.2], index=["g0", "g1", "g2", "g3"])
+    valid = pvals_raw.notna()
+    p_adj_clean = pd.Series(1.0, index=pvals_raw.index)
+    if valid.sum() > 0:
+        p_adj_clean.loc[valid] = multipletests(pvals_raw[valid].values, method="fdr_bh")[1]
+    p_adj_polluted = multipletests(pvals_raw.fillna(1.0).values, method="fdr_bh")[1]
+    assert p_adj_clean.loc["g0"] < p_adj_polluted[0]

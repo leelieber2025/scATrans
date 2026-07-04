@@ -728,7 +728,8 @@ def test_significant_requires_permutation_fdr(adata_basic):
     )
     assert "unspliced_excess_fdr" in allr_perm.columns
     if len(sig_perm) > 0:
-        assert (sig_perm["unspliced_excess_residual"] > 0).all()
+        assert (sig_perm["unspliced_excess_residual"] > 1.0).all()
+        assert (sig_perm["active_score"] >= 55.0).all()
         assert (sig_perm["unspliced_excess_fdr"] < 0.05).all()
 
 

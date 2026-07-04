@@ -537,8 +537,6 @@ def _get_group_mean(matrix: Any, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
         raise ValueError("Cannot compute group mean for an empty group.")
     sub = matrix[mask]
-    if sparse.issparse(sub):
-        return np.asarray(sub.mean(axis=0)).ravel()
     return np.asarray(sub.mean(axis=0)).ravel()
 
 

@@ -56,10 +56,25 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.9.2"
+    VERSION = "0.9.8"
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+# Shared defaults for filter_active_genes(preset="heuristic") and the built-in
+# active_score() significant list. Keep in sync — both entry points should agree
+# under default parameters.
+HEURISTIC_FILTER_DEFAULTS: dict[str, float | None] = {
+    "active_score_cutoff": 55.0,
+    "pval_cutoff": 0.05,
+    "unspliced_excess_residual_cutoff": 1.0,
+    "logfc_cutoff": 0.35,
+    "active_score_fdr_cutoff": 0.25,
+    "unspliced_excess_fdr_cutoff": 0.05,
+    "effective_gamma_min": 0.05,
+    "effective_gamma_max": 1.0,
+    "delta_variance_min": None,
+}
 
 
 def _materialize_if_view(adata: ad.AnnData) -> ad.AnnData:
@@ -248,7 +263,7 @@ def active_score(
     weight_unspliced: float = 1.0,
     weight_pval: float = 1.0,
     pval_cutoff: float = 0.05,
-    logfc_cutoff: float = 0.5,
+    logfc_cutoff: float = HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"],  # type: ignore[arg-type]
     unspliced_excess_fdr_cutoff: float = 0.05,
     de_method: str = "t-test_overestim_var",  # freely switchable basic option, e.g. "wilcoxon"
     pseudobulk_de_backend: str = "pydeseq2",  # "pydeseq2" or "scanpy" when use_pseudobulk=True
@@ -304,7 +319,9 @@ def active_score(
     # Gamma estimation method for reference group unspliced/spliced ratio.
     # "heuristic_shrink": classic global-ratio + prior_weight shrinkage (default, prior_weight=5.0)
     # "robust_median": use median ratio from reference for better stability with small reference groups
-    # "empirical_bayes": robust log-ratio empirical Bayes shrinkage (recommended for small reference)
+    # "empirical_bayes": robust log-ratio empirical Bayes shrinkage (recommended for small reference).
+    # Note: prior_weight affects empirical_bayes via count_pseudocount (observation precision), so its
+    # impact is gentler than on heuristic_shrink/robust_median (direct additive shrinkage).
     # "raw": minimal shrinkage (use observed ratios directly)
     gamma_method: str = "heuristic_shrink",
     ranking_mode: str = "composite",
@@ -365,8 +382,10 @@ def active_score(
 
     Diagnostics (including global unspliced fraction and bias fit details) are stored
     under adata.uns["scatrans"]["diagnostics"]. The full ranked table (all_results)
-    is the main output; the built-in significant list is produced by a strict
-    conjunction of thresholds and is often small or empty.
+    is the main output; the built-in significant list uses the same default thresholds
+    as :func:`filter_active_genes` with ``preset="heuristic"`` (logFC > 0.35,
+    unspliced_excess_residual > 1.0, active_score >= 55, etc.) and may still be
+    small on low-signal data.
 
     A separate function diagnose_design is available to summarize the experimental
     design and surface relevant warnings before analysis.
@@ -679,7 +698,7 @@ def active_score(
             sample_col,
             groupby,
             layers=["spliced", "unspliced"],
-            x_layer=pb_x_layer,
+            x_layer=pb_x_layer if pb_x_layer != "X" else None,
             use_total_for_x=pb_use_total_for_x,
             min_cells=min_cells,
             min_counts=min_counts,
@@ -1004,6 +1023,24 @@ def active_score(
         if _gk in gamma_info:
             velocity_diag[_gk] = gamma_info[_gk]
 
+    pydeseq2_diag = {}
+    if is_pseudobulk and pseudobulk_de_backend == "pydeseq2" and hasattr(de_df, "attrs"):
+        pydeseq2_diag = {
+            "used": True,
+            "n_genes_filtered_low_count": int(de_df.attrs.get("n_genes_filtered_low_count", 0)),
+            "n_genes_nan_from_deseq2": int(de_df.attrs.get("n_genes_nan_from_deseq2", 0)),
+            "neutral_fill": bool(de_df.attrs.get("pydeseq2_neutral_fill", True)),
+            "note": (
+                "Genes filtered by min_counts or marked NaN by DESeq2 independent filtering "
+                "appear as logFC=0, p_adj=1 and are not 'tested and non-significant'."
+            ),
+        }
+    n_memento_not_returned = (
+        int(de_df.attrs.get("n_genes_not_returned_by_memento", 0))
+        if (use_memento_de and hasattr(de_df, "attrs"))
+        else 0
+    )
+
     diagnostics: dict[str, Any] = {
         "n_cells": int(adata.n_obs),
         "n_genes_input": int(adata.n_vars),
@@ -1029,6 +1066,17 @@ def active_score(
                 "Lightweight LMM analogue (log1p + Wald/LRT); not NB-GLMM/voom. "
                 "Inspect failed_fit_rate before publication claims."
                 if use_mixed_model
+                else None
+            ),
+        },
+        "pydeseq2": pydeseq2_diag or {"used": False},
+        "memento": {
+            "used": bool(use_memento_de),
+            "n_genes_not_returned": n_memento_not_returned,
+            "note": (
+                "Genes dropped by memento internal filters appear as logFC=0, p_adj=1 "
+                "after reindexing and were not tested."
+                if use_memento_de
                 else None
             ),
         },
@@ -1283,14 +1331,25 @@ def _finalize_active_score_results(
     ue_fdr_cutoff = extra_metadata.get("unspliced_excess_fdr_cutoff", 0.05)
 
     if use_permutation and UNSPLICED_EXCESS_FDR_COL in adata.var.columns:
+        sig_pval = extra_metadata.get("pval_cutoff", HEURISTIC_FILTER_DEFAULTS["pval_cutoff"])
+        sig_logfc = extra_metadata.get("logfc_cutoff", HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"])
+        sig_resid = HEURISTIC_FILTER_DEFAULTS["unspliced_excess_residual_cutoff"]
+        sig_active = HEURISTIC_FILTER_DEFAULTS["active_score_cutoff"]
+        sig_active_fdr = HEURISTIC_FILTER_DEFAULTS["active_score_fdr_cutoff"]
         mask = (
-            (adata.var["p_adj"] < extra_metadata.get("pval_cutoff", 0.05))
-            & (adata.var["logFC"] > extra_metadata.get("logfc_cutoff", 0.5))
-            & (adata.var[residual_col] > 0)
+            (adata.var["p_adj"] < sig_pval)
+            & (adata.var["logFC"] > sig_logfc)
+            & (adata.var[residual_col] > sig_resid)
+            & (adata.var["active_score"] >= sig_active)
             & (adata.var["valid_expr"])
         )
         if extra_metadata.get("use_fdr_for_significance", True):
             mask = mask & (adata.var[UNSPLICED_EXCESS_FDR_COL] < ue_fdr_cutoff)
+        if "active_score_fdr" in adata.var.columns and sig_active_fdr is not None:
+            mask = mask & (
+                adata.var["active_score_fdr"].notna()
+                & (adata.var["active_score_fdr"] < sig_active_fdr)
+            )
         else:
             logger.warning(
                 "Permutation space is very small; unspliced_excess_fdr was not applied "
@@ -1367,15 +1426,16 @@ def _finalize_active_score_results(
         "use_fdr_for_significance": extra_metadata.get("use_fdr_for_significance"),
         "perm_disabled_reason": extra_metadata.get("perm_disabled_reason"),
         "significant_criteria": {
-            "logFC": f"> {extra_metadata.get('logfc_cutoff')}",
-            "p_adj": f"< {extra_metadata.get('pval_cutoff')}",
-            "unspliced_excess_residual": "> 0",
+            "logFC": f"> {extra_metadata.get('logfc_cutoff', HEURISTIC_FILTER_DEFAULTS['logfc_cutoff'])}",
+            "p_adj": f"< {extra_metadata.get('pval_cutoff', HEURISTIC_FILTER_DEFAULTS['pval_cutoff'])}",
+            "unspliced_excess_residual": f"> {HEURISTIC_FILTER_DEFAULTS['unspliced_excess_residual_cutoff']}",
+            "active_score": f">= {HEURISTIC_FILTER_DEFAULTS['active_score_cutoff']}",
+            "active_score_fdr": f"< {HEURISTIC_FILTER_DEFAULTS['active_score_fdr_cutoff']}",
             "unspliced_excess_fdr": (
                 f"< {ue_fdr_cutoff} (requires use_permutation=True)"
                 if use_permutation
                 else "not evaluated (use_permutation=False)"
             ),
-            "active_score": "ranking only (not used for significance)",
         },
         "use_delta_variance_pval": extra_metadata.get("use_delta_variance_pval"),
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
@@ -1529,8 +1589,8 @@ def differential_expression(
     Returns
     -------
     (adata_with_results, results_df)
-        - results_df is a ranked DataFrame (by |logFC| or p_adj) containing
-          at minimum: logFC, p_val, p_adj, and (when use_memento_de) the
+        - results_df is sorted by p_adj (ascending; most significant first) and
+          contains at minimum: logFC, p_val, p_adj, and (when use_memento_de) the
           native memento_de_* / memento_dv_* columns.
         - adata.var is updated with the same columns for convenience.
         - Metadata is stored under adata.uns["scatrans"].
@@ -1731,6 +1791,22 @@ def differential_expression(
         if (use_mixed_model and hasattr(de_df, "attrs"))
         else 0.0
     )
+    pydeseq2_diag = {}
+    if use_pseudobulk and pseudobulk_de_backend == "pydeseq2" and hasattr(de_df, "attrs"):
+        pydeseq2_diag = {
+            "n_genes_filtered_low_count": int(de_df.attrs.get("n_genes_filtered_low_count", 0)),
+            "n_genes_nan_from_deseq2": int(de_df.attrs.get("n_genes_nan_from_deseq2", 0)),
+            "neutral_fill": bool(de_df.attrs.get("pydeseq2_neutral_fill", True)),
+            "note": (
+                "Genes filtered by min_counts or marked NaN by DESeq2 independent filtering "
+                "appear as logFC=0, p_adj=1 and are not 'tested and non-significant'."
+            ),
+        }
+    n_memento_not_returned = (
+        int(de_df.attrs.get("n_genes_not_returned_by_memento", 0))
+        if (use_memento_de and hasattr(de_df, "attrs"))
+        else 0
+    )
 
     # Build clean results table (no velocity columns)
     cols = ["logFC", "p_val", "p_adj"]
@@ -1807,6 +1883,8 @@ def differential_expression(
             ),
             "memento_num_boot": memento_num_boot if use_memento_de else None,
             "memento_n_cpus": memento_n_cpus if use_memento_de else None,
+            "n_genes_not_returned_by_memento": n_memento_not_returned,
+            "pydeseq2": pydeseq2_diag or None,
             "n_jobs": n_jobs,
             "gene_type_filter": gene_type_filter,
         }
@@ -2018,16 +2096,25 @@ def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False)
             "Use the object before gene subsetting, or call store_raw_counts() again on the current object."
         )
 
-    # Additional guard when restoring from adata.raw (same dimension but possibly different order/names)
-    if (
-        source == "adata.raw"
-        and hasattr(adata.raw, "var_names")
-        and not np.array_equal(adata.raw.var_names, adata.var_names)
-    ):
-        raise ValueError(
-            "adata.raw has the same number of genes as current adata, but gene names/order differ. "
-            "Cannot restore into .X without explicit gene reindexing."
-        )
+    # Guard against same-dimension but permuted gene order (layers and adata.raw).
+    if source == "adata.raw" and hasattr(adata.raw, "var_names"):
+        if not np.array_equal(adata.raw.var_names, adata.var_names):
+            raise ValueError(
+                "adata.raw has the same number of genes as current adata, but gene names/order differ. "
+                "Cannot restore into .X without explicit gene reindexing."
+            )
+    elif source.startswith("layers"):
+        raw_gene_list = adata.uns.get("scatrans", {}).get("raw_gene_list")
+        if (
+            raw_gene_list is not None
+            and len(raw_gene_list) == adata.n_vars
+            and not np.array_equal(np.asarray(raw_gene_list), adata.var_names.to_numpy())
+        ):
+            raise ValueError(
+                f"Stored counts in {source} match n_vars but stored raw_gene_list order differs "
+                "from current adata.var_names. Cannot restore into .X without explicit gene "
+                "reindexing. Re-run store_raw_counts() on the current object."
+            )
 
     target = adata if inplace else adata.copy()
     target.X = raw
@@ -2169,16 +2256,10 @@ def filter_active_genes(
         p = preset.lower()
         if p in ("heuristic", "single_cell", "default"):
             preset_vals = {
-                "active_score_cutoff": 55.0,
-                "pval_cutoff": 0.05,
-                "velocity_residual_cutoff": 1.0,
-                "unspliced_excess_residual_cutoff": 1.0,
-                "logfc_cutoff": 0.35,
-                "active_score_fdr_cutoff": 0.25,
-                "unspliced_excess_fdr_cutoff": 0.05,
-                "effective_gamma_min": 0.05,
-                "effective_gamma_max": 1.0,
-                "delta_variance_min": None,
+                **HEURISTIC_FILTER_DEFAULTS,
+                "velocity_residual_cutoff": HEURISTIC_FILTER_DEFAULTS[
+                    "unspliced_excess_residual_cutoff"
+                ],
             }
         elif p in ("pseudobulk", "bulk"):
             preset_vals = {

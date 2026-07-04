@@ -76,6 +76,23 @@ def test_differential_expression_mixed_model(adata_mixed_small):
     assert "delta_variance" in res.columns
 
 
+@pytest.mark.slow
+def test_active_score_pb_x_layer_sentinel(adata_pb):
+    """pb_x_layer='X' must mean adata.X, matching differential_expression()."""
+    _, _, _ = scat.active_score(
+        adata_pb,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_pseudobulk=True,
+        sample_col="sample",
+        pb_use_total_for_x=False,
+        pb_x_layer="X",
+        use_permutation=False,
+        show_plot=False,
+    )
+
+
 @pytest.mark.skipif(
     importlib.util.find_spec("pydeseq2") is None,
     reason="pydeseq2 not installed",

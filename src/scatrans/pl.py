@@ -1903,6 +1903,14 @@ def gseaplot(
             fig, ax = _empty_placeholder_fig("No ranked genes")
             return fig, ax
 
+        # Prefer gseapy's post-sort ranking so RES/hits and the bottom bar share one axis.
+        if gsea_result is not None:
+            ranking_attr = getattr(gsea_result, "attrs", {}).get("ranking")
+            if ranking_attr is not None:
+                ranked = pd.Series(ranking_attr, dtype=float)
+                ranked.index = ranked.index.astype(str)
+                ranked = ranked.dropna()
+
         # Try to get precomputed data from gsea_result.attrs
         RES = None
         hits = None
@@ -2647,8 +2655,6 @@ def active_genes_heatmap(
             **kwargs,
         )
         if save_path:
-            import matplotlib.pyplot as plt
-
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
             logger.info("Heatmap saved → %s", save_path)
         if show:

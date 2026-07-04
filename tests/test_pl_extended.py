@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
+import scanpy as sc
 
 import scatrans as scat
 
@@ -28,7 +29,14 @@ def test_volcano_plot_label_genes(results_df):
 
 
 def test_gseaplot_with_stored_curves():
-    ranked = pd.Series(np.linspace(1, 0, 20), index=[f"G{i}" for i in range(20)])
+    # gseapy-sorted ranking (descending scores)
+    ranking = pd.Series(
+        {f"G{i}": float(20 - i) for i in range(20)},
+        index=[f"G{i}" for i in range(20)],
+    ).sort_values(ascending=False)
+    # Caller passes a deliberately shuffled series (common when ranked from all_results)
+    shuffled = ranking.sample(frac=1, random_state=0)
+    res_curve = np.linspace(0.0, 1.0, len(ranking))
     gsea_res = pd.DataFrame(
         {
             "Term": ["TERM1"],
@@ -37,13 +45,43 @@ def test_gseaplot_with_stored_curves():
             "p.adjust": [0.05],
         }
     )
-    gsea_res.attrs["gsea_info"] = {
-        "rank_metric": ranked,
-        "enrichment_score": np.linspace(0, 0.5, 20),
-        "hit_indices": [2, 5, 9],
+    gsea_res.attrs["gsea_details"] = {
+        "TERM1": {
+            "RES": res_curve.tolist(),
+            "hits": [2, 5, 9],
+            "nes": 1.5,
+            "pval": 0.01,
+            "fdr": 0.05,
+        }
     }
-    fig, ax = scat.pl.gseaplot(ranked, gsea_res, term="TERM1", show=False)
+    gsea_res.attrs["ranking"] = ranking.to_dict()
+    fig, ax = scat.pl.gseaplot(shuffled, gsea_res, term="TERM1", show=False)
+    bar_heights = [p.get_height() for p in fig.axes[2].patches]
+    assert np.allclose(bar_heights, ranking.values)
+    assert len(fig.axes[0].lines[0].get_ydata()) == len(ranking)
     plt.close(fig)
+
+
+@pytest.mark.plot
+def test_active_genes_heatmap_default_show():
+    import anndata as ad
+
+    X = np.random.poisson(3, size=(20, 5)).astype(float)
+    adata = ad.AnnData(
+        X,
+        obs=pd.DataFrame({"group": ["A"] * 10 + ["B"] * 10}),
+        var=pd.DataFrame(index=[f"g{i}" for i in range(5)]),
+    )
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+    result = scat.pl.active_genes_heatmap(
+        adata, genes=adata.var_names[:3].tolist(), groupby="group", show=True
+    )
+    assert result is not None
+    fig, _ax = result
+    assert fig is not None
+    if isinstance(fig, plt.Figure):
+        plt.close(fig)
 
 
 def test_active_score_rankplot_empty():

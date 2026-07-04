@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-07-03
+
+### Changed (user-visible default behavior)
+- **`active_score()` built-in `significant` list** now uses the same default thresholds as
+  `filter_active_genes(preset="heuristic")`: `logFC > 0.35`, `unspliced_excess_residual > 1.0`,
+  `active_score >= 55`, `active_score_fdr < 0.25`, plus `p_adj` / `unspliced_excess_fdr` cutoffs.
+  Re-running analyses with defaults may return a **different** significant gene set than 0.9.2
+  (typically more genes when signal is present; aligns with the documented post-hoc workflow).
+- **`active_score(logfc_cutoff=...)` default** lowered from `0.5` to `0.35` to match the heuristic
+  preset (only affects the built-in significant mask and metadata; ranking in `all_results` unchanged).
+- **`gamma_method="empirical_bayes"` + `prior_weight`**: fixed a numeric floor so `prior_weight` in
+  the usual tuning range (0.5–5.0, including the default 5.0) now changes `count_pseudocount` and
+  shrinkage weights instead of being pinned at 1.0. EB gamma values may differ from 0.9.2 at the
+  same `prior_weight`.
+
+### Fixed
+- **`scat.pl.gseaplot`**: RES curve / hit ticks and the bottom ranked-metric bar now share the same
+  gene order by preferring `gsea_result.attrs["ranking"]` over caller-supplied row order.
+- **`scat.pl` robustness**: placeholder figures for empty or incomplete volcano/comet inputs;
+  `bias_diagnostic_plot` validates external `axes`; `active_genes_heatmap` default `show=True` no
+  longer hits a Python `UnboundLocalError` on `plt`.
+- **PyDESeq2 pseudobulk DE**: log warning + `de_df.attrs` diagnostics when genes are skipped by
+  `min_counts_per_gene` or marked NaN by DESeq2 independent filtering (neutral fill is not
+  "tested and non-significant").
+- **Memento DE**: log warning + `n_genes_not_returned_by_memento` when memento drops genes
+  internally; reindexed neutral rows are documented in diagnostics.
+- **`restore_raw_counts`**: reject `layers["counts"]` restore when `raw_gene_list` order differs
+  from current `var_names` (same guard as `adata.raw`).
+- **`active_score` pseudobulk**: `pb_x_layer="X"` now means `adata.X`, matching
+  `differential_expression()`.
+- **`_velocity._estimate_eb_prior_from_reference`**: removed unreachable trim fallback branch;
+  trim-skipped path labeled `empirical_bayes_median_mad`.
+- **`_utils._get_group_mean`**: removed redundant sparse/dense branches.
+
+### Added
+- Shared `HEURISTIC_FILTER_DEFAULTS` in `tl.py` (single source for heuristic preset + built-in
+  significant mask).
+- Tests: gseaplot ranking alignment, `prior_weight` EB sensitivity, significant vs heuristic
+  filter parity, PyDESeq2/Memento diagnostic paths, `restore_raw_counts` order guard,
+  `active_genes_heatmap` default show, `pb_x_layer="X"` sentinel.
+
+### Documentation
+- README built-in `significant` section updated to match `HEURISTIC_FILTER_DEFAULTS`.
+
 ## [0.9.2 bugfix 2026-07-02]
 
 ### Fixed

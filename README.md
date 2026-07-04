@@ -754,16 +754,25 @@ Primary result columns use **unspliced / nascent excess** terminology (not RNA v
 
 ### Built-in `significant` gene list
 
-When `use_permutation=True`, the internal mask requires **all** of:
+When `use_permutation=True`, the built-in mask uses the same default thresholds as
+`filter_active_genes(..., preset="heuristic")` (see `HEURISTIC_FILTER_DEFAULTS` in
+`tl.py`). Under default parameters it requires **all** of:
 
-- `logFC > logfc_cutoff` (default 0.5)
+- `logFC > logfc_cutoff` (default **0.35**)
 - `p_adj < pval_cutoff` (default 0.05)
-- `unspliced_excess_residual > 0`
+- `unspliced_excess_residual > 1.0` (default residual magnitude cutoff)
+- `active_score >= 55.0`
+- `active_score_fdr < 0.25` (when permutation computed composite-score FDR)
 - `unspliced_excess_fdr < unspliced_excess_fdr_cutoff` (default 0.05)
 
-Without `use_permutation=True`, the built-in `significant` list is **empty** (FDR on unspliced excess cannot be computed). Use `all_results` + `filter_active_genes` for custom thresholds.
+Without `use_permutation=True`, the built-in `significant` list is **empty** (FDR on
+unspliced excess cannot be computed). Use `all_results` + `filter_active_genes` for
+custom thresholds.
 
-On real data the built-in list often returns zero or few genes. Use the full table in `all_results`, sorted by `active_score` descending.
+On low-signal data the built-in list may still be small. Use the full table in
+`all_results`, sorted by `active_score` descending. If you need different cutoffs,
+pass explicit arguments to `filter_active_genes` rather than assuming the built-in
+list matches a custom `logfc_cutoff` override on `active_score()`.
 
 After each run inspect the diagnostics:
 

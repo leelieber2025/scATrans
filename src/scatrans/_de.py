@@ -301,7 +301,12 @@ def _run_de_wrapper(
                 )
             stat_res.summary()
 
-        res2 = stat_res.results_df.copy().reindex(ad_temp.var_names)
+        res_df = stat_res.results_df.copy()
+        n_genes_filtered_low_count = int((~gene_keep).sum())
+        n_genes_nan_from_deseq2 = (
+            int(res_df["padj"].isna().sum()) if "padj" in res_df.columns else 0
+        )
+        res2 = res_df.reindex(ad_temp.var_names)
         de_df = pd.DataFrame(index=ad_temp.var_names)
         de_df["logFC"] = res2["log2FoldChange"].reindex(ad_temp.var_names)
         de_df["p_val"] = res2.get("pvalue", pd.Series(np.nan, index=res2.index)).reindex(
@@ -314,6 +319,24 @@ def _run_de_wrapper(
         de_df["logFC"] = de_df["logFC"].fillna(0.0)
         de_df["p_val"] = de_df["p_val"].fillna(1.0)
         de_df["p_adj"] = de_df["p_adj"].fillna(1.0)
+        n_total = len(de_df)
+        de_df.attrs["n_genes_filtered_low_count"] = n_genes_filtered_low_count
+        de_df.attrs["n_genes_nan_from_deseq2"] = n_genes_nan_from_deseq2
+        de_df.attrs["pydeseq2_neutral_fill"] = True
+        if n_total > 0 and (n_genes_filtered_low_count > 0 or n_genes_nan_from_deseq2 > 0):
+            logger.warning(
+                "PyDESeq2: %d/%d genes (%.1f%%) skipped by min_counts_per_gene filter; "
+                "%d/%d genes (%.1f%%) had NaN padj from DESeq2 independent filtering/outliers. "
+                "These genes appear as neutral values (logFC=0, p_adj=1) and are NOT "
+                "'tested and non-significant'. "
+                "See de_df.attrs['n_genes_filtered_low_count'] and ['n_genes_nan_from_deseq2'].",
+                n_genes_filtered_low_count,
+                n_total,
+                100.0 * n_genes_filtered_low_count / n_total,
+                n_genes_nan_from_deseq2,
+                n_total,
+                100.0 * n_genes_nan_from_deseq2 / n_total,
+            )
         return de_df
 
     else:
@@ -429,13 +452,9 @@ def _run_mixedlm_de(
             lrt_stat = -2.0 * (m_null.llf - m_full.llf)
             lrt_p = float(chi2.sf(max(lrt_stat, 0.0), 1))
 
-            # Extract condition coef (target vs ref)
-            # The param name is typically "C(condition)[T.<target>]" or similar
-            coef_name = None
-            for pname in m_full.params.index:
-                if "condition" in str(pname) and target_group in str(pname):
-                    coef_name = pname
-                    break
+            # Extract condition coef (target vs ref) — exact statsmodels name only
+            expected_coef = f"C(condition)[T.{target_group}]"
+            coef_name = expected_coef if expected_coef in m_full.params.index else None
             if coef_name is None:
                 return idx, 0.0, 1.0, 1.0, 0.0, True
             logfc = float(m_full.params.get(coef_name, 0.0))
@@ -702,8 +721,9 @@ def _run_memento_de(
         pval_raw = result["de_pval"]
     else:
         pval_raw = pd.Series(1.0, index=res_index)
-    pvals = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index).fillna(1.0)
-    de_df["p_val"] = pvals
+    pvals_for_correction = pd.to_numeric(pval_raw, errors="coerce").reindex(res_index)
+    valid_pval_mask = pvals_for_correction.notna()
+    de_df["p_val"] = pvals_for_correction.fillna(1.0)
 
     # Preserve Memento-native adjusted p if present (audit trail); package p_adj uses BH for consistency.
     for native_col in ("de_padj", "de_padjs", "padj", "p_adj", "de_fdr"):
@@ -713,8 +733,28 @@ def _run_memento_de(
             ).reindex(res_index)
             break
 
-    with _de_warning_context():
-        de_df["p_adj"] = multipletests(pvals.values, method="fdr_bh")[1]
+    de_df["p_adj"] = 1.0
+    if valid_pval_mask.sum() > 0:
+        with _de_warning_context():
+            de_df.loc[valid_pval_mask, "p_adj"] = multipletests(
+                pvals_for_correction[valid_pval_mask].values, method="fdr_bh"
+            )[1]
+
+    # Memento typically drops low-coverage genes entirely (not NaN rows). Genes absent
+    # from the memento result are reindexed below with neutral fill — same UX issue as
+    # PyDESeq2 filtered genes, but via row omission rather than NaN padj.
+    n_genes_not_returned = int(len(adata.var_names.difference(res_index)))
+    de_df.attrs["n_genes_not_returned_by_memento"] = n_genes_not_returned
+    de_df.attrs["n_genes_missing_pval"] = int((~valid_pval_mask).sum())
+    if n_genes_not_returned > 0:
+        logger.warning(
+            "Memento: %d/%d genes were not returned by binary_test_1d (e.g. internal "
+            "min_perc_group filtering) and will appear as neutral values (logFC=0, p_adj=1) "
+            "after reindexing. These were not tested. "
+            "See de_df.attrs['n_genes_not_returned_by_memento'].",
+            n_genes_not_returned,
+            len(adata.var_names),
+        )
 
     # Expose Memento's native columns for users who want mean + variability signals
     for src, dst in [

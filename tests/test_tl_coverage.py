@@ -90,6 +90,17 @@ def test_store_and_restore_raw_counts(adata_de_only):
     assert "log1p" not in restored.uns
 
 
+def test_restore_raw_counts_rejects_permuted_gene_order(adata_de_only):
+    ad = adata_de_only.copy()
+    scat.store_raw_counts(ad, layer="counts", save_raw=False)
+    perm = list(range(ad.n_vars))
+    perm.reverse()
+    ad_perm = ad[:, perm].copy()
+    sc.pp.normalize_total(ad_perm, target_sum=1e4)
+    with pytest.raises(ValueError, match="raw_gene_list order differs"):
+        scat.restore_raw_counts(ad_perm, layer="counts", inplace=False)
+
+
 def test_reconcile_log1p_marker_detects_stale_metadata(adata_de_only):
     from scatrans._utils import _reconcile_log1p_marker, _x_looks_log_normalized
 
@@ -411,3 +422,40 @@ def test_prepare_log_normalized_expression_gap(adata_de_only):
     # Should return roughly same scale (no additional log1p applied)
     assert X_out.max() < 15
     assert np.allclose(X_out.mean(), mat.mean(), atol=1.0)
+
+
+def test_prior_weight_empirical_bayes_gradients_below_default():
+    """prior_weight must affect empirical_bayes below the default (0.5–5.0 range)."""
+    from scatrans._velocity import _apply_empirical_bayes_gamma, _estimate_eb_prior_from_reference
+
+    rng = np.random.default_rng(0)
+    u_r = rng.exponential(2.0, 400)
+    s_r = rng.exponential(2.0, 400)
+
+    _, meta_lo = _estimate_eb_prior_from_reference(u_r, s_r, prior_weight=0.5)
+    _, meta_hi = _estimate_eb_prior_from_reference(u_r, s_r, prior_weight=5.0)
+    assert meta_lo["count_pseudocount"] == pytest.approx(0.1)
+    assert meta_hi["count_pseudocount"] == pytest.approx(1.0)
+    assert meta_lo["count_pseudocount"] != meta_hi["count_pseudocount"]
+
+    _, w_lo, _ = _apply_empirical_bayes_gamma(u_r, s_r, meta_lo["eb_prior"], n_ref=20.0)
+    _, w_hi, _ = _apply_empirical_bayes_gamma(u_r, s_r, meta_hi["eb_prior"], n_ref=20.0)
+    assert float(np.nanmean(w_lo)) != float(np.nanmean(w_hi))
+
+
+@pytest.mark.slow
+def test_significant_matches_filter_heuristic_preset(adata_basic):
+    """Built-in significant list should match filter_active_genes(preset='heuristic')."""
+    _, sig, allr = scat.active_score(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_permutation=True,
+        n_perm=30,
+        random_seed=1,
+        n_jobs=1,
+        show_plot=False,
+    )
+    filt = scat.filter_active_genes(allr, preset="heuristic")
+    assert sig.index.tolist() == filt.index.tolist()
