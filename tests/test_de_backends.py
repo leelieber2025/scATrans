@@ -86,6 +86,8 @@ def test_active_score_pb_x_layer_sentinel(adata_pb):
         reference_group="Control",
         use_pseudobulk=True,
         sample_col="sample",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
         pb_use_total_for_x=False,
         pb_x_layer="X",
         use_permutation=False,
