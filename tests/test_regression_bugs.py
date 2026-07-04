@@ -654,7 +654,9 @@ def test_extract_gene_lists_from_all_results_index():
         },
         index=["Il1r2", "Hdc", "Gapdh"],
     )
-    out = scat.extract_gene_lists(all_results, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up")
+    out = scat.extract_gene_lists(
+        all_results, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up"
+    )
     assert "Il1r2" in out["contrast"]
     assert "Hdc" in out["contrast"]
     assert "logFC" not in out["contrast"]

@@ -2414,7 +2414,10 @@ def volcano_plot(
                 vals = plot_df["neg_log_pval"].to_numpy(dtype=float)
                 vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
                 if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
-                    vmin, vmax = 0.0, max(1.0, float(np.nanmax(vals)) if np.isfinite(np.nanmax(vals)) else 1.0)
+                    vmin, vmax = (
+                        0.0,
+                        max(1.0, float(np.nanmax(vals)) if np.isfinite(np.nanmax(vals)) else 1.0),
+                    )
                 fill_cmap = LinearSegmentedColormap.from_list(
                     "ggvolcano_gradual_fill", list(GGVOLCANO_GRADUAL_FILLS), N=256
                 )

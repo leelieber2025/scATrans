@@ -2161,7 +2161,10 @@ def _coerce_ranked_genes_dataframe(
     if df.shape[1] >= 2:
         col0 = df.iloc[:, 0]
         col1 = df.iloc[:, 1]
-        if _labels_look_like_gene_symbols(col0) and pd.to_numeric(col1, errors="coerce").notna().any():
+        if (
+            _labels_look_like_gene_symbols(col0)
+            and pd.to_numeric(col1, errors="coerce").notna().any()
+        ):
             return pd.Series(
                 pd.to_numeric(col1, errors="coerce").values,
                 index=col0.astype(str).values,
