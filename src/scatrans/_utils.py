@@ -162,9 +162,7 @@ __all__ = [
 ]
 
 
-def _warn_if_negative_layer_values(
-    layer: Any, layer_name: str, *, max_check: int = 100000
-) -> None:
+def _warn_if_negative_layer_values(layer: Any, layer_name: str, *, max_check: int = 100000) -> None:
     """Warn when a count layer contains negative values (physically invalid for RNA counts)."""
     if sparse.issparse(layer):
         vals = np.asarray(layer.data, dtype=float)

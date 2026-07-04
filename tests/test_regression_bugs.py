@@ -339,9 +339,7 @@ def test_run_enrichment_default_no_pval_cutoff_deprecation_warning():
             verbose=False,
         )
     deprecated = [
-        w
-        for w in record
-        if issubclass(w.category, UserWarning) and "pval_cutoff" in str(w.message)
+        w for w in record if issubclass(w.category, UserWarning) and "pval_cutoff" in str(w.message)
     ]
     assert not deprecated
 
