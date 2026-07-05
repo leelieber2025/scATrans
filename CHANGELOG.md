@@ -267,7 +267,6 @@ All new issues addressed. Full test suite green.
 - Delta Variance: `delta_variance` (condition-attributable variance fraction, 0-1, variancePartition-style) and `delta_var_pval` (LRT) computed during mixed fit; always surfaced in `all_results` / adata.var / diagnostics when mixed used.
 - New `active_score` options: `use_delta_variance_pval` (bool) + `delta_var_pval_cutoff` to optionally include the delta LRT pval as supplementary filter in significant gene selection.
 - Full backward compat; mixed path documented vs. pseudobulk; guidance + references to Libra, dreampy, NEBULA, dreamlet in README.
-- Existing package backed up to `backup/backup0609/`.
 - Tests + direct verification cover mixed, delta col, filter option, incompatibility with pseudobulk, and no regression on legacy paths. All tests pass.
 - Enhanced `README.md` with real-data workflow pointers and stronger emphasis on inspecting diagnostics.
 - `scat.pl` now documents the new phase-portrait helper; all existing `ax=` support preserved.
@@ -292,7 +291,6 @@ All new issues addressed. Full test suite green.
 
 ### Deprecated / Notes
 - The previous "review fixes applied" comment in `tl.py` was removed as part of the refactor.
-- Old code is preserved in the `backup/` directory for reference.
 
 ## Earlier
 
