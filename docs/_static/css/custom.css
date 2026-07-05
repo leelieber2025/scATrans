@@ -1,0 +1,4 @@
+/* Minor spacing tweaks on top of sphinx_book_theme defaults. */
+.bd-main .bd-content {
+  max-width: 88rem;
+}

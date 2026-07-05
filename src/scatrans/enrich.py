@@ -337,6 +337,26 @@ GSEA_COLUMNS = [
 ]
 
 
+class _DeepcopyImmuneDict(dict):
+    """A dict whose ``copy.deepcopy`` is an O(1) identity return.
+
+    ``pandas.DataFrame.attrs`` is deep-copied on essentially every DataFrame
+    operation (slicing, ``.head()``, ``.copy()``, column assignment) via
+    ``NDFrame.__finalize__``. ``run_gsea`` stores gseapy's full per-term
+    running-enrichment-score curves in ``.attrs["gsea_details"]`` — for a
+    genome-wide ranked list against thousands of gene sets this is tens of
+    millions of floats, so deep-copying it on every downstream DataFrame
+    operation (as happens inside ``enrich_dotplot``, ``gseaplot``,
+    ``filter_active_genes``, or even a plain ``.head()`` in a notebook) makes
+    those calls take seconds to minutes instead of being instantaneous. This
+    payload is write-once/read-only after ``run_gsea`` returns, so sharing
+    the same object across copies instead of duplicating it is safe.
+    """
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 def _get_analysis_info() -> dict[str, Any]:
     """Return reproducibility metadata for attrs / save_enrichment_report."""
     from datetime import datetime as _dt
@@ -2462,6 +2482,26 @@ def run_gsea(
     if "p.adjust" not in res_df.columns and "padj" in res_df.columns:
         res_df = res_df.rename(columns={"padj": "p.adjust"})
 
+    # gseapy's res2d frequently returns numeric columns as dtype "object" (a column
+    # of plain Python floats, not strings, but not cast to a numpy numeric dtype
+    # either). Downstream consumers (matplotlib scatter coloring in enrich_dotplot,
+    # sort_values, filter_active_genes-style cutoffs) assume real numeric dtypes;
+    # an object-dtype color array in particular makes matplotlib fall back to its
+    # (very slow, effectively hanging) per-point color-spec parsing path instead of
+    # numeric colormap normalization. Coerce explicitly so the dtype is never object.
+    _numeric_gsea_cols = [
+        "ES",
+        "NES",
+        "pvalue",
+        "p.adjust",
+        "FWER_pval",
+        "Tag_percent",
+        "Gene_percent",
+    ]
+    for _col in _numeric_gsea_cols:
+        if _col in res_df.columns:
+            res_df[_col] = pd.to_numeric(res_df[_col], errors="coerce")
+
     # Add neg_log10_padj for compatibility with filters/plots
     if "p.adjust" in res_df.columns:
         res_df["neg_log10_padj"] = -np.log10(
@@ -2507,11 +2547,13 @@ def run_gsea(
         "score_max": float(ranked.max()),
         "score_median": float(ranked.median()),
     }
-    # Store gseapy internals for accurate gseaplot (RES curve + hits per term)
+    # Store gseapy internals for accurate gseaplot (RES curve + hits per term).
+    # Wrapped in _DeepcopyImmuneDict: see its docstring for why (large nested
+    # payload + pandas' per-operation .attrs deepcopy is a serious perf trap).
     if hasattr(pre_res, "results"):
-        res_df.attrs["gsea_details"] = pre_res.results
+        res_df.attrs["gsea_details"] = _DeepcopyImmuneDict(pre_res.results)
     if hasattr(pre_res, "ranking"):
-        res_df.attrs["ranking"] = pre_res.ranking.to_dict()
+        res_df.attrs["ranking"] = _DeepcopyImmuneDict(pre_res.ranking.to_dict())
 
     if verbose:
         n_sig = (

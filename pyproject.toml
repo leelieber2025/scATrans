@@ -53,7 +53,9 @@ dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.4.0", "pre-commit>=3.5", "mypy
 generate-gene-features = "scatrans.generate_gene_features:main"
 
 [project.urls]
-Homepage = "https://github.com/scATrans/scatrans"
+Homepage = "https://github.com/leelieber2025/scATrans"
+Documentation = "https://scatrans.readthedocs.io"
+Changelog = "https://scatrans.readthedocs.io/en/latest/changelog.html"
 
 [tool.setuptools.packages.find]
 where = ["src"]

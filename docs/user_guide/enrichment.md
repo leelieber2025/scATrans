@@ -1,0 +1,287 @@
+# Functional Enrichment
+
+Over-representation analysis is available via `run_enrichment`:
+
+```python
+enrich_res = scat.run_enrichment(
+    gene_list=candidates.index.tolist(),
+    gene_sets="GO_Biological_Process",   # or "GO_BP" — automatically resolved to the
+                                         # correct organism-specific built-in (Hs/Mm_GO_..._2026)
+    organism="mouse",  # or "human"
+    adata=adata,   # if you called store_raw_counts(adata) earlier, this will
+                   # automatically use the preserved full measured gene list as universe.
+                   # Explicit `universe=` still takes precedence.
+    pval_cutoff=0.05,
+    min_size=5,
+    max_size=500,
+)
+# Additional columns and attrs (clusterProfiler compatibility):
+#   - "neg_log10_padj" column
+#   - res.attrs["universe_info"] with effective_universe_size, dropped_by_annotation_filter, etc.
+```
+
+## `run_gsea` (pre-ranked GSEA)
+
+For ranked-list enrichment (the classic GSEA / prerank approach):
+
+```python
+# ranked list from active_score / differential_expression results
+# Convention: higher value = more associated with the target group.
+ranked = all_results["logFC"].sort_values(ascending=False)
+
+gsea_res = scat.run_gsea(
+    ranked_genes=ranked,
+    gene_sets="GO_Biological_Process",
+    organism="mouse",  # or "human"
+    nperm=1000,
+    min_size=15,
+)
+print(gsea_res[["Term", "NES", "p.adjust", "leading_edge"]].head())
+
+# Works with existing plotting helpers (auto-detects GSEA columns)
+scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")
+
+# Dedicated running-sum plot (uses curves stored by run_gsea)
+scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
+```
+
+`run_gsea` stores the full enrichment score curves in
+`.attrs["gsea_details"]` so that `gseaplot` renders exactly the same RES that
+produced the reported NES/p-values.
+
+Requires the optional extra:
+
+```bash
+pip install "scatrans[gsea]"   # pulls in gseapy
+```
+
+## `run_kegg` (convenience wrapper for KEGG pathways)
+
+```python
+kegg_res = scat.run_kegg(
+    gene_list=candidates.index.tolist(),
+    organism="mouse",  # or "human"
+    # Defaults to the organism-specific built-in library (Hs_KEGG_2026 or Mm_KEGG_2026)
+    adata=adata,   # if store_raw_counts was called earlier, this automatically uses
+                   # the preserved full measured gene set as background.
+    pval_cutoff=0.05,
+)
+```
+
+## Using bundled gene sets
+
+The package defaults to organism-specific bundled sets. Use `organism=`
+together with base names such as `"GO_Biological_Process"` or `"KEGG"`.
+Supply a full historical name (e.g. `"GO_Biological_Process_2023"`) to
+select an Enrichr version.
+
+```python
+# KEGG example
+kegg = scat.run_kegg(gene_list=genes, organism="mouse")  # or "human"
+
+# GO — base name is enough (automatically resolved to Hs/Mm_GO_..._2026)
+go = scat.run_enrichment(
+    gene_list=genes,
+    gene_sets="GO_Biological_Process",   # or "GO_BP"
+    organism="mouse",  # or "human"
+    # pass adata= (after you did store_raw_counts early) to use the preserved
+    # full measured genes as universe/background automatically.
+    # Explicit universe= or background= always takes precedence.
+    adata=adata,
+)
+```
+
+## Using original Enrichr versions
+
+To use a specific historical Enrichr/gseapy version, **just write the exact
+gene set name** (the one that includes the year/version). The system will
+detect that it is an Enrichr-style versioned library and load it directly
+via gseapy.
+
+```python
+# Specific Enrichr version for KEGG — just write the name
+kegg_2021 = scat.run_kegg(
+    genes, organism="mouse",
+    kegg_library="KEGG_2021"     # or KEGG_2019, KEGG_2016, etc.
+)
+
+# Specific version for GO
+go_2021 = scat.run_enrichment(
+    genes,
+    gene_sets="GO_Biological_Process_2021",  # 2023, 2021, 2019, 2018, 2017...
+    # For background: still prefer adata= (from store_raw_counts) over manual universe=.
+    adata=adata,
+    # universe=background,   # explicit still accepted and takes precedence
+)
+
+# Supply the full name containing the year to select a historical version.
+```
+
+`gene_set_source` can be used as an explicit override when needed:
+
+- `gene_set_source="scatrans"` → use bundled sets
+- `gene_set_source="enrichr"` → use gseapy/Enrichr libraries
+
+List available bundled sets:
+
+```python
+print(scat.list_bundled_gene_sets())
+```
+
+**Adding your own sets**: Drop `.gmt` files into `src/scatrans/data/`. See
+`src/scatrans/data/README.md`.
+
+## `simplify_enrichment` (reduce redundant enrichment terms)
+
+Two methods are supported:
+
+- **`jaccard`** (default): greedy filtering by Jaccard overlap of enriched gene lists.
+- **`pathway_denester`**: combinatorial nested-pathway test adapted from
+  [PathwayDenester](https://github.com/Helmy-Lab/PathwayDenester). Better at
+  removing terms that are significant only because they are nested inside a
+  more significant parent pathway. Requires full pathway gene memberships
+  (auto-loaded from `enrich_res.attrs` when enrichment used bundled/Enrichr
+  libraries; pass `gene_sets=` again if you used a custom dict).
+
+```python
+# Jaccard (fast, overlap-based)
+simplified = scat.simplify_enrichment(
+    enrich_res,
+    similarity_cutoff=0.5,
+    min_count=3,
+    method="jaccard",
+)
+
+# PathwayDenester (nested-pathway test)
+simplified = scat.simplify_enrichment(
+    enrich_res,
+    method="pathway_denester",
+    min_count=3,
+    pval_threshold=0.05,       # independence cutoff
+    to_test_threshold=0.0,     # min shared-DEG fraction before testing
+    term_size_limit=0,         # e.g. 500 to drop very broad terms
+    show_excluded=False,       # True keeps excluded terms + Denester_* diagnostics
+)
+```
+
+`run_kegg` and `simplify_enrichment` are wrappers around `run_enrichment`.
+
+## `run_go` (GO enrichment, clusterProfiler-style)
+
+```python
+# Biological Process (defaults to the bundled Mm/Hs_GO_Biological_Process_2026)
+go_bp = scat.run_go(
+    gene_list=markers,
+    ontology="BP",          # "BP", "CC", "MF", or "ALL"
+    organism="mouse",  # or "human"
+    adata=adata,
+    return_all=True,
+)
+
+# ALL three ontologies + unified multiple-testing correction across them
+go_all = scat.run_go(
+    markers, ontology="ALL", organism="mouse",  # or "human"
+    return_all=True,
+    adjust_across_all=True,
+)
+# go_all.attrs["per_ontology_attrs"] contains full diagnostics for BP/CC/MF separately
+```
+
+`run_go` automatically resolves to the organism-specific bundled sets when
+possible (BP is bundled; CC/MF fall back to gseapy/Enrichr if the library is
+installed).
+
+## Exporting results
+
+The following helpers export results:
+
+```python
+res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # or "human"
+
+saved = scat.save_enrichment_report(
+    res,
+    prefix="cluster1_kegg",   # or "results/suppl/my_enrich" (directories created automatically)
+    save_excel=True,
+    save_csv=True,
+    save_tsv=True,            # often preferred for gene symbols + Excel locale safety
+    save_metadata=True,
+    save_term_gene_table=True,
+)
+
+# saved -> {'results_csv': ..., 'results_tsv': ..., 'term_gene_table_csv': ..., 'metadata_json': ..., 'results_xlsx': ...}
+
+# Long-format term–gene table (one row per gene; perfect for networks, follow-up stats, etc.)
+long_table = scat.expand_enrichment_genes(res)
+# If the input was from run_go(ontology="ALL"), long_table will have an "Ontology" column first.
+```
+
+`save_enrichment_report` also writes a rich `metadata.json` (and a
+"metadata" sheet in the xlsx) containing:
+
+- `analysis_info` (package, version, timestamp)
+- `gene_set_info` (requested/resolved + `requested_source` vs `actual_source`: "bundled", "gseapy", "gmt", "dict")
+- `universe_info` (effective N, dropped genes, restrict behavior, etc.)
+- Full `.attrs` from the enrichment call (including per-ontology details for GO ALL)
+
+All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`,
+`universe_info`, etc.) so you never lose information when a call returns no
+terms.
+
+## Additional enrichment plot options
+
+```python
+import scatrans as scat
+
+# Dot plot for ORA results from run_enrichment / run_kegg / run_go
+# x-axis defaults to "GeneRatio"; other options: "Count", "FoldEnrichment", "-log10(p.adj)"
+scat.pl.enrich_dotplot(
+    enrich_res,
+    top_n=15,
+    title="GO Biological Process enrichment",
+)
+
+# For KEGG
+scat.pl.enrich_dotplot(
+    kegg_res,
+    top_n=10,
+    title="KEGG pathways",
+)
+
+# Save figure (vector-friendly, 300 dpi)
+scat.pl.enrich_dotplot(
+    enrich_res,
+    top_n=12,
+    save_path="go_enrichment.pdf",
+)
+
+# GSEA results (auto-switches to NES on x and color when NES column present)
+scat.pl.enrich_dotplot(
+    gsea_res,
+    top_n=15,
+    x="NES",
+    color_by="NES",
+)
+
+# GSEA running-sum plot (uses curves stored by run_gsea)
+if len(gsea_res) > 0:
+    term = gsea_res.iloc[0]["Term"]
+    scat.pl.gseaplot(
+        ranked_genes=ranked,
+        gsea_result=gsea_res,
+        term=term,
+        save_path="gsea_running_score.pdf",
+    )
+
+# Embed in multi-panel figure with ax=
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(6, 5))
+scat.pl.enrich_dotplot(enrich_res, top_n=8, ax=ax, show=False)
+fig.savefig("enrich_panel.pdf", dpi=300, bbox_inches="tight")
+```
+
+Additional options:
+
+- `show_terms=15` or `show_terms="auto"` or `show_terms=["term A", "term B"]`
+- `use_style=True` to apply publication style for that call only
+
+All `scat.pl.*` functions accept `save_path`, `ax`, `figsize`, `show`, and `dpi`.

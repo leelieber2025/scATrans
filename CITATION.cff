@@ -5,8 +5,8 @@ message: >-
 type: software
 authors:
   - name: "scATrans Developers"
-repository-code: "https://github.com/scATrans/scatrans"
-url: "https://github.com/scATrans/scatrans"
+repository-code: "https://github.com/leelieber2025/scATrans"
+url: "https://github.com/leelieber2025/scATrans"
 license: Apache-2.0
 version: 0.9.9
 keywords:
