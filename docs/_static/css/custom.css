@@ -2,3 +2,7 @@
 .bd-main .bd-content {
   max-width: 88rem;
 }
+
+.bd-article {
+  font-size: 15px;
+}
