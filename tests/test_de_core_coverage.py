@@ -19,6 +19,7 @@ from scipy import sparse
 
 from scatrans._de import (
     _coerce_pydeseq2_counts_matrix,
+    _pydeseq2_filter_init_kwargs,
     _pydeseq2_uses_design_factors,
     _resolve_mixedlm_random_groups,
     _run_de_wrapper,
@@ -80,6 +81,25 @@ def test_pydeseq2_uses_design_factors_parses_version():
         assert _pydeseq2_uses_design_factors() is True
     with mock.patch("scatrans._de.version", return_value="not-a-version"):
         assert _pydeseq2_uses_design_factors() is True
+
+
+def test_pydeseq2_filter_init_kwargs_drops_unsupported():
+    """DeseqStats on some pins rejects n_cpus; filter must drop unknown kwargs."""
+
+    class _NoNCpus:
+        def __init__(self, dds, contrast, quiet=False):
+            pass
+
+    class _WithNCpus:
+        def __init__(self, dds, contrast, quiet=False, n_cpus=None):
+            pass
+
+    kw = {"contrast": ["c", "t", "r"], "quiet": True, "n_cpus": 2}
+    filtered = _pydeseq2_filter_init_kwargs(_NoNCpus, kw)
+    assert "n_cpus" not in filtered
+    assert filtered["quiet"] is True
+    assert filtered["contrast"] == ["c", "t", "r"]
+    assert _pydeseq2_filter_init_kwargs(_WithNCpus, kw)["n_cpus"] == 2
 
 
 def test_run_de_wrapper_scanpy_wilcoxon_and_labels():

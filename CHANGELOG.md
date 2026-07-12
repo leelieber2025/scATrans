@@ -22,8 +22,9 @@ Patch release over PyPI `0.10.1` (CI / Python 3.9 compatibility).
   3.10+ constructs (`match`/`case`, `bit_count`, etc.).
 - **PyDESeq2 `DeseqStats(n_cpus=...)`**: some installed pydeseq2 versions accept
   `n_cpus` only on `DeseqDataSet`, not `DeseqStats`. Init kwargs are now filtered
-  by `inspect.signature` so optional args (`n_cpus`, `quiet`, …) are dropped when
-  unsupported instead of raising `TypeError`.
+  by `inspect.signature(cls)` so optional args (`n_cpus`, `quiet`, …) are dropped
+  when unsupported instead of raising `TypeError` (and without mypy
+  ``[misc]`` on ``cls.__init__``).
 - **CI base matrix (no optional extras)**: PyDESeq2 replicate-count gate and
   Memento non-integer `counts=` check now raise **before** importing the
   optional package (so `.[dev]`-only CI jobs get `ValueError` not

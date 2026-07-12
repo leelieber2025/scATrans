@@ -101,15 +101,19 @@ def _pydeseq2_uses_design_factors() -> bool:
         return True
 
 
-def _pydeseq2_filter_init_kwargs(cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Drop kwargs not accepted by ``cls.__init__`` (API varies across pydeseq2 versions).
+def _pydeseq2_filter_init_kwargs(cls: type[Any], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop kwargs not accepted by the class constructor (API varies across pydeseq2).
 
     Some releases accept ``n_cpus`` / ``quiet`` on ``DeseqDataSet`` but not on
     ``DeseqStats`` (or the reverse). Filtering by signature avoids
     ``TypeError: unexpected keyword argument`` on CI / older pins.
+
+    Uses ``inspect.signature(cls)`` (not ``cls.__init__``) so mypy stays clean
+    and we match the public call ``cls(**kwargs)``.
     """
     try:
-        params = inspect.signature(cls.__init__).parameters
+        # signature(class) → constructor params without ``self`` (preferred over cls.__init__)
+        params = inspect.signature(cls).parameters
     except (TypeError, ValueError):
         return kwargs
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
