@@ -8,13 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.10.2] - 2026-07-11
 
-Patch release over PyPI `0.10.1` (CI / Python 3.9 import fixes only).
+Patch release over PyPI `0.10.1` (CI / Python 3.9 compatibility).
 
 ### Fixed
 - **Python 3.9 import**: `pl.py` was missing `from __future__ import annotations`,
   so PEP 604 annotations such as `str | None` raised `TypeError` at import
   time on 3.9 (CI matrix). Fixed; other `src/scatrans` modules already had
   the future import.
+- **Python 3.9 `zip(strict=...)`**: `volcano_plot(style="ggvolcano")` used
+  `zip(..., strict=True)` (3.10+ only), causing
+  `TypeError: zip() takes no keyword arguments` on 3.9. Replaced with plain
+  `zip` (fixed-length category tuples). Full `src/scatrans` scan found no other
+  3.10+ constructs (`match`/`case`, `bit_count`, etc.).
 - **CI base matrix (no optional extras)**: PyDESeq2 replicate-count gate and
   Memento non-integer `counts=` check now raise **before** importing the
   optional package (so `.[dev]`-only CI jobs get `ValueError` not

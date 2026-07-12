@@ -2433,18 +2433,17 @@ def volcano_plot(
                 _created_fig = False
 
             if style_norm == "ggvolcano":
+                # Note: zip(..., strict=True) is 3.10+; keep plain zip for Python 3.9.
                 fill_map = dict(
                     zip(
                         ("Down", "Normal", "Up"),
                         fills or GGVOLCANO_FILLS_DEFAULT,
-                        strict=True,
                     )
                 )
                 stroke_map = dict(
                     zip(
                         ("Down", "Normal", "Up"),
                         colors or fills or GGVOLCANO_FILLS_DEFAULT,
-                        strict=True,
                     )
                 )
                 regulate = _volcano_add_regulate(
