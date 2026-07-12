@@ -28,3 +28,9 @@ global-exclude *.pyc
 global-exclude __pycache__/*
 global-exclude *.egg-info
 global-exclude *.egg-info/*
+
+# Pre-split monorepo modules (scatrans/tl.py, scatrans/enrich.py) must not re-enter
+# the tree: they shadow the real packages scatrans/tl/ and scatrans/enrich/ and
+# would ship as unreachable dead code. Keep this exclusion even if files reappear.
+global-exclude src/scatrans/tl.py
+global-exclude src/scatrans/enrich.py

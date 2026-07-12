@@ -380,6 +380,71 @@ def _warn_user(msg: str) -> None:
     logger.warning(msg)
 
 
+def _check_gene_set_mapping_rate(
+    input_genes: Iterable[Any],
+    reference_genes: Iterable[Any],
+    *,
+    context: str = "enrichment",
+    threshold: float = 0.2,
+    n_examples: int = 5,
+    gene_case: str | None = None,
+) -> dict[str, Any]:
+    """Compute input→gene-set (or universe) mapping rate; warn when low.
+
+    Shared by ORA (:func:`run_enrichment`) and GSEA (:func:`run_gsea`) so both
+    surfaces catch species / case / ID-type mismatches before silent empty results.
+
+    Parameters
+    ----------
+    input_genes
+        Ranked genes (GSEA) or query gene list (ORA), already case-normalized.
+    reference_genes
+        Gene-set members or effective universe symbols (same case as input).
+    context
+        Label in the warning (e.g. ``"run_gsea"``, ``"run_enrichment"``).
+    threshold
+        Warn when mapped/input is strictly below this fraction (default 20%).
+    gene_case
+        Current gene_case setting, included in the hint when mapping is low.
+
+    Returns
+    -------
+    dict with n_input, n_mapped, mapping_rate, example_input, example_reference.
+    """
+    genes = [str(g).strip() for g in input_genes if str(g).strip()]
+    ref_list = [str(g).strip() for g in reference_genes if str(g).strip()]
+    ref_set = set(ref_list)
+    mapped = [g for g in genes if g in ref_set]
+    n_input = len(genes)
+    n_mapped = len(mapped)
+    rate = float(n_mapped) / float(max(n_input, 1))
+    info: dict[str, Any] = {
+        "n_input": int(n_input),
+        "n_mapped": int(n_mapped),
+        "mapping_rate": rate,
+        "example_input": genes[:n_examples],
+        "example_reference": ref_list[:n_examples],
+        "threshold": float(threshold),
+        "gene_case": gene_case,
+    }
+    if n_input > 0 and rate < threshold:
+        case_hint = (
+            f" Current gene_case={gene_case!r}."
+            if gene_case is not None
+            else " gene_case is None (literal match only)."
+        )
+        _warn_user(
+            f"Low mapping rate ({rate:.1%}) in {context} "
+            f"({n_mapped}/{n_input} input genes found in gene sets / universe). "
+            f"Input examples: {info['example_input']}; "
+            f"gene-set/universe examples: {info['example_reference']}.{case_hint} "
+            "Check gene ID type, organism, and gene_case "
+            "(Enrichr libraries are typically UPPERCASE symbols — try gene_case='upper' "
+            "for mixed-case mouse/human symbols such as Tp53)."
+        )
+    return info
+
+
 def _resolve_enrichment_padj_cutoff(
     pval_cutoff: float | None,
     padj_cutoff: float | None,

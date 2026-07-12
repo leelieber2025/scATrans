@@ -18,6 +18,7 @@ from ._data import (  # noqa: F401 — explicit for type checkers
     _apply_p_adjust,
     _bh_p_adjust,
     _bundled_provenance_for,
+    _check_gene_set_mapping_rate,
     _clean_gene_list,
     _DeepcopyImmuneDict,
     _empty_gsea_result,
@@ -338,15 +339,14 @@ def run_enrichment(
             _log_info(
                 "  force_universe=True → using raw user background (no forced intersect with gene sets)"
             )
-    mapping_rate = n / max(len(genes), 1)
-    if mapping_rate < 0.2:
-        example_input = genes[:5]
-        example_gs = list(all_gs_genes)[:5]
-        _warn_user(
-            f"Low mapping rate ({mapping_rate:.1%}). "
-            f"Input examples: {example_input}; gene set examples: {example_gs}. "
-            "Check gene ID type, organism and gene_case."
-        )
+    mapping_info = _check_gene_set_mapping_rate(
+        genes,
+        universe_set,
+        context="run_enrichment",
+        threshold=0.2,
+        gene_case=gene_case,
+    )
+    mapping_rate = float(mapping_info["mapping_rate"])
     if n == 0:
         return _empty_ora_result(
             include_gene_list=include_gene_list,
@@ -452,6 +452,8 @@ def run_enrichment(
         "force_universe": bool(force_universe),
         "n_input_mapped": int(n),
         "n_input_raw": int(len(genes)),
+        "mapping_rate": float(mapping_rate),
+        "mapping_info": mapping_info,
     }
     res_df.attrs.update(base_attrs)
     res_df.attrs["universe_info"] = universe_info

@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Fixed
+- **`active_score` direction consistency**: the significance leg
+  (`-log10(p_adj)`) is gated by upregulation (`logFC > 0`, or
+  `mixedlm_coef > 0` under MixedLM so the gate matches what `p_adj` tests).
+  Previously a strongly downregulated gene could still score ~50/100 from
+  the directionless p-value term alone. Observed and permutation paths
+  share `_composite_active_score_terms`.
+- **`lambda_pval` scale**: estimated on direction-positive genes only, so
+  extreme downregulated p-values no longer inflate λ and shrink s3 for
+  true up genes.
+- **`filter_active_genes` residual direction**: residual magnitude cutoffs
+  now follow `logfc_direction` (`up` → residual > c; `down` → residual < -c;
+  `both` → residual sign concordant with logFC). One-sided
+  `unspliced_excess_fdr` is skipped for `down`/`both` (with a warning).
+- **`padj_cutoff` alias**: `filter_active_genes` and `extract_gene_lists`
+  accept `padj_cutoff` (preferred); `pval_cutoff` remains as a legacy name
+  for the adjusted-p filter.
+- **GSEA ranking metric**: `active_score` and other non-negative columns are
+  no longer auto-selected for preranked GSEA (requires signed ranks for
+  bidirectional NES). Auto-pick prefers `logFC` / t-stat-like columns; using
+  a one-sided metric emits an explicit warning. Guarded by
+  `tests/test_package_layout.py`.
+- **Package layout guard**: `scatrans/tl.py` and `scatrans/enrich.py` must not
+  reappear beside the `tl/` and `enrich/` packages (unreachable dead code after
+  the package split). `MANIFEST.in` excludes them; layout tests enforce
+  import paths resolve to package `__init__.py`.
+- **Huber `valid_feat`**: require `gene_length > 0` (not `>= 0`). Length 0 is a
+  missing-annotation sentinel; `log1p(0)=0` is an extreme x-leverage point that
+  biased Huber slopes and all residuals. `intron_number >= 0` unchanged (0
+  introns is valid). Warn when zero/missing lengths are present; GTF feature
+  tables leave missing length as NaN instead of filling 0.
+- **MixedLM significant / filter**: require `mixedlm_coef > 0` (or `< 0` for
+  `logfc_direction="down"`) so p_adj direction matches the tested coefficient;
+  sign-discordant genes no longer enter the built-in significant list. Discordance
+  is logged at **warning** level.
+- **`extract_gene_lists` p/logFC resolution**: warn when falling back from
+  adjusted p to raw p (cutoff would otherwise silently inflate false positives);
+  recognize Seurat `avg_log2FC` / `avg_logFC`; warn when no logFC column is found
+  instead of silently returning empty lists.
+- **`active_score` design diagnosis**: no longer discards `diagnose_design(...)`
+  return value. Warnings (e.g. &lt;3 samples/group) are forwarded via
+  `logger.warning` and stored under
+  `adata.uns["scatrans"]["diagnostics"]["design"]`. Failures are logged at
+  warning level instead of silent debug.
+- **`run_gsea` mapping-rate check**: same 20% gate as ORA (`_check_gene_set_mapping_rate`).
+  Warns with input vs gene-set symbol examples when overlap is low; returns empty
+  with `reason="no_ranked_genes_mapped"` at zero overlap (avoids opaque
+  gseapy "No gene sets passed" RuntimeWarnings from case/ID mismatches).
+  Mapping stats stored under `attrs["gsea_info"]` / `gene_set_info["mapping"]`.
+- **GTF gene features (`transcript_id`)**: missing/empty `transcript_id` on exons
+  raises a clear `ValueError` (no bare KeyError). Non-positive `gene_length` from
+  empty exon unions is stored as **NaN** (not 0). Simple-path
+  `_maybe_add_gene_features` fills sparse tables (&lt;50% usable length) from the
+  bundle without overwriting existing length&gt;0 — closes the "1% real / 99%
+  missing never auto-completes" trap with partial GTF feature tables.
+- **Regression tests for #1 / #4**: Huber fit must not let length=0 genes bias
+  the slope; downregulated genes must not outrank mild-up on active_score when
+  residual weight is 0.
+
 ## [0.10.2] - 2026-07-11
 
 Patch release over PyPI `0.10.1` (CI / Python 3.9 compatibility).

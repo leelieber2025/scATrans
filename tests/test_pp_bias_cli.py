@@ -9,6 +9,8 @@ import scatrans as scat
 
 def test_generate_gene_features_no_exon_rows(tmp_path):
     pytest.importorskip("gtfparse")
+    import math
+
     from scatrans.pp_bias import generate_gene_features_from_gtf
 
     gtf = tmp_path / "no_exon.gtf"
@@ -19,7 +21,27 @@ def test_generate_gene_features_no_exon_rows(tmp_path):
     out = tmp_path / "features.parquet"
     gene_df = generate_gene_features_from_gtf(str(gtf), str(out))
     assert len(gene_df) == 1
-    assert gene_df.iloc[0]["gene_length"] == 0
+    # No usable exon union → NaN (not 0 leverage sentinel for Huber)
+    assert gene_df.iloc[0]["gene_length"] is None or (
+        isinstance(gene_df.iloc[0]["gene_length"], float)
+        and math.isnan(float(gene_df.iloc[0]["gene_length"]))
+    )
+
+
+def test_generate_gene_features_missing_transcript_id_raises(tmp_path):
+    pytest.importorskip("gtfparse")
+    from scatrans.pp_bias import generate_gene_features_from_gtf
+
+    gtf = tmp_path / "no_tid.gtf"
+    # Exon without transcript_id — previously bare KeyError
+    rows = [
+        'chr1\t.\tgene\t100\t200\t.\t+\t.\tgene_id "G1"; gene_name "GeneA"; gene_type "protein_coding";',
+        'chr1\t.\texon\t100\t150\t.\t+\t.\tgene_id "G1";',
+    ]
+    gtf.write_text("\n".join(rows) + "\n")
+    out = tmp_path / "features.parquet"
+    with pytest.raises(ValueError, match="transcript_id"):
+        generate_gene_features_from_gtf(str(gtf), str(out))
 
 
 def test_generate_gene_features_dedup_gene_names(tmp_path):

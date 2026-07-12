@@ -21,10 +21,11 @@ from ._de import _run_de_wrapper
 # local import to avoid circulars at module load
 from ._utils import (
     _apply_de_preprocess,
+    _composite_active_score_terms,
     _fit_huber_bias_correction,
     _is_integer_counts_like,
     _resolve_aligned_raw_counts,
-    _soft_scale,
+    _score_direction_effect,
 )
 from ._velocity import _compute_velocity_delta
 
@@ -408,9 +409,18 @@ def _single_permutation_task(
         bias_correction=bias_correction,
     )
 
-    s1 = _soft_scale(perm_de_df["logFC"].values, lambda_fc)
-    s2 = _soft_scale(residual, lambda_res)
-    s3 = _soft_scale(-np.log10(perm_de_df["p_adj"].values + 1e-300), lambda_pval)
+    perm_logfc = perm_de_df["logFC"].values
+    perm_coef = perm_de_df["mixedlm_coef"].values if "mixedlm_coef" in perm_de_df.columns else None
+    perm_direction = _score_direction_effect(perm_logfc, mixedlm_coef=perm_coef)
+    s1, s2, s3 = _composite_active_score_terms(
+        perm_logfc,
+        residual,
+        perm_de_df["p_adj"].values,
+        lambda_fc,
+        lambda_res,
+        lambda_pval,
+        direction_effect=perm_direction,
+    )
 
     total_w = weight_fc + weight_unspliced + weight_pval
     perm_score = (weight_fc * s1 + weight_unspliced * s2 + weight_pval * s3) / total_w * 100.0

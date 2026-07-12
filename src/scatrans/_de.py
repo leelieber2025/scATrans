@@ -953,10 +953,12 @@ def _run_mixedlm_de(
     n_sign_flip = int(np.sum(nonzero & (np.sign(logfc_means) != np.sign(logfcs))))
     de_df.attrs["n_genes_logFC_mixedlm_sign_discordant"] = n_sign_flip
     if n_sign_flip > 0:
-        logger.info(
+        logger.warning(
             "MixedLM: %d/%d genes have opposite signs for sample-aware logFC vs "
-            "mixedlm_coef (p_val tests the LMM coefficient). Prefer mixedlm_coef "
-            "when the model direction matters.",
+            "mixedlm_coef (p_val/p_adj test the LMM coefficient). Built-in significant "
+            "and active_score significance leg require mixedlm_coef > 0 (direction "
+            "aligned with the tested effect); discordant genes are excluded from "
+            "those paths. Inspect mixedlm_coef vs logFC before interpreting borderline genes.",
             n_sign_flip,
             n_total,
         )

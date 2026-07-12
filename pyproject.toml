@@ -59,6 +59,9 @@ Changelog = "https://scatrans.readthedocs.io/en/latest/changelog.html"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Packages only (scatrans.tl, scatrans.enrich, …). Flat modules scatrans/tl.py and
+# scatrans/enrich.py must never be reintroduced: they shadow the package dirs and
+# ship as unreachable dead code. Guarded by tests/test_package_layout.py.
 
 [tool.setuptools.package-data]
 scatrans = [

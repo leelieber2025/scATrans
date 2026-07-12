@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import anndata as ad
+import numpy as np
 import pandas as pd
 
 from .._utils import (
@@ -24,33 +25,110 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+def _usable_gene_length_mask(series: Any) -> pd.Series:
+    """True where gene_length is finite and > 0 (Huber valid_feat requirement)."""
+    gl = pd.to_numeric(series, errors="coerce")
+    return gl.notna() & (gl > 0)
+
+
+def _fill_missing_gene_features_from_bundle(adata: Any, organism: str) -> None:
+    """Fill only missing / non-positive gene_length (and missing intron) from bundled tables.
+
+    Never overwrites existing usable (length > 0) values — safe for partial GTF
+    feature tables that would otherwise block full auto-attach.
+    """
+    from ..pp_bias import add_gene_features
+
+    # Snapshot usable lengths before full attach (add_gene_features rewrites columns).
+    old_gl = (
+        pd.to_numeric(adata.var["gene_length"], errors="coerce")
+        if "gene_length" in adata.var.columns
+        else pd.Series(np.nan, index=adata.var_names)
+    )
+    old_intr = (
+        pd.to_numeric(adata.var["intron_number"], errors="coerce")
+        if "intron_number" in adata.var.columns
+        else pd.Series(np.nan, index=adata.var_names)
+    )
+    usable = _usable_gene_length_mask(old_gl)
+
+    add_gene_features(adata, organism=organism)
+
+    new_gl = pd.to_numeric(adata.var["gene_length"], errors="coerce")
+    new_intr = pd.to_numeric(adata.var["intron_number"], errors="coerce")
+    # Restore user/GTF positive lengths; fill elsewhere from bundle.
+    merged_gl = new_gl.copy()
+    merged_gl.loc[usable] = old_gl.loc[usable]
+    adata.var["gene_length"] = merged_gl
+
+    # Keep prior intron where present; fill NaN from bundle.
+    merged_intr = new_intr.copy()
+    prior_intr = old_intr.notna()
+    merged_intr.loc[prior_intr] = old_intr.loc[prior_intr]
+    adata.var["intron_number"] = merged_intr
+
+
 def _maybe_add_gene_features(adata: Any, organism: str) -> Any:
-    """Attach bundled gene features when length/intron columns are missing or completely empty.
+    """Attach / complete bundled gene features for bias correction.
 
     Semantics:
-    - If either column is absent → attach (fill NaNs for missing genes).
-    - If both columns present but *all* values are NaN (gl.notna().any() is False
-      for both) → attach (user provided empty placeholders).
-    - If at least one gene has a real (non-NaN) value in *both* columns → do nothing.
-      Partial user data is respected; we never overwrite or "complete" the table.
-    This boundary is deliberate but worth knowing: a table with 99% NaN but 1%
-    real value will *not* trigger auto-attachment.
+    - If either column is absent, or no gene has *usable* length (finite, > 0)
+      and a finite intron → full ``add_gene_features`` attach.
+    - If usable length coverage is low (< 50% of genes) → fill missing/zero
+      lengths from the bundled table **without overwriting** existing length > 0
+      (avoids the "1% real, 99% NaN/0 never auto-completes" trap with partial GTF tables).
+    - If coverage is adequate but some genes lack length → log only; active_score
+      excludes them via ``valid_feat`` (``gene_length > 0``).
     """
     has_length = "gene_length" in adata.var.columns
     has_intron = "intron_number" in adata.var.columns
-    needs = not has_length or not has_intron
-    if has_length and has_intron:
-        gl = pd.to_numeric(adata.var["gene_length"], errors="coerce")
-        intr = pd.to_numeric(adata.var["intron_number"], errors="coerce")
-        needs = not (gl.notna().any() and intr.notna().any())
-    if needs:
-        # Lazy import: avoid pulling parquet/gene-feature I/O on every
-        # pipeline import path (not a circular-import guard — pp_bias does
-        # not import tl).
+    if not has_length or not has_intron:
         from ..pp_bias import add_gene_features
 
         add_gene_features(adata, organism=organism)
         logger.info("Attached bundled gene features (organism=%s) for bias correction.", organism)
+        return adata
+
+    gl = pd.to_numeric(adata.var["gene_length"], errors="coerce")
+    intr = pd.to_numeric(adata.var["intron_number"], errors="coerce")
+    usable = _usable_gene_length_mask(gl)
+    n_genes = max(int(adata.n_vars), 1)
+    n_usable = int(usable.sum())
+    frac = n_usable / n_genes
+
+    if n_usable == 0 or not intr.notna().any():
+        from ..pp_bias import add_gene_features
+
+        add_gene_features(adata, organism=organism)
+        logger.info(
+            "Attached bundled gene features (organism=%s): no usable gene_length > 0 "
+            "was present on the object.",
+            organism,
+        )
+        return adata
+
+    if frac < 0.5:
+        logger.warning(
+            "gene features: only %.1f%% of genes have usable gene_length > 0 "
+            "(%d/%d). Filling missing/non-positive lengths from bundled features "
+            "(organism=%s) without overwriting existing positive lengths. "
+            "Partial GTF tables alone leave most genes out of Huber fit.",
+            100.0 * frac,
+            n_usable,
+            n_genes,
+            organism,
+        )
+        _fill_missing_gene_features_from_bundle(adata, organism)
+        return adata
+
+    n_bad = n_genes - n_usable
+    if n_bad > 0:
+        logger.info(
+            "gene features: %d/%d genes lack usable gene_length > 0; "
+            "they are excluded from Huber bias correction (valid_feat).",
+            n_bad,
+            n_genes,
+        )
     return adata
 
 

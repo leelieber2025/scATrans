@@ -57,6 +57,7 @@ def extract_gene_lists(
     *,
     logfc_cutoff: float = 0.5,
     pval_cutoff: float = 0.05,
+    padj_cutoff: float | None = None,
     logfc_direction: str = "up",
     separate_directions: bool = False,
     name_prefix: str | None = None,
@@ -80,7 +81,10 @@ def extract_gene_lists(
     logfc_cutoff : float
         Minimum |logFC| (sign handled by direction).
     pval_cutoff : float
-        Max p_adj (or p_val if no p_adj column).
+        Legacy name for the **adjusted** p-value cutoff (max p_adj, or p_val if no p_adj).
+        Prefer ``padj_cutoff``.
+    padj_cutoff : float or None
+        Preferred name for the adjusted p-value cutoff. When set, overrides ``pval_cutoff``.
     logfc_direction : {"up", "down", "both"}
     separate_directions : bool
         If True and direction in {"both", "up", "down"} context, will emit separate entries
@@ -100,7 +104,7 @@ def extract_gene_lists(
     # Multiple contrasts
     de_dict = {"GA_vs_Ctrl": ga_res, "GB_vs_Ctrl": gb_res}
     gene_sets = scat.extract_gene_lists(
-        de_dict, logfc_cutoff=0.5, pval_cutoff=0.05, logfc_direction="up"
+        de_dict, logfc_cutoff=0.5, padj_cutoff=0.05, logfc_direction="up"
     )
     comp = scat.compare_enrichment(gene_sets, gene_sets="GO_Biological_Process", organism="mouse")
 
@@ -120,33 +124,64 @@ def extract_gene_lists(
     else:
         raise ValueError(f"logfc_direction={logfc_direction!r} not recognized.")
 
+    # padj_cutoff preferred; pval_cutoff is the legacy alias for adjusted p.
+    eff_padj_cutoff = float(padj_cutoff) if padj_cutoff is not None else float(pval_cutoff)
+
     def _padj_series(work: pd.DataFrame) -> pd.Series:
-        """Resolve adjusted/nominal p from common DE/export column names."""
-        for col in (
+        """Resolve adjusted p from common DE/export columns; raw p only with warning."""
+        adjusted_cols = (
             "p_adj",
             "padj",
             "pvals_adj",
             "p.adjust",
             "FDR",
             "fdr",
-            "p_val",
-            "pval",
-            "pvals",
-            "pvalue",
-        ):
+            "p_adj_BH",
+            "FDR_qval",
+        )
+        raw_cols = ("p_val", "pval", "pvals", "pvalue", "p")
+        for col in adjusted_cols:
             if col in work.columns:
+                return pd.to_numeric(work[col], errors="coerce")
+        for col in raw_cols:
+            if col in work.columns:
+                logger.warning(
+                    "extract_gene_lists: no *adjusted* p-value column found "
+                    "(looked for p_adj/padj/p.adjust/FDR); falling back to raw %r. "
+                    "padj_cutoff/pval_cutoff=%.4g will be applied to unadjusted p-values, "
+                    "which inflates false positives. Prefer tables with BH/FDR-adjusted p, "
+                    "or recompute multipletests before extract_gene_lists.",
+                    col,
+                    eff_padj_cutoff,
+                )
                 return pd.to_numeric(work[col], errors="coerce")
         logger.warning(
             "extract_gene_lists: no p-value column found among "
-            "p_adj/padj/p.adjust/p_val/pvalue; treating all p as 1.0 "
-            "(likely empty gene lists unless pval_cutoff > 1)."
+            "p_adj/padj/p.adjust/FDR/p_val/pvalue; treating all p as 1.0 "
+            "(likely empty gene lists unless padj_cutoff / pval_cutoff > 1)."
         )
         return pd.Series(1.0, index=work.index)
 
     def _lfc_series(work: pd.DataFrame) -> pd.Series:
-        for col in ("logFC", "logfoldchanges", "log2FoldChange", "lfc"):
+        # Include Seurat FindMarkers avg_log2FC and common aliases.
+        lfc_cols = (
+            "logFC",
+            "logfoldchanges",
+            "log2FoldChange",
+            "avg_log2FC",
+            "avg_logFC",
+            "avg_log2FoldChange",
+            "lfc",
+        )
+        for col in lfc_cols:
             if col in work.columns:
                 return pd.to_numeric(work[col], errors="coerce")
+        logger.warning(
+            "extract_gene_lists: no log-fold-change column found among "
+            "logFC/logfoldchanges/log2FoldChange/avg_log2FC/lfc; treating logFC as 0.0 "
+            "(gene lists will be empty unless logfc_cutoff <= 0). "
+            "Rename your effect column or pass a table with a recognized logFC name."
+        )
         return pd.Series(0.0, index=work.index)
 
     def _get_genes_from_df(df: pd.DataFrame) -> list[str]:
@@ -157,7 +192,7 @@ def extract_gene_lists(
         padj = _padj_series(work)
         lfc = _lfc_series(work)
 
-        mask = padj < float(pval_cutoff)
+        mask = padj < eff_padj_cutoff
         lc = float(logfc_cutoff)
 
         if direction == "up":
@@ -180,7 +215,7 @@ def extract_gene_lists(
             work = de_results
             padj = _padj_series(work)
             lfc = _lfc_series(work)
-            sig = padj < float(pval_cutoff)
+            sig = padj < eff_padj_cutoff
             lc = float(logfc_cutoff)
             genes_idx = _row_gene_ids_from_df(work)
             up = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf > lc]
@@ -211,7 +246,7 @@ def extract_gene_lists(
             work = df
             padj = _padj_series(work)
             lfc = _lfc_series(work)
-            sig = padj < float(pval_cutoff)
+            sig = padj < eff_padj_cutoff
             lc = float(logfc_cutoff)
             genes_idx = _row_gene_ids_from_df(work)
             up = [g for g, keep, lf in zip(genes_idx, sig, lfc.fillna(0)) if keep and lf > lc]

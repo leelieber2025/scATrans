@@ -25,12 +25,12 @@ enrich_res = scat.run_enrichment(
 For ranked-list enrichment (the classic GSEA / prerank approach):
 
 ```python
-# ranked list from active_score / differential_expression results
-# Convention: higher value = more associated with the target group.
+# Prefer a *signed* ranking metric (logFC). Non-negative scores such as
+# active_score cannot produce negative NES (depletion) and are not auto-selected.
 ranked = all_results["logFC"].sort_values(ascending=False)
 
 gsea_res = scat.run_gsea(
-    ranked_genes=ranked,
+    ranked_genes=ranked,  # or all_results (auto-picks logFC when present)
     gene_sets="GO_Biological_Process",
     organism="mouse",  # or "human"
     nperm=1000,
@@ -44,6 +44,17 @@ scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")
 # Dedicated running-sum plot (uses curves stored by run_gsea)
 scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
 ```
+
+GSEA needs **signed** ranks. Passing a full `all_results` table auto-prefers
+`logFC` (and similar t-stat columns); `active_score` is never auto-selected.
+If you force `score_column="active_score"` (or pass a one-sided Series), a
+warning is emitted.
+
+Like ORA, GSEA checks the **mapping rate** of ranked genes into the gene-set
+universe (warns below 20%; returns empty with
+`reason="no_ranked_genes_mapped"` at 0%). Mismatched case is a common failure
+mode with Enrichr libraries (UPPERCASE) vs mouse symbols (`Tp53`) — pass
+`gene_case="upper"` when needed.
 
 `run_gsea` stores the full enrichment score curves in
 `.attrs["gsea_details"]` so that `gseaplot` renders exactly the same RES that

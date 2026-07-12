@@ -18,6 +18,7 @@ from ._data import (  # noqa: F401 — explicit for type checkers
     _apply_p_adjust,
     _bh_p_adjust,
     _bundled_provenance_for,
+    _check_gene_set_mapping_rate,
     _clean_gene_list,
     _DeepcopyImmuneDict,
     _empty_gsea_result,
@@ -39,13 +40,43 @@ from ._data import (  # noqa: F401 — explicit for type checkers
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+# Prefer *signed* ranking metrics for GSEA. Non-negative heuristics such as
+# active_score must not be auto-selected: preranked GSEA needs bidirectional
+# ranks so NES can be negative (depletion / down-enrichment).
 _GSEA_SCORE_COLUMN_PRIORITY: tuple[str, ...] = (
     "logFC",
-    "active_score",
-    "score",
     "logfoldchanges",
+    "log2FoldChange",
+    "lfc",
     "t_stat",
+    "t",
+    "stat",
+    "wald",
+    "score",
     "NES",
+)
+
+# Known non-negative / one-sided scATrans columns — never auto-pick for GSEA.
+_GSEA_UNSIGNED_SCORE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "active_score",
+        "active_score_pval",
+        "active_score_fdr",
+        "unspliced_excess_residual",
+        "unspliced_excess_delta",
+        "unspliced_excess_pval",
+        "unspliced_excess_fdr",
+        "velocity_residual",
+        "velocity_delta_raw",
+        "p_adj",
+        "p_val",
+        "padj",
+        "pvalue",
+        "total_us_counts",
+        "gene_length",
+        "intron_number",
+        "effective_gamma",
+    }
 )
 
 
@@ -63,6 +94,55 @@ def _labels_look_like_gene_symbols(labels: pd.Index | pd.Series) -> bool:
     return not isinstance(labels, pd.RangeIndex)
 
 
+def _is_known_unsigned_gsea_column(name: str) -> bool:
+    low = str(name).lower()
+    if low in {c.lower() for c in _GSEA_UNSIGNED_SCORE_COLUMNS}:
+        return True
+    # residual / fdr / p-value style names that should not rank GSEA by default
+    return any(
+        token in low
+        for token in (
+            "active_score",
+            "residual",
+            "fdr",
+            "pval",
+            "p_val",
+            "p_adj",
+            "padj",
+            "pvalue",
+        )
+    )
+
+
+def _warn_if_one_sided_gsea_ranking(scores: pd.Series, score_col: str) -> None:
+    """Warn when the ranking metric cannot support bidirectional NES.
+
+    Classic preranked GSEA needs signed scores (e.g. logFC). Non-negative
+    metrics such as ``active_score`` make negative NES / depletion impossible.
+    """
+    vals = pd.to_numeric(scores, errors="coerce")
+    vals = vals[np.isfinite(vals.to_numpy(dtype=float, na_value=np.nan))]
+    if len(vals) < 5:
+        return
+    known_unsigned = _is_known_unsigned_gsea_column(score_col)
+    arr = vals.to_numpy(dtype=float)
+    all_nonneg = bool(np.all(arr >= 0.0))
+    all_nonpos = bool(np.all(arr <= 0.0))
+    if not (known_unsigned or all_nonneg or all_nonpos):
+        return
+    # All zeros is degenerate but not specifically a "unsigned active_score" path.
+    if np.allclose(arr, 0.0):
+        return
+    _warn_user(
+        f"run_gsea: ranking metric {score_col!r} appears one-sided / non-negative "
+        f"(n={len(arr)}, min={float(np.min(arr)):.4g}, max={float(np.max(arr)):.4g}). "
+        "Preranked GSEA requires a *signed* metric (e.g. logFC) so NES can be "
+        "negative for depleted / down-regulated sets. Prefer score_column='logFC' "
+        "or pass a signed pd.Series. Continuing with the selected metric; results "
+        "will only capture one enrichment direction."
+    )
+
+
 def _pick_gsea_score_column(df: pd.DataFrame, *, prefer: str | None = None) -> str:
     if prefer is not None:
         if prefer not in df.columns:
@@ -74,19 +154,31 @@ def _pick_gsea_score_column(df: pd.DataFrame, *, prefer: str | None = None) -> s
     for col in _GSEA_SCORE_COLUMN_PRIORITY:
         if col in df.columns:
             return col
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    numeric_cols = [
+        c
+        for c in df.columns
+        if pd.api.types.is_numeric_dtype(df[c]) and not _is_known_unsigned_gsea_column(c)
+    ]
+    if not numeric_cols:
+        # Last resort: any numeric column (may be unsigned — caller will warn).
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     if len(numeric_cols) == 1:
         return numeric_cols[0]
     if len(numeric_cols) > 1:
         for col in numeric_cols:
             low = str(col).lower()
-            if "logfc" in low or "log_fc" in low or "score" in low:
+            if "logfc" in low or "log_fc" in low or low in {"lfc", "t_stat", "stat", "wald"}:
+                return col
+        # Prefer a column with both positive and negative values (signed).
+        for col in numeric_cols:
+            vals = pd.to_numeric(df[col], errors="coerce").dropna()
+            if len(vals) >= 5 and (vals > 0).any() and (vals < 0).any():
                 return col
         return numeric_cols[0]
     raise ValueError(
         "Could not infer a numeric ranking column from ranked_genes DataFrame. "
-        f"Columns: {list(df.columns)}. Pass score_column= explicitly, or provide a "
-        "pd.Series indexed by gene names."
+        f"Columns: {list(df.columns)}. Pass score_column= explicitly (prefer a "
+        "signed metric such as 'logFC'), or provide a pd.Series indexed by gene names."
     )
 
 
@@ -95,23 +187,31 @@ def _coerce_ranked_genes_dataframe(
     *,
     score_column: str | None = None,
 ) -> pd.Series:
-    """Normalize active_score / DE result tables to gene-indexed pd.Series."""
+    """Normalize DE / active_score result tables to gene-indexed pd.Series."""
     if df.empty:
         raise ValueError("ranked_genes DataFrame is empty.")
 
     gene_name_cols = [c for c in ("gene", "genes", "names", "symbol", "Gene") if c in df.columns]
+    score_col: str | None = None
 
     # Standard scATrans output: gene IDs in the index (not a default RangeIndex).
     if _labels_look_like_gene_symbols(df.index):
         score_col = _pick_gsea_score_column(df, prefer=score_column)
-        if score_column is None and "logFC" in df.columns and "active_score" in df.columns:
+        if (
+            score_column is None
+            and "logFC" in df.columns
+            and score_col == "logFC"
+            and "active_score" in df.columns
+        ):
             logger.info(
-                "run_gsea: both 'logFC' and 'active_score' present; ranking by logFC "
-                "(default priority). Pass score_column='active_score' for nascent/"
-                "active-score ranking."
+                "run_gsea: ranking by signed 'logFC' (default). "
+                "Pass score_column= explicitly for another metric; "
+                "active_score is non-negative and is not auto-selected."
             )
         scores = pd.to_numeric(df[score_col], errors="coerce")
-        return pd.Series(scores.values, index=df.index.astype(str))
+        out = pd.Series(scores.values, index=df.index.astype(str))
+        _warn_if_one_sided_gsea_ranking(out, score_col)
+        return out
 
     # Explicit gene column + numeric score columns (e.g. CSV export with RangeIndex).
     if gene_name_cols:
@@ -125,7 +225,9 @@ def _coerce_ranked_genes_dataframe(
         else:
             score_col = _pick_gsea_score_column(df, prefer=None)
         scores = pd.to_numeric(df[score_col], errors="coerce")
-        return pd.Series(scores.values, index=genes)
+        out = pd.Series(scores.values, index=genes)
+        _warn_if_one_sided_gsea_ranking(out, score_col)
+        return out
 
     # Legacy: column 0 = gene names, column 1 = scores (no meaningful index).
     if df.shape[1] >= 2:
@@ -135,18 +237,22 @@ def _coerce_ranked_genes_dataframe(
             _labels_look_like_gene_symbols(col0)
             and pd.to_numeric(col1, errors="coerce").notna().any()
         ):
-            return pd.Series(
+            out = pd.Series(
                 pd.to_numeric(col1, errors="coerce").values,
                 index=col0.astype(str).values,
             )
+            _warn_if_one_sided_gsea_ranking(out, str(df.columns[1]))
+            return out
 
     if df.shape[1] == 1 and _labels_look_like_gene_symbols(df.index):
         scores = pd.to_numeric(df.iloc[:, 0], errors="coerce")
-        return pd.Series(scores.values, index=df.index.astype(str))
+        out = pd.Series(scores.values, index=df.index.astype(str))
+        _warn_if_one_sided_gsea_ranking(out, str(df.columns[0]))
+        return out
 
     raise ValueError(
         "ranked_genes DataFrame format not recognized. Expected one of:\n"
-        "  - gene symbols as index + numeric score column (active_score / DE all_results)\n"
+        "  - gene symbols as index + numeric score column (prefer signed logFC)\n"
         "  - columns ['gene', <score>] or legacy [gene_names, scores]\n"
         "  - pd.Series indexed by gene names (recommended)\n"
         f"Got index type {type(df.index).__name__}, columns={list(df.columns)}. "
@@ -186,15 +292,18 @@ def run_gsea(
           Higher score = more "up" in target group (e.g. logFC).
           The function will sort internally if needed.
         - pd.DataFrame from ``active_score`` / ``differential_expression`` ``all_results``:
-          gene symbols in the **index**, numeric score in a column (auto-prefers ``logFC``,
-          then ``active_score``). Use ``score_column=`` to override.
+          gene symbols in the **index**, numeric score in a column (auto-prefers signed
+          ``logFC`` / t-stat style columns). Non-negative metrics such as
+          ``active_score`` are **not** auto-selected (GSEA needs signed ranks for
+          bidirectional NES); pass ``score_column=`` to force them (emits a warning).
         - Legacy DataFrame: two columns ``[gene_names, scores]`` with a default RangeIndex.
         - dict: gene -> score
         - list of genes: treated as pre-sorted from high to low (scores assigned decreasing).
         Gene names will be cleaned according to gene_case.
     score_column : str, optional
         When ``ranked_genes`` is a DataFrame, which column holds the ranking metric.
-        Defaults to ``logFC``, then ``active_score``, then the sole numeric column.
+        Defaults to signed columns (``logFC``, then t-stat-like names). Prefer a
+        signed metric; non-negative columns trigger a warning.
     gene_sets : str, dict or list
         Same as run_enrichment: bundled name (e.g. "GO_Biological_Process"), GMT path,
         dict of term->genes, or Enrichr library name.
@@ -236,6 +345,13 @@ def run_gsea(
     -----
     - Unlike ORA, GSEA does not use an explicit "universe" in the same way; the ranked
       list itself defines the background. min_size/max_size still apply.
+    - **Mapping check (same as ORA):** after loading gene sets, ranked genes are
+      intersected with gene-set members. Mapping rate &lt; 20% emits a UserWarning
+      with symbol examples; zero overlap returns an empty frame with
+      ``reason="no_ranked_genes_mapped"`` (avoids opaque gseapy filter failures from
+      case/ID mismatches). Prefer ``gene_case="upper"`` for Enrichr libraries.
+    - Prefer **signed** ranking metrics (logFC). Non-negative columns such as
+      ``active_score`` are not auto-selected and trigger a warning if forced.
     - Requires gseapy. Install via `pip install gseapy` or `pip install "scatrans[gsea]"`.
     - ``all_results`` from active_score can be passed directly::
         res = scat.run_gsea(all_results, gene_sets="GO_Biological_Process", score_column="logFC")
@@ -252,14 +368,19 @@ def run_gsea(
     analysis_info = _get_analysis_info()
     organism_norm = str(organism).lower()
 
-    # Normalize ranked_genes input to pd.Series (gene -> score)
+    # Normalize ranked_genes input to pd.Series (gene -> score).
+    # Flags avoid noisy warnings for synthetic ranks (gene list → n..1) and
+    # double-warnings after DataFrame coercion (already warned there).
+    _skip_unsigned_rank_warning = False
     if isinstance(ranked_genes, pd.DataFrame):
         ranked_genes = _coerce_ranked_genes_dataframe(ranked_genes, score_column=score_column)
+        _skip_unsigned_rank_warning = True
     if isinstance(ranked_genes, (list, tuple)):
         # treat as pre-ordered high->low, assign descending ranks
         genes = _apply_gene_case([str(g).strip() for g in ranked_genes], gene_case)
         scores = list(range(len(genes), 0, -1))
         ranked = pd.Series(scores, index=genes)
+        _skip_unsigned_rank_warning = True
     elif isinstance(ranked_genes, Mapping):
         ranked = pd.Series(ranked_genes)
     elif isinstance(ranked_genes, pd.Series):
@@ -285,6 +406,8 @@ def run_gsea(
             f"All {n_before_numeric} values became NaN after coercion."
         )
     ranked = ranked.dropna()
+    if not _skip_unsigned_rank_warning:
+        _warn_if_one_sided_gsea_ranking(ranked, score_column or "ranked_genes")
     # Duplicate IDs (case-folding / multi-mapped symbols): keep the score with
     # largest absolute value so ranking is not arbitrarily first-row dependent.
     if ranked.index.duplicated().any():
@@ -346,6 +469,42 @@ def run_gsea(
             analysis_info=analysis_info,
         )
 
+    # Input sanity: same mapping-rate gate as ORA (species / case / ID mismatches).
+    all_gs_genes: set[str] = set().union(*(set(gs) for gs in term_to_genes.values()))
+    mapping_info = _check_gene_set_mapping_rate(
+        ranked.index.astype(str).tolist(),
+        all_gs_genes,
+        context="run_gsea",
+        threshold=0.2,
+        gene_case=gene_case,
+    )
+    gene_set_info["mapping"] = mapping_info
+    if verbose:
+        _log_info(
+            f"Ranked genes mapped to gene sets: {mapping_info['n_mapped']}/{mapping_info['n_input']} "
+            f"({mapping_info['mapping_rate']:.1%})"
+        )
+    if mapping_info["n_mapped"] == 0:
+        msg = (
+            "run_gsea: zero ranked genes overlap any gene-set member "
+            f"(n_ranked={mapping_info['n_input']}). "
+            f"Input examples: {mapping_info['example_input']}; "
+            f"gene-set examples: {mapping_info['example_reference']}. "
+            "Check organism, gene ID type, and gene_case "
+            "(Enrichr libraries are typically UPPERCASE — try gene_case='upper')."
+        )
+        _warn_user(msg)
+        return _empty_gsea_result(
+            method="gsea_prerank",
+            organism=organism_norm,
+            gene_case=gene_case,
+            reason="no_ranked_genes_mapped",
+            n_genes_ranked=int(mapping_info["n_input"]),
+            n_genes_overlap=0,
+            gene_set_info=gene_set_info,
+            analysis_info=analysis_info,
+        )
+
     # Prepare for gseapy: dict of str -> list
     gene_sets_for_gp = {term: list(genes) for term, genes in term_to_genes.items()}
 
@@ -394,7 +553,13 @@ def run_gsea(
         )
         res_df = pre_res.res2d.copy()
     except Exception as e:
-        msg = f"gseapy.prerank failed: {e}"
+        overlap = int(mapping_info["n_mapped"])
+        msg = (
+            f"gseapy.prerank failed: {e} "
+            f"(ranked={len(ranked)}, overlap_with_gene_sets={overlap}, "
+            f"mapping_rate={mapping_info['mapping_rate']:.1%}, gene_case={gene_case!r}). "
+            "If overlap is low, check gene_case/organism (Enrichr uses UPPERCASE symbols)."
+        )
         if verbose:
             _log_info(msg)
         warnings.warn(msg, RuntimeWarning, stacklevel=2)
@@ -404,16 +569,20 @@ def run_gsea(
             gene_case=gene_case,
             reason="gseapy_error",
             error=str(e),
+            n_genes_ranked=int(len(ranked)),
+            n_genes_overlap=overlap,
             gene_set_info=gene_set_info,
             analysis_info=analysis_info,
         )
 
     if res_df is None or res_df.empty:
-        overlap = len(set(ranked.index) & set().union(*term_to_genes.values()))
+        overlap = int(mapping_info["n_mapped"])
         msg = (
             "gseapy returned no results (all gene sets filtered out?). "
-            f"Ranked genes={len(ranked)}, overlap with gene sets={overlap}. "
-            "Check gene symbols/IDs match the library; try lowering min_size."
+            f"Ranked genes={len(ranked)}, overlap with gene sets={overlap} "
+            f"({mapping_info['mapping_rate']:.1%}). "
+            "Check gene symbols/IDs match the library; try lowering min_size "
+            "or gene_case='upper' for Enrichr libraries."
         )
         if verbose:
             _log_info(msg)
@@ -507,6 +676,9 @@ def run_gsea(
     )
     res_df.attrs["gsea_info"] = {
         "n_genes_ranked": int(len(ranked)),
+        "n_genes_overlap": int(mapping_info["n_mapped"]),
+        "mapping_rate": float(mapping_info["mapping_rate"]),
+        "mapping_info": mapping_info,
         "score_min": float(ranked.min()),
         "score_max": float(ranked.max()),
         "score_median": float(ranked.median()),

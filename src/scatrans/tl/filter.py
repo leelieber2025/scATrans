@@ -72,6 +72,11 @@ def _builtin_significant_mask(
         mask &= var_df["p_adj"] < sig_pval
     if "logFC" in var_df.columns:
         mask &= var_df["logFC"] > sig_logfc
+    # MixedLM: p_adj tests mixedlm_coef, not sample-aware logFC. Require positive
+    # coefficient so significance and effect direction agree (excludes sign-discordant genes).
+    if "mixedlm_coef" in var_df.columns:
+        coef = pd.to_numeric(var_df["mixedlm_coef"], errors="coerce")
+        mask &= coef.notna() & (coef > 0)
     if residual_col in var_df.columns:
         mask &= var_df[residual_col] > sig_resid
     if "active_score" in var_df.columns:
@@ -98,6 +103,7 @@ def filter_active_genes(
     preset: str | None = None,
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
+    padj_cutoff: Any = _NOT_PROVIDED,
     unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
     logfc_direction: str = "up",
@@ -143,8 +149,11 @@ def filter_active_genes(
 
     Presets are oriented toward target-group "activated" / upregulated signals (positive
     logFC + positive unspliced_excess_residual; direction defaults to "up").
-    For downregulated or two-sided selection from differential_expression() results,
-    pass preset=None + logfc_direction="down" or "both" (with your desired logfc_cutoff).
+    For downregulated or two-sided selection, pass ``logfc_direction="down"`` or
+    ``"both"`` (with your desired logfc_cutoff). Residual magnitude cutoffs then
+    follow the same direction (positive / negative / |residual|). Note that
+    ``unspliced_excess_fdr`` is one-sided for positive residual and is skipped
+    automatically when ``logfc_direction`` is not ``"up"``.
 
     If you explicitly pass any cutoff parameter, it takes precedence over the preset.
 
@@ -172,12 +181,17 @@ def filter_active_genes(
     active_score_cutoff : float
         Minimum composite active transcription score (0-100).
     pval_cutoff : float
-        Maximum adjusted p-value if a "p_adj" column is present in the results DataFrame;
-        otherwise falls back to the nominal "p_val" column. This matches the behavior
-        of the internal significant mask in active_score() and common user expectations
-        (FDR control when available).
+        Legacy name for the **adjusted** p-value cutoff (filters ``p_adj`` when present,
+        else nominal ``p_val``). Prefer ``padj_cutoff`` for clarity.
+    padj_cutoff : float
+        Preferred name for the adjusted p-value cutoff. When both ``padj_cutoff`` and
+        ``pval_cutoff`` are provided, ``padj_cutoff`` wins.
     unspliced_excess_residual_cutoff : float
-        Minimum bias-corrected unspliced (nascent) excess residual.
+        Magnitude threshold for bias-corrected unspliced (nascent) excess residual.
+        Interpreted with ``logfc_direction``: ``up`` → residual > cutoff; ``down`` →
+        residual < -cutoff; ``both`` → residual sign concordant with logFC
+        (positive residual when logFC>0, negative when logFC<0). A cutoff of
+        ``-inf`` disables the residual magnitude filter (permissive default).
     logfc_cutoff : float
         Magnitude threshold for logFC (treated as non-negative). See logfc_direction.
     logfc_direction : {"up", "down", "both"}
@@ -185,13 +199,15 @@ def filter_active_genes(
         - "up" (default): keep if logFC > logfc_cutoff (upregulated in target)
         - "down": keep if logFC < -logfc_cutoff (downregulated in target)
         - "both": keep if |logFC| > logfc_cutoff (differentially expressed either way)
-        Presets and this helper's design are "active"/up-biased by default.
-        Use direction="down" or "both" with preset=None for standalone DE results.
+        Residual magnitude filters follow the same direction (see above).
+        Presets remain "active"/up-biased by default.
     active_score_fdr_cutoff : float or None
         If the column exists, max permutation FDR on the composite active_score (ranking aid).
     unspliced_excess_fdr_cutoff : float or None
         If the column exists (use_permutation=True), max permutation FDR on
-        ``unspliced_excess_residual`` (recommended for final gene lists).
+        ``unspliced_excess_residual`` (recommended for final gene lists when
+        ``logfc_direction="up"``). Skipped for ``"down"`` / ``"both"`` because the
+        permutation residual test is one-sided for positive excess.
     effective_gamma_min : float
         Minimum reference-group effective gamma. See README section on effective_gamma.
     effective_gamma_max : float or None
@@ -328,11 +344,24 @@ def filter_active_genes(
         0.0,
         "active_score_cutoff",
     )
+    # padj_cutoff is the preferred name (filters p_adj); pval_cutoff is the legacy alias.
+    user_set_padj = padj_cutoff is not _NOT_PROVIDED
+    user_set_pval = pval_cutoff is not _NOT_PROVIDED
+    if user_set_padj and user_set_pval:
+        logger.warning(
+            "Both padj_cutoff and pval_cutoff were provided to filter_active_genes; "
+            "using padj_cutoff (pval_cutoff is a legacy alias for adjusted p)."
+        )
+        pval_cutoff = padj_cutoff
+    elif user_set_padj:
+        pval_cutoff = padj_cutoff
     pval_cutoff = _coerce_numeric_cutoff(
         _resolve("pval_cutoff", pval_cutoff, float("inf")), float("inf"), "pval_cutoff"
     )
     if pval_cutoff < 0 or (not math.isfinite(pval_cutoff) and not math.isinf(pval_cutoff)):
-        raise ValueError("pval_cutoff must be non-negative, finite, or +inf (permissive).")
+        raise ValueError(
+            "padj_cutoff / pval_cutoff must be non-negative, finite, or +inf (permissive)."
+        )
     if (
         velocity_residual_cutoff is not _NOT_PROVIDED
         and unspliced_excess_residual_cutoff is _NOT_PROVIDED
@@ -425,7 +454,27 @@ def filter_active_genes(
     )
     if residual_col in df.columns:
         resid_vals = pd.to_numeric(df[residual_col], errors="coerce")
-        mask &= resid_vals.notna() & (resid_vals > unspliced_excess_residual_cutoff)
+        rc = float(unspliced_excess_residual_cutoff)
+        # -inf disables residual magnitude filtering (permissive default).
+        if math.isinf(rc) and rc < 0:
+            mask &= resid_vals.notna() & (resid_vals > rc)
+        else:
+            mag = abs(rc) if math.isfinite(rc) else rc
+            if direction == "up":
+                mask &= resid_vals.notna() & (resid_vals > mag)
+            elif direction == "down":
+                mask &= resid_vals.notna() & (resid_vals < -mag)
+            else:
+                # both: require residual sign concordant with logFC when available
+                # (up+positive residual OR down+negative residual); else |residual|.
+                if "logFC" in df.columns:
+                    logfc_for_res = pd.to_numeric(df["logFC"], errors="coerce")
+                    concordant = ((logfc_for_res > 0) & (resid_vals > mag)) | (
+                        (logfc_for_res < 0) & (resid_vals < -mag)
+                    )
+                    mask &= resid_vals.notna() & logfc_for_res.notna() & concordant
+                else:
+                    mask &= resid_vals.notna() & (resid_vals.abs() > mag)
     if "logFC" in df.columns:
         lc = logfc_cutoff
         if isinstance(lc, (int, float)) and math.isinf(lc):
@@ -443,6 +492,13 @@ def filter_active_genes(
                 mask &= logfc_vals.notna() & (logfc_vals < -lc)
             else:  # both
                 mask &= logfc_vals.notna() & (logfc_vals.abs() > lc)
+    # MixedLM: keep effect direction consistent with what p_adj tests (mixedlm_coef).
+    if "mixedlm_coef" in df.columns and direction in ("up", "down"):
+        coef_vals = pd.to_numeric(df["mixedlm_coef"], errors="coerce")
+        if direction == "up":
+            mask &= coef_vals.notna() & (coef_vals > 0)
+        else:
+            mask &= coef_vals.notna() & (coef_vals < 0)
 
     # Permutation FDR on composite score (optional ranking filter)
     if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
@@ -453,13 +509,27 @@ def filter_active_genes(
         else:
             mask &= fdr.notna() & (fdr < active_score_fdr_cutoff)
 
-    # Permutation FDR on unspliced excess residual (recommended significance filter)
+    # Permutation FDR on unspliced excess residual (recommended significance filter).
+    # One-sided for positive residual only — skip when user selected down/both.
     if unspliced_excess_fdr_cutoff is not None and UNSPLICED_EXCESS_FDR_COL in df.columns:
-        fdr = pd.to_numeric(df[UNSPLICED_EXCESS_FDR_COL], errors="coerce")
-        if math.isinf(unspliced_excess_fdr_cutoff):
-            mask &= fdr.isna() | (fdr < unspliced_excess_fdr_cutoff)
-        else:
-            mask &= fdr.notna() & (fdr < unspliced_excess_fdr_cutoff)
+        apply_ue_fdr = True
+        if direction != "up" and not (
+            isinstance(unspliced_excess_fdr_cutoff, float)
+            and math.isinf(unspliced_excess_fdr_cutoff)
+        ):
+            logger.warning(
+                "logfc_direction=%r: unspliced_excess_fdr is a one-sided test for "
+                "positive residual; skipping residual FDR filter. Use residual "
+                "magnitude cutoffs (direction-aware) for down/both selection.",
+                direction,
+            )
+            apply_ue_fdr = False
+        if apply_ue_fdr:
+            fdr = pd.to_numeric(df[UNSPLICED_EXCESS_FDR_COL], errors="coerce")
+            if math.isinf(unspliced_excess_fdr_cutoff):
+                mask &= fdr.isna() | (fdr < unspliced_excess_fdr_cutoff)
+            else:
+                mask &= fdr.notna() & (fdr < unspliced_excess_fdr_cutoff)
 
     # effective_gamma bounds (only when user/preset sets a finite min/max)
     if "effective_gamma" in df.columns and (

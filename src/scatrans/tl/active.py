@@ -22,14 +22,16 @@ from .._utils import (
     _apply_de_preprocess,
     _as_contrast_categorical,
     _as_var_dataframe,
+    _composite_active_score_terms,
     _get_exponential_scale_lambda,
+    _lambda_pval_for_active_score,
     _matrix_copy,
     _matrix_sum_axis0,
     _normalize_group_label,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
     _resolve_aligned_raw_counts,
-    _soft_scale,
+    _score_direction_effect,
     _subset_obs_mask,
     _validate_group_contrast,
     _warn_if_negative_layer_values,
@@ -50,7 +52,7 @@ from ._common import (
     _select_var,
     _validate_de_common_options,
 )
-from .design import diagnose_design
+from .design import _emit_design_diagnosis_logs, diagnose_design
 from .filter import _builtin_significant_mask
 
 logger = logging.getLogger(__name__)
@@ -199,6 +201,11 @@ def active_score(
     **Important statistical note (reporting boundaries)**:
     - `active_score` is a **heuristic ranking score only**. It is NOT a p-value,
       effect size with calibrated uncertainty, or evidence of causal transcriptional activation.
+      Composite legs for logFC and -log10(p_adj) are upregulation-gated
+      (``logFC > 0``, or ``mixedlm_coef > 0`` when MixedLM is used so the gate matches
+      what ``p_adj`` tests); downregulated genes do not receive score from the DE
+      significance term alone. The p-value soft-scale λ is estimated on
+      direction-positive genes only.
     - `unspliced_excess_*` columns are **group-contrast proxies** (reference-gamma excess),
       not outputs of a stochastic/dynamical RNA velocity model. Do not treat them as
       literal nascent transcription rates without independent validation.
@@ -384,19 +391,27 @@ def active_score(
 
     obs_filter &= norm_groups.isin([target_group, reference_group])
 
-    # Automatic design guidance for small-sample or replicate-structured data
+    # Automatic design guidance for small-sample or replicate-structured data.
+    # Capture + re-emit warnings (do not discard the return value) and store under
+    # diagnostics so low-replicate / low-power designs surface to the user.
+    design_diag: dict[str, Any] | None = None
     if sample_col or use_pseudobulk:
         try:
-            _ = diagnose_design(
+            design_diag = diagnose_design(
                 adata_input,
                 groupby=groupby,
                 target_group=target_group,
                 reference_group=reference_group,
                 sample_col=sample_col,
                 copy_input=False,  # pure read-only diagnostic; avoid expensive deep copy
+                emit_logs=False,  # active_score owns the log lines below
             )
+            _emit_design_diagnosis_logs(design_diag, prefix="active_score")
         except Exception as e:
-            logger.debug("diagnose_design skipped (non-fatal): %s", e)
+            logger.warning(
+                "diagnose_design failed (non-fatal); continuing without design guidance: %s",
+                e,
+            )
 
     # ====================== LAYER NAME HANDLING (kb_python support) ======================
     available_layers = list(adata_input.layers.keys())
@@ -514,12 +529,28 @@ def active_score(
     adata.var["gene_length"] = gene_length
     adata.var["intron_number"] = intron_number
 
+    # gene_length > 0: length 0 is a sentinel for missing annotation (pp_bias fillna/empty
+    # exons). log1p(0)=0 is an extreme x-leverage point for Huber (robust to y, not x)
+    # and would bias the slope / all residuals. intron_number == 0 is biologically valid.
     valid_feat = (
         np.isfinite(gene_length)
         & np.isfinite(intron_number)
-        & (gene_length >= 0)
+        & (gene_length > 0)
         & (intron_number >= 0)
     )
+    n_zero_len = int(np.sum(np.isfinite(gene_length) & (gene_length <= 0)))
+    n_nan_len = int(np.sum(~np.isfinite(gene_length)))
+    if n_zero_len > 0 or n_nan_len > 0:
+        logger.warning(
+            "gene_length: %d gene(s) with length <= 0 and %d with missing/non-finite length "
+            "are excluded from Huber bias-correction fit (valid_feat requires gene_length > 0). "
+            "Their residuals use median centering when expressed. Check gene-feature mapping "
+            "if this fraction is large (n_valid_feat=%d / %d).",
+            n_zero_len,
+            n_nan_len,
+            int(valid_feat.sum()),
+            int(adata.n_vars),
+        )
 
     # ==================== PSEUDOBULK (optional) ====================
     is_pseudobulk = False
@@ -932,6 +963,8 @@ def active_score(
         else np.nan,
         "bias_correction": bias_info,
         "velocity": velocity_diag,
+        # Full diagnose_design payload (warnings/recommendations) when auto-run
+        "design": design_diag,
         "mixed_model": {
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
@@ -988,15 +1021,28 @@ def active_score(
         }
 
     # ==================== SCORING ====================
-    lambda_fc = max(_get_exponential_scale_lambda(adata.var["logFC"].values), 0.25)
+    logfc_vals = adata.var["logFC"].values
+    mixedlm_coef_vals = (
+        adata.var["mixedlm_coef"].values if "mixedlm_coef" in adata.var.columns else None
+    )
+    direction_effect = _score_direction_effect(logfc_vals, mixedlm_coef=mixedlm_coef_vals)
+    lambda_fc = max(_get_exponential_scale_lambda(logfc_vals), 0.25)
     lambda_res = max(_get_exponential_scale_lambda(residual), 1e-8)
-    lambda_pval = max(
-        _get_exponential_scale_lambda(-np.log10(adata.var["p_adj"].values + 1e-300)), 1.0
+    # Scale p-value leg on direction-positive genes only (avoids down-regulated
+    # extreme p-values inflating λ and shrinking s3 for true up genes).
+    lambda_pval = _lambda_pval_for_active_score(
+        adata.var["p_adj"].values, direction_effect, floor=1.0
     )
 
-    s1 = _soft_scale(adata.var["logFC"].values, lambda_fc)
-    s2 = _soft_scale(residual, lambda_res)
-    s3 = _soft_scale(-np.log10(adata.var["p_adj"].values + 1e-300), lambda_pval)
+    s1, s2, s3 = _composite_active_score_terms(
+        logfc_vals,
+        residual,
+        adata.var["p_adj"].values,
+        lambda_fc,
+        lambda_res,
+        lambda_pval,
+        direction_effect=direction_effect,
+    )
 
     total_w = weight_fc + weight_unspliced + weight_pval
     real_score = (weight_fc * s1 + weight_unspliced * s2 + weight_pval * s3) / total_w * 100.0

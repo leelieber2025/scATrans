@@ -133,6 +133,7 @@ def diagnose_design(
     _min_cells_per_sample: int = 10,  # reserved/internal; not yet used (will affect sample filtering/power in future)
     *,
     copy_input: bool = True,
+    emit_logs: bool = True,
 ) -> dict[str, Any]:
     """
     Analyze the experimental design and provide guidance on suitable analysis choices
@@ -158,6 +159,11 @@ def diagnose_design(
         reading. Set False for a zero-copy read-only diagnostic when the caller
         guarantees the input will not be mutated (saves large amounts of memory
         and time on big datasets with many layers).
+    emit_logs : bool, default True
+        If True, log a concise design summary plus every entry in
+        ``result["warnings"]`` / ``result["recommendations"]``. Callers that
+        re-emit and store the result (e.g. :func:`active_score`) may pass
+        ``False`` to avoid duplicate log lines.
     """
     adata = adata_input.copy() if copy_input else adata_input
 
@@ -307,35 +313,60 @@ def diagnose_design(
         "and the distributions in the returned all_results DataFrame before applying cutoffs."
     )
 
-    # Print a concise user-facing summary
-    logger.info("Design diagnosis:")
-    logger.info("  Cells — target: %d | reference: %d", n_t, n_r)
-    if result["n_samples_target"] is not None:
-        logger.info(
-            "  Samples — target: %d | reference: %d",
-            result["n_samples_target"],
-            result["n_samples_reference"],
-        )
-    if result["unspliced_global_fraction"] is not None:
-        logger.info(
-            "  Global unspliced fraction: %.1f%%", result["unspliced_global_fraction"] * 100
-        )
+    # Concise user-facing summary (optional; active_score re-emits when it stores the result)
+    if emit_logs:
+        _emit_design_diagnosis_logs(result)
 
-    for w in result["warnings"]:
-        logger.warning("  [WARNING] %s", w)
-    for r in result["recommendations"]:
-        logger.info("  [RECOMMENDATION] %s", r)
+    return result
+
+
+def _emit_design_diagnosis_logs(result: dict[str, Any], *, prefix: str = "") -> None:
+    """Forward design diagnosis warnings/recommendations to the module logger.
+
+    Used by :func:`diagnose_design` (standalone) and :func:`active_score` so that
+    automatic design guidance is never discarded silently when the return value
+    is only stored for metadata.
+    """
+    p = f"{prefix}: " if prefix else ""
+    logger.info("%sDesign diagnosis:", p)
+    logger.info(
+        "%s  Cells — target: %d | reference: %d",
+        p,
+        result.get("n_cells_target", 0),
+        result.get("n_cells_reference", 0),
+    )
+    if result.get("n_samples_target") is not None:
+        logger.info(
+            "%s  Samples — target: %d | reference: %d",
+            p,
+            result.get("n_samples_target"),
+            result.get("n_samples_reference"),
+        )
+    ufrac = result.get("unspliced_global_fraction")
+    if ufrac is not None:
+        logger.info("%s  Global unspliced fraction: %.1f%%", p, float(ufrac) * 100)
+
+    warnings_list = list(result.get("warnings") or [])
+    if warnings_list:
+        logger.warning(
+            "%s%d design warning(s) — interpret velocity residual / permutation FDR with caution:",
+            p,
+            len(warnings_list),
+        )
+    for w in warnings_list:
+        logger.warning("%s[design WARNING] %s", p, w)
+    for r in result.get("recommendations") or []:
+        logger.info("%s[design RECOMMENDATION] %s", p, r)
 
     ps = result.get("power_summary") or {}
     if ps.get("estimated_runtime_minutes_heuristic") is not None:
         logger.info(
-            "  Permutation runtime (heuristic, n_perm=%d): ~%.1f min on %d cores",
+            "%s  Permutation runtime (heuristic, n_perm=%d): ~%.1f min on %d cores",
+            p,
             ps.get("default_n_perm", 100),
             ps["estimated_runtime_minutes_heuristic"],
             ps.get("effective_cores_assumed", 1),
         )
-
-    return result
 
 
 def recommend_workflow(

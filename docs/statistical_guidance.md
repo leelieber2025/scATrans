@@ -76,11 +76,16 @@ RNA velocity):
 | `unspliced_excess_fdr` | — | BH-FDR on `unspliced_excess_pval` |
 
 `active_score` (0–100) is a **heuristic ranking score** (weighted
-soft-scaled composite of logFC + unspliced excess residual + -log p_adj). It
-is intended **for ranking and visualization only** and should **not** be
-interpreted or reported as a p-value or statistical significance measure.
-Use the permutation-derived `unspliced_excess_fdr` (when enabled) or your
-own post-hoc statistics for claims.
+soft-scaled composite of logFC + unspliced excess residual + -log p_adj).
+The logFC and significance legs are **upregulation-gated** (`logFC > 0`, or
+`mixedlm_coef > 0` when MixedLM is used so the gate matches what `p_adj`
+tests): strongly downregulated genes do not earn composite score from
+p-values alone. The p-value soft-scale λ is estimated on direction-positive
+genes only. The residual leg remains one-sided on positive unspliced excess
+(independent of mature-RNA DE direction). The score is intended **for ranking
+and visualization only** and should **not** be interpreted or reported as a
+p-value or statistical significance measure. Use the permutation-derived
+`unspliced_excess_fdr` (when enabled) or your own post-hoc statistics for claims.
 
 ### Built-in `significant` gene list
 

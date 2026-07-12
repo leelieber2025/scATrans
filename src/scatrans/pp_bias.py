@@ -215,7 +215,39 @@ def generate_gene_features_from_gtf(
     if exon.empty:
         intron_number = pd.Series(dtype=float, name="intron_number")
     else:
-        transcript_exons = exon.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
+        # transcript_id is required for per-transcript exon counts. Slim GFF3
+        # conversions sometimes drop it — fail with a clear message (not bare KeyError).
+        if "transcript_id" not in exon.columns:
+            raise ValueError(
+                "GTF exon features are missing the 'transcript_id' attribute, which is "
+                "required to estimate intron_number (max exons per transcript − 1). "
+                "Common causes: a slim GFF3→GTF conversion that dropped transcript "
+                "attributes, or a non-standard GTF. Provide a full GENCODE/Ensembl GTF "
+                "with transcript_id on exon lines, or pass a prebuilt gene-features "
+                "parquet via add_gene_features(..., gene_features_path=...)."
+            )
+        tid = exon["transcript_id"]
+        n_missing_tid = int(tid.isna().sum() + (tid.astype(str).str.strip() == "").sum())
+        if n_missing_tid == len(exon):
+            raise ValueError(
+                "All exon rows have empty/missing transcript_id; cannot compute "
+                "intron_number. Check GTF attribute parsing (gtfparse) and that exon "
+                'lines include transcript_id "...".'
+            )
+        if n_missing_tid > 0:
+            logger.warning(
+                "%d/%d exon rows lack transcript_id; they are dropped for intron_number "
+                "estimation (gene_length still uses all exons with coordinates).",
+                n_missing_tid,
+                len(exon),
+            )
+        exon_for_intron = exon.loc[
+            tid.notna() & (tid.astype(str).str.strip() != ""),
+            ["gene_id", "transcript_id"],
+        ]
+        transcript_exons = (
+            exon_for_intron.groupby(["gene_id", "transcript_id"]).size().rename("exon_count")
+        )
         intron_number = (
             (transcript_exons.groupby("gene_id").max() - 1).clip(lower=0).rename("intron_number")
         )
@@ -249,11 +281,36 @@ def generate_gene_features_from_gtf(
         gene_df["gene_type"] = np.nan
 
     gene_df = gene_df[["gene_id", "gene_name", "gene_length", "intron_number", "gene_type"]]
-    gene_df["gene_length"] = pd.to_numeric(gene_df["gene_length"], errors="coerce").fillna(0)
-    gene_df["intron_number"] = pd.to_numeric(gene_df["intron_number"], errors="coerce").fillna(0)
-    if (gene_df["gene_length"] == 0).all():
+    # Missing / non-positive length → NaN. Empty exon unions used to leave 0, which
+    # looked "valid" under a naive length>=0 filter and became log1p(0)=0 leverage
+    # points in Huber (GTF main path: pseudogenes / incomplete annotation).
+    # active_score valid_feat requires gene_length > 0.
+    gene_df["gene_length"] = pd.to_numeric(gene_df["gene_length"], errors="coerce")
+    n_zero_or_neg = int((gene_df["gene_length"].notna() & (gene_df["gene_length"] <= 0)).sum())
+    if n_zero_or_neg > 0:
+        gene_df.loc[
+            gene_df["gene_length"].notna() & (gene_df["gene_length"] <= 0),
+            "gene_length",
+        ] = np.nan
         logger.warning(
-            "All gene_length values are zero (no usable exon intervals). "
+            "gene_length: converted %d non-positive length(s) to NaN "
+            "(no usable exon union — common for incomplete GTF annotation). "
+            "These genes are excluded from Huber bias correction.",
+            n_zero_or_neg,
+        )
+    gene_df["intron_number"] = pd.to_numeric(gene_df["intron_number"], errors="coerce").fillna(0)
+    n_missing_len = int(gene_df["gene_length"].isna().sum())
+    if n_missing_len > 0:
+        logger.warning(
+            "gene_length: %d/%d genes missing usable length after GTF parsing. "
+            "They are excluded from Huber fit (valid_feat requires gene_length > 0); "
+            "expressed genes without length get median-centered residuals.",
+            n_missing_len,
+            len(gene_df),
+        )
+    if gene_df["gene_length"].notna().sum() == 0:
+        logger.warning(
+            "All gene_length values are missing (no usable exon intervals). "
             "Downstream bias correction will use median fallback for affected genes."
         )
 

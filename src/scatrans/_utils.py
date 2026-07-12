@@ -329,6 +329,9 @@ __all__ = [
     "_get_group_mean",
     "_get_exponential_scale_lambda",
     "_soft_scale",
+    "_score_direction_effect",
+    "_lambda_pval_for_active_score",
+    "_composite_active_score_terms",
     "_pseudobulk_with_layers",
     "_fit_huber_bias_correction",
     "_resolve_aligned_raw_counts",
@@ -862,6 +865,78 @@ def _soft_scale(x: np.ndarray, lam: float) -> np.ndarray:
     if lam <= 1e-8:
         return np.zeros_like(x)
     return 1.0 - np.exp(-x_pos / lam)
+
+
+def _score_direction_effect(
+    logFC: np.ndarray,
+    *,
+    mixedlm_coef: np.ndarray | None = None,
+) -> np.ndarray:
+    """Effect used to gate the significance leg of ``active_score``.
+
+    Prefer MixedLM fixed-effect coefficient when present (``p_adj`` tests that
+    coefficient, not the sample-aware log2FC). Non-finite coefs fall back to logFC.
+    """
+    logFC_arr = np.asarray(logFC, dtype=float)
+    if mixedlm_coef is None:
+        return logFC_arr
+    coef = np.asarray(mixedlm_coef, dtype=float)
+    if coef.shape != logFC_arr.shape:
+        raise ValueError(
+            f"mixedlm_coef shape {coef.shape} does not match logFC shape {logFC_arr.shape}"
+        )
+    return np.where(np.isfinite(coef), coef, logFC_arr)
+
+
+def _lambda_pval_for_active_score(
+    p_adj: np.ndarray,
+    direction_effect: np.ndarray,
+    *,
+    floor: float = 1.0,
+) -> float:
+    """Exponential scale for the p-value leg, estimated on direction-positive genes only.
+
+    Estimating λ on all genes lets strongly downregulated (tiny p_adj) inflate the
+    scale and shrink s3 for true upregulated genes. Fall back to the full vector
+    when fewer than two positive-direction genes have finite -log10(p).
+    """
+    p = np.asarray(p_adj, dtype=float)
+    effect = np.asarray(direction_effect, dtype=float)
+    neglog = -np.log10(p + 1e-300)
+    up = np.isfinite(effect) & (effect > 0.0) & np.isfinite(neglog)
+    if int(up.sum()) >= 2:
+        return max(_get_exponential_scale_lambda(neglog[up]), floor)
+    return max(_get_exponential_scale_lambda(neglog), floor)
+
+
+def _composite_active_score_terms(
+    logFC: np.ndarray,
+    residual: np.ndarray,
+    p_adj: np.ndarray,
+    lambda_fc: float,
+    lambda_res: float,
+    lambda_pval: float,
+    *,
+    direction_effect: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Soft-scale the three active_score legs with consistent direction gating.
+
+    - s1 (logFC): ``_soft_scale`` clips negatives → only upregulation contributes.
+    - s2 (unspliced residual): one-sided positive excess (same clip); independent of DE
+      direction (nascent excess can exist without mature-RNA upregulation).
+    - s3 (significance): ``-log10(p_adj)`` is directionless; multiply by
+      ``(direction_effect > 0)`` so strongly downregulated genes cannot earn mid-range
+      composite scores from p-values alone. ``direction_effect`` defaults to logFC;
+      MixedLM paths should pass the fixed-effect coefficient (what ``p_adj`` tests).
+      Observed and permutation paths must use this helper so the null matches.
+    """
+    logFC_arr = np.asarray(logFC, dtype=float)
+    effect = logFC_arr if direction_effect is None else np.asarray(direction_effect, dtype=float)
+    s1 = _soft_scale(logFC_arr, lambda_fc)
+    s2 = _soft_scale(residual, lambda_res)
+    s3 = _soft_scale(-np.log10(np.asarray(p_adj, dtype=float) + 1e-300), lambda_pval)
+    s3 = np.where(effect > 0.0, s3, 0.0)
+    return s1, s2, s3
 
 
 def _pseudobulk_with_layers(
