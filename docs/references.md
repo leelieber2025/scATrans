@@ -5,16 +5,13 @@ implements wrappers for, with **citation metadata** and **verified project
 links**. Prefer citing the original method papers (and scATrans via
 `CITATION.cff`) in your Methods section.
 
-> **Link check note:** Some publisher DOIs (OUP, Wiley) return HTTP 403 to
-> automated clients while remaining valid in browsers. Where that happens we
-> also list **PubMed** links (HTTP 200 under linkcheck). DOIs remain the
-> canonical identifiers.
-
 ---
 
-## Tutorial dataset
+## Tutorial datasets
 
-The worked-example tutorials use `EC.h5ad`, a subset of endothelial cells
+### EC (`EC.h5ad` — UN vs SCI)
+
+The endothelial-cell tutorials use `EC.h5ad`, a subset of endothelial cells
 (EC) extracted from a public single-nucleus RNA-seq dataset of adult mouse
 spinal cord, comparing **uninjured controls (UN, n=3 replicates)** against
 **spinal cord injury (SCI, n=3 replicates)**:
@@ -36,6 +33,28 @@ itself about the statistical pitfalls of treating cells as independent
 replicates in single-cell differential expression — the same
 pseudoreplication concern that motivates scATrans's pseudobulk /
 mixed-model / permutation options and the {doc}`statistical_guidance` page.
+
+### GA (`GA_test.h5ad` — GA vs Ctrl)
+
+The higher-power active-transcription tutorial uses `GA_test.h5ad`, a bundled
+mouse scRNA-seq test object (GA vs. Ctrl, three individuals per group, with
+`spliced` / `unspliced` layers). The underlying experiment is public
+single-cell RNA-seq of cells from a mouse calvarial bone defect after TrkA
+agonism with gambogic amide (**GA**) versus vehicle control:
+
+> Li, Z., Xing, X., Du, B., Zhou, M., Chen, A.Z., Archer, M., Rao, C.,
+> Zhu, M., Cherief, M., James, A.W. (2026).
+> **Boosting Sensory Nerve-to-Bone Interactions Enhances Hedgehog Mediated
+> Calvarial Bone Repair.**
+> *Advanced Science* e75389.
+> DOI: [10.1002/advs.75389](https://doi.org/10.1002/advs.75389)
+> · Publisher:
+> [Wiley Advanced Science](https://advanced.onlinelibrary.wiley.com/doi/abs/10.1002/advs.75389)
+> · PubMed: [42003742](https://pubmed.ncbi.nlm.nih.gov/42003742/)
+
+- Raw data: GEO accession
+  [GSE266598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266598)
+  (NCBI GEO).
 
 ---
 

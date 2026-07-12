@@ -73,9 +73,12 @@ The EC notebooks use endothelial cells from mouse spinal cord, comparing
 uninjured controls (**UN**, 3 replicates) against spinal cord injury (**SCI**,
 3 replicates) — a subset of Squair et al. (2021), chosen precisely because that
 paper is *about* the false-discovery risk of single-cell pseudoreplication. See
-{doc}`../references` for the full citation and GEO accession. `GA_test.h5ad` is
-a bundled mouse test dataset (GA vs. Ctrl, three individuals per group). The
-visualization gallery uses **synthetic** data only.
+{doc}`../references` for the full citation and GEO accession (GSE165003).
+`GA_test.h5ad` is a bundled mouse test dataset (GA vs. Ctrl, three individuals
+per group) from Li et al. (2026); raw data GEO
+[GSE266598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266598) —
+see {doc}`../references`. The visualization gallery uses **synthetic** data
+only.
 ```
 
 ```{toctree}
