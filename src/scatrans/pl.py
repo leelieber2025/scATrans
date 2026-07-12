@@ -29,10 +29,12 @@ and shared environments.
   consistency.
 """
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, nullcontext, suppress
-from typing import Any, Optional, Union
+from typing import Any
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -417,9 +419,8 @@ def comet_plot(
     point_scale=1.0,
     min_size=2,
     max_size=180,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
     alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
     figsize=(8, 6),
     dpi=300,
@@ -431,8 +432,8 @@ def comet_plot(
     positive_logfc_only: bool = True,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
 ):
     """
     Comet plot of log fold change vs. bias-corrected unspliced residual.
@@ -622,7 +623,7 @@ def volcano_3d(
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[float] = None,  # fixed point size (direct control, omicverse reference)
+    s: float | None = None,  # fixed point size (direct control, omicverse reference)
     alpha: float = 0.8,
     title="3D Active Volcano Plot",
     figsize=(10, 8),
@@ -795,7 +796,7 @@ def volcano_3d(
 def enrich_dotplot(
     enrich_df,
     top_n=15,
-    show_terms: Optional[Union[int, str, list[str], tuple[str, ...]]] = None,
+    show_terms: int | str | list[str] | tuple[str, ...] | None = None,
     title="Enrichment Dotplot",
     save_path=None,
     figsize=(7, 8),
@@ -805,13 +806,13 @@ def enrich_dotplot(
     color_by="Adjusted P-value",
     size_by="Count",
     cmap="viridis_r",
-    dot_max: Optional[float] = None,
-    dot_min: Optional[float] = None,
+    dot_max: float | None = None,
+    dot_min: float | None = None,
     smallest_dot: float = 0.0,
     ax=None,
     show: bool = True,
     use_style: bool = False,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     facet_by_cluster: bool = False,
     return_data: bool = False,
 ):
@@ -1440,7 +1441,7 @@ def enrich_dotplot(
 
 def enrich_upsetplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 40,
@@ -1448,7 +1449,7 @@ def enrich_upsetplot(
     figsize: tuple[float, float] = (11, 6.5),
     dpi: int = 300,
     fontsize: int = 10,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
@@ -1686,16 +1687,16 @@ def enrich_upsetplot(
 
 def enrich_vennplot(
     enrich_df,
-    cluster_col: Optional[str] = None,
+    cluster_col: str | None = None,
     pval_cutoff: float = 0.05,
     min_count: int = 1,
     max_terms: int = 200,
-    title: Optional[str] = None,
+    title: str | None = None,
     figsize: tuple[float, float] = (8, 6),
     dpi: int = 300,
     fontsize: int = 11,
-    colors: Optional[list] = None,
-    save_path: Optional[str] = None,
+    colors: list | None = None,
+    save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
 ):
@@ -1947,22 +1948,22 @@ def enrich_vennplot(
 
 
 def gseaplot(
-    ranked_genes: Union[pd.Series, Mapping, Iterable],
-    gsea_result: Optional[pd.DataFrame] = None,
-    term: Optional[str] = None,
-    title: Optional[str] = None,
+    ranked_genes: pd.Series | Mapping | Iterable,
+    gsea_result: pd.DataFrame | None = None,
+    term: str | None = None,
+    title: str | None = None,
     figsize: tuple[float, float] = (6.5, 5.5),
     dpi: int = 300,
     color: str = "#88C544",
     cmap: str = "seismic",
-    ax: Optional[Any] = None,
+    ax: Any | None = None,
     show: bool = True,
     use_style: bool = False,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     pheno_pos: str = "Pos",
     pheno_neg: str = "Neg",
     **kwargs: Any,
-) -> tuple[Optional[Any], Optional[Any]]:
+) -> tuple[Any | None, Any | None]:
     """
     Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
 
@@ -2276,9 +2277,9 @@ def _volcano_collect_labels(
     plot_df: pd.DataFrame,
     *,
     top_n: int,
-    label_genes: Optional[Iterable[str]],
+    label_genes: Iterable[str] | None,
     label_by: str,
-    min_label_score: Optional[float],
+    min_label_score: float | None,
 ) -> pd.DataFrame:
     genes_to_label: set[str] = set()
     if label_genes is not None:
@@ -2300,15 +2301,14 @@ def _volcano_collect_labels(
 def volcano_plot(
     df,
     top_n=10,
-    label_genes: Optional[Iterable[str]] = None,
+    label_genes: Iterable[str] | None = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
     point_scale=1.0,
     min_size=2,
     max_size=160,
-    s: Optional[
-        float
-    ] = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
+    s: float
+    | None = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
     alpha: float = 0.75,
     figsize=(8, 6),
     dpi=300,
@@ -2319,8 +2319,8 @@ def volcano_plot(
     color_by="active_score",
     style: str = "auto",
     legend_position: str = "UL",
-    fills: Optional[tuple[str, str, str]] = None,
-    colors: Optional[tuple[str, str, str]] = None,
+    fills: tuple[str, str, str] | None = None,
+    colors: tuple[str, str, str] | None = None,
     add_cutoff_lines: bool = True,
     label_by: str = "p_adj",
     ax=None,
@@ -2328,8 +2328,8 @@ def volcano_plot(
     use_style: bool = False,
     return_data: bool = False,
     label_repel: bool = True,
-    label_fontsize: Optional[float] = None,
-    min_label_score: Optional[float] = None,
+    label_fontsize: float | None = None,
+    min_label_score: float | None = None,
 ):
     """
     2D volcano plot with ggVolcano-inspired flexibility and style options.

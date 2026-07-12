@@ -104,6 +104,6 @@ changes that affect scientific interpretation should be called out in
 
 1. Depend on `scatrans.__all__` / documented functions, not internal modules.
 2. Pin a minor version range in papers and production
-   (`scatrans>=0.10.1,<0.11` or `==0.10.1` for exact reproducibility).
+   (`scatrans>=0.10.2,<0.11` or `==0.10.2` for exact reproducibility).
 3. Record `scatrans.__version__` (and backend versions such as PyDESeq2) in
    Methods / session logs.

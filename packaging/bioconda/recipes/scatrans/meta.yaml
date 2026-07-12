@@ -1,13 +1,15 @@
 {% set name = "scatrans" %}
-{% set version = "0.10.1" %}
+{% set version = "0.10.2" %}
 
 package:
   name: {{ name }}
   version: {{ version }}
 
 source:
-  url: https://files.pythonhosted.org/packages/df/30/67ecdb7125b3de8b5a55f817e06914728ea6d1edf651c200c85f4fb70375/scatrans-{{ version }}.tar.gz
-  sha256: 17b2d20ae3ff20f739fcf1dbee227b8e46bbd717323a4eacbbcba84ac7a04240
+  # After uploading scatrans-0.10.2 to PyPI, replace sha256 with the sdist
+  # SHA256 from https://pypi.org/project/scatrans/0.10.2/#files (not BLAKE2b).
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: "PLEASE_UPDATE_AFTER_PYPI_UPLOAD"
 
 build:
   number: 0
