@@ -176,3 +176,4 @@ gene_features.parquet
 *.png
 *.svg
 active_results/
+src/scatrans/_version.py
