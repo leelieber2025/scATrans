@@ -82,6 +82,14 @@ without spliced/unspliced layers.
 Core workflow, DE backends, enrichment, plotting, and advanced options.
 :::
 
+:::{grid-item-card} Method {octicon}`beaker;1em;`
+:link: method
+:link-type: doc
+
+The mathematical framework behind `active_score`: reference-corrected unspliced
+excess, Huber bias correction, the composite score, and permutation calibration.
+:::
+
 :::{grid-item-card} Statistical Guidance {octicon}`alert;1em;`
 :link: statistical_guidance
 :link-type: doc
@@ -127,6 +135,7 @@ installation
 quickstart
 tutorials/index
 user_guide/index
+method
 statistical_guidance
 domain_assumptions
 api_stability
