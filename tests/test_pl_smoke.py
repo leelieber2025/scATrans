@@ -198,16 +198,23 @@ def test_smoke_compare_enrich_venn_upset(mini_enrich):
 
 def _three_cluster_enrich() -> pd.DataFrame:
     """Three groups with known overlaps: up∩down∩shared = 3, etc."""
+
     def mock(cluster, terms):
         return pd.DataFrame(
-            {"Term": terms, "Cluster": cluster, "p.adjust": [0.001] * len(terms),
-             "Count": [10] * len(terms)}
+            {
+                "Term": terms,
+                "Cluster": cluster,
+                "p.adjust": [0.001] * len(terms),
+                "Count": [10] * len(terms),
+            }
         )
+
     up = [f"UP_{i}" for i in range(7)] + [f"S_{i}" for i in range(4)]
     down = [f"DN_{i}" for i in range(6)] + [f"S_{i}" for i in range(1, 5)]
     shared = [f"S_{i}" for i in range(6)] + [f"MID_{i}" for i in range(4)]
-    return pd.concat([mock("up", up), mock("down", down), mock("shared", shared)],
-                     ignore_index=True)
+    return pd.concat(
+        [mock("up", up), mock("down", down), mock("shared", shared)], ignore_index=True
+    )
 
 
 def test_enrich_vennplot_labels_all_three_set_regions():

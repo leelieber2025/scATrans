@@ -124,7 +124,7 @@ def _resolve_display_params(
     if ctx is not None:
         pack = _CONTEXT_PRESETS[ctx]
         figsize = pack["figsize"]  # type: ignore[assignment]
-        dpi = int(pack["dpi"])  # type: ignore[arg-type]
+        dpi = int(pack["dpi"])  # type: ignore[call-overload]
         fontsize = float(pack["fontsize"])  # type: ignore[arg-type]
         if label_fontsize is None:
             label_fontsize = float(pack["label_fontsize"])  # type: ignore[arg-type]
@@ -137,8 +137,6 @@ def _gene_label_fontsize(label_fontsize: float | None, fontsize: float) -> float
     if label_fontsize is not None:
         return float(label_fontsize)
     return float(_DEFAULT_LABEL_FONTSIZE)
-
-
 
 
 def set_style(
@@ -1421,9 +1419,7 @@ def enrich_dotplot(
         cbar_label = color_col
         if color_col == "Adjusted P-value":
             cbar_label = "Adjusted P-value (smaller = more sig.)"
-        cbar.set_label(
-            cbar_label, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14
-        )
+        cbar.set_label(cbar_label, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14)
         cbar.outline.set_visible(False)
 
         # Size legend using proxy artists (keeps accurate representation of our custom _scale_sizes
@@ -1577,7 +1573,7 @@ def compare_dotplot(
     title: str | None = None,
     figsize: tuple[float, float] | None = None,
     dpi: int = _DEFAULT_DPI,
-    fontsize: int = _DEFAULT_FONTSIZE,
+    fontsize: float = _DEFAULT_FONTSIZE,
     context: str | None = None,
     dot_size_range: tuple[float, float] = (40.0, 340.0),
     save_path: str | None = None,
@@ -1646,24 +1642,42 @@ def compare_dotplot(
                 "compare_dotplot: no Cluster column found; falling back to enrich_dotplot."
             )
             return enrich_dotplot(
-                df, top_n=top_n, title=title, figsize=figsize or _DEFAULT_FIGSIZE,
-                dpi=dpi, fontsize=fontsize, save_path=save_path, show=show,
-                use_style=use_style, ax=ax,
+                df,
+                top_n=top_n,
+                title=title,
+                figsize=figsize or _DEFAULT_FIGSIZE,
+                dpi=dpi,
+                fontsize=fontsize,
+                save_path=save_path,
+                show=show,
+                use_style=use_style,
+                ax=ax,
             )
 
-        term_c = next((c for c in ("Term", "Description", "term", "description", "ID")
-                       if c in df.columns), None)
+        term_c = next(
+            (c for c in ("Term", "Description", "term", "description", "ID") if c in df.columns),
+            None,
+        )
         if term_c is None:
             raise ValueError("compare_dotplot requires a term column (Term/Description/ID).")
-        p_c = next((c for c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
-                    if c in df.columns), None)
+        p_c = next(
+            (
+                c
+                for c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
+                if c in df.columns
+            ),
+            None,
+        )
         color_c = color_by if color_by in df.columns else (p_c or df.columns[0])
         df[color_c] = pd.to_numeric(df[color_c], errors="coerce")
 
         size_c = size_by if size_by in df.columns else None
         if size_c is None:
-            size_c = "GeneRatio" if "GeneRatio" in df.columns else (
-                "Count" if "Count" in df.columns else None)
+            size_c = (
+                "GeneRatio"
+                if "GeneRatio" in df.columns
+                else ("Count" if "Count" in df.columns else None)
+            )
         if size_c == "GeneRatio" and "GeneRatio" in df.columns:
             df["GeneRatio"] = df["GeneRatio"].apply(_parse_gene_ratio)
         if size_c is not None:
@@ -1680,8 +1694,7 @@ def compare_dotplot(
         per_group = show_terms if isinstance(show_terms, int) else top_n
         if isinstance(show_terms, (list, tuple, set)):
             wanted = {str(t).strip().lower() for t in show_terms}
-            chosen = [t for t in df[term_c].unique()
-                      if str(t).strip().lower() in wanted]
+            chosen = [t for t in df[term_c].unique() if str(t).strip().lower() in wanted]
         else:
             chosen = []
             for cl in clusters:
@@ -1703,11 +1716,14 @@ def compare_dotplot(
         else:
             ordered = chosen
         # keep union small enough to read
-        ordered = ordered[:max(1, min(len(ordered), 60))]
+        ordered = ordered[: max(1, min(len(ordered), 60))]
 
         # -- assemble dot coordinates ---------------------------------------
         cell = {(r[cluster_col], r[term_c]): r for _, r in sub_all.iterrows()}
-        xs, ys, svals, cvals = [], [], [], []
+        xs: list[int] = []
+        ys: list[int] = []
+        svals_list: list[float] = []
+        cvals_list: list[float] = []
         for ti, term in enumerate(ordered):
             y = len(ordered) - 1 - ti  # first term at top after we set limits
             for ci, cl in enumerate(clusters):
@@ -1717,15 +1733,15 @@ def compare_dotplot(
                 xs.append(ci)
                 ys.append(y)
                 sv = row.get(size_c) if size_c else np.nan
-                svals.append(float(sv) if pd.notna(sv) else np.nan)
-                cvals.append(float(row.get(color_c)) if pd.notna(row.get(color_c)) else np.nan)
+                svals_list.append(float(sv) if pd.notna(sv) else np.nan)
+                cvals_list.append(float(row.get(color_c)) if pd.notna(row.get(color_c)) else np.nan)
         if not xs:
             fig, ax0 = _empty_placeholder_fig("No enriched cells to plot")
             _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
             return fig, ax0
 
-        svals = np.asarray(svals, dtype=float)
-        cvals = np.asarray(cvals, dtype=float)
+        svals = np.asarray(svals_list, dtype=float)
+        cvals = np.asarray(cvals_list, dtype=float)
 
         # size scaling to a visible area range
         s_min, s_max = float(dot_size_range[0]), float(dot_size_range[1])
@@ -1742,8 +1758,11 @@ def compare_dotplot(
         is_pval_color = color_c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
         if cmap == "auto":
             eff_cmap = (
-                LinearSegmentedColormap.from_list("cp_red_blue", ["#B2182B", "#F4A582", "#92C5DE", "#2166AC"])
-                if is_pval_color else "viridis"
+                LinearSegmentedColormap.from_list(
+                    "cp_red_blue", ["#B2182B", "#F4A582", "#92C5DE", "#2166AC"]
+                )
+                if is_pval_color
+                else "viridis"
             )
         else:
             eff_cmap = cmap
@@ -1769,8 +1788,16 @@ def compare_dotplot(
         ax.set_axisbelow(True)
         ax.grid(True, which="major", linestyle="--", color="#DDDDDD", alpha=0.7, zorder=0)
         scatter = ax.scatter(
-            xs, ys, s=sizes, c=cvals, cmap=eff_cmap, norm=norm,
-            edgecolors="#333333", linewidths=0.5, alpha=0.95, zorder=3,
+            xs,
+            ys,
+            s=sizes,
+            c=cvals,
+            cmap=eff_cmap,
+            norm=norm,
+            edgecolors="#333333",
+            linewidths=0.5,
+            alpha=0.95,
+            zorder=3,
         )
 
         ax.set_xlim(-0.5, len(clusters) - 0.5)
@@ -1809,14 +1836,20 @@ def compare_dotplot(
             labels = []
             for rv in reps:
                 s_rv = s_min + (rv - lo) / (hi - lo) * (s_max - s_min)
-                handles.append(ax.scatter([], [], s=s_rv, c="#888888",
-                                          edgecolors="#333333", linewidths=0.5))
+                handles.append(
+                    ax.scatter([], [], s=s_rv, c="#888888", edgecolors="#333333", linewidths=0.5)
+                )
                 labels.append(f"{int(rv)}" if size_c == "Count" else f"{rv:.2g}")
             ax.legend(
-                handles, labels, title=size_c, loc="upper left",
+                handles,
+                labels,
+                title=size_c,
+                loc="upper left",
                 bbox_to_anchor=(1.02, 0.95) if _created else (1.0, 1.0),
-                frameon=False, labelspacing=1.1,
-                fontsize=max(7, fontsize - 2), title_fontsize=max(7, fontsize - 2),
+                frameon=False,
+                labelspacing=1.1,
+                fontsize=max(7, fontsize - 2),
+                title_fontsize=max(7, fontsize - 2),
             )
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
@@ -2207,8 +2240,13 @@ def enrich_vennplot(
             else:
                 label_y, label_va = cy - r - 0.14, "top"
             ax.text(
-                cx, label_y, name, ha="center", va=label_va,
-                fontsize=fontsize - 1, fontweight="bold",
+                cx,
+                label_y,
+                name,
+                ha="center",
+                va=label_va,
+                fontsize=fontsize - 1,
+                fontweight="bold",
             )
 
         # Region counts (exclusive set differences so unlabeled regions are not implied zero)
