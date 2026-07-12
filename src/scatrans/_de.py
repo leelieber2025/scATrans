@@ -7,6 +7,7 @@ for pseudobulk. Extracted so tl.py stays small.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import warnings
 from contextlib import contextmanager
@@ -98,6 +99,22 @@ def _pydeseq2_uses_design_factors() -> bool:
         return (major, minor) >= (0, 4)
     except Exception:
         return True
+
+
+def _pydeseq2_filter_init_kwargs(cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop kwargs not accepted by ``cls.__init__`` (API varies across pydeseq2 versions).
+
+    Some releases accept ``n_cpus`` / ``quiet`` on ``DeseqDataSet`` but not on
+    ``DeseqStats`` (or the reverse). Filtering by signature avoids
+    ``TypeError: unexpected keyword argument`` on CI / older pins.
+    """
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
 
 
 def _pydeseq2_preagg_count_like_verdict(
@@ -429,38 +446,43 @@ def _run_de_wrapper(
 
         with _de_warning_context():
             if _pydeseq2_uses_design_factors():
-                dds = DeseqDataSet(
-                    counts=counts_use,
-                    metadata=metadata,
-                    design_factors=use_groupby,
-                    ref_level=[use_groupby, reference_group],
-                    quiet=True,
-                    n_cpus=n_jobs,
+                dds_kw = _pydeseq2_filter_init_kwargs(
+                    DeseqDataSet,
+                    {
+                        "counts": counts_use,
+                        "metadata": metadata,
+                        "design_factors": use_groupby,
+                        "ref_level": [use_groupby, reference_group],
+                        "quiet": True,
+                        "n_cpus": n_jobs,
+                    },
                 )
+                dds = DeseqDataSet(**dds_kw)
             else:
-                dds = DeseqDataSet(
-                    counts=counts_use,
-                    metadata=metadata,
-                    design=f"~{use_groupby}",
-                    refit_cooks=True,
-                    quiet=True,
-                    n_cpus=n_jobs,
+                dds_kw = _pydeseq2_filter_init_kwargs(
+                    DeseqDataSet,
+                    {
+                        "counts": counts_use,
+                        "metadata": metadata,
+                        "design": f"~{use_groupby}",
+                        "refit_cooks": True,
+                        "quiet": True,
+                        "n_cpus": n_jobs,
+                    },
                 )
+                dds = DeseqDataSet(**dds_kw)
             dds.deseq2()
 
-            if _pydeseq2_uses_design_factors():
-                stat_res = DeseqStats(
-                    dds,
-                    contrast=[use_groupby, target_group, reference_group],
-                    quiet=True,
-                    n_cpus=n_jobs,
-                )
-            else:
-                stat_res = DeseqStats(
-                    dds,
-                    contrast=[use_groupby, target_group, reference_group],
-                    n_cpus=n_jobs,
-                )
+            # DeseqStats: some pydeseq2 builds reject n_cpus and/or quiet.
+            stats_kw = _pydeseq2_filter_init_kwargs(
+                DeseqStats,
+                {
+                    "contrast": [use_groupby, target_group, reference_group],
+                    "quiet": True,
+                    "n_cpus": n_jobs,
+                },
+            )
+            stat_res = DeseqStats(dds, **stats_kw)
             stat_res.summary()
 
         res_df = stat_res.results_df.copy()
