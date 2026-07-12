@@ -50,6 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from `scatrans` (CLI entry point `generate-gene-features` unchanged).
 
 ### Fixed
+- **CI base matrix (no optional extras)**: PyDESeq2 replicate-count gate and
+  Memento non-integer `counts=` check now raise **before** importing the
+  optional package (so `.[dev]`-only CI jobs get `ValueError` not
+  `ImportError`). GSEA regression that needs `gseapy` is
+  `@pytest.mark.skipif` when the extra is missing.
 - **`use_mixed_model=True` + `use_permutation=True`**: with
   `perm_de_backend='same'` (default), each permutation now refits the same
   MixedLM (`condition + (1|sample)`) used for the observed DE so

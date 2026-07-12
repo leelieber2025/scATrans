@@ -581,6 +581,7 @@ def test_extract_gene_lists_accepts_padj_and_p_adjust_columns():
     assert out2["contrast"] == ["A"]
 
 
+@pytest.mark.skipif(importlib.util.find_spec("gseapy") is None, reason="gseapy not installed")
 def test_run_gsea_collapses_duplicate_ids_by_max_abs():
     from scatrans.enrich.gsea import run_gsea
 
@@ -709,7 +710,7 @@ def test_perm_fast_scanpy_log1p_on_pseudobulk_counts():
 
 
 def test_memento_rejects_non_integer_counts_layer():
-    """Memento must not silently use log-like layers['counts']."""
+    """Memento must not silently use log-like layers['counts'] (no memento install needed)."""
     from scatrans._de import _run_memento_de
 
     rng = np.random.default_rng(0)

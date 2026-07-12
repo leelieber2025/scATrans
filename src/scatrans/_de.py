@@ -323,6 +323,16 @@ def _run_de_wrapper(
             _ann_log.setLevel(_prev_ann)
 
     if is_pseudobulk and pb_backend == "pydeseq2":
+        # Validate design before importing the optional dependency so missing
+        # pydeseq2 does not mask a clearer design-error ValueError, and so
+        # base CI (.[dev] only) can exercise this branch without extras.
+        n_t = int((ad_temp.obs[use_groupby] == target_group).sum())
+        n_r = int((ad_temp.obs[use_groupby] == reference_group).sum())
+        if n_t < 2 or n_r < 2:
+            raise ValueError(
+                f"PyDESeq2 requires >=2 replicates per group. Found {n_t} target, {n_r} ref."
+            )
+
         try:
             from pydeseq2.dds import DeseqDataSet
             from pydeseq2.ds import DeseqStats
@@ -334,13 +344,6 @@ def _run_de_wrapper(
                 "or\n"
                 "    pip install pydeseq2"
             ) from e
-
-        n_t = (ad_temp.obs[use_groupby] == target_group).sum()
-        n_r = (ad_temp.obs[use_groupby] == reference_group).sum()
-        if n_t < 2 or n_r < 2:
-            raise ValueError(
-                f"PyDESeq2 requires >=2 replicates per group. Found {n_t} target, {n_r} ref."
-            )
 
         # Prefer explicit counts= when aligned to current obs×var (layer / matrix /
         # AnnData). Callers often keep log1p in .X and raw counts elsewhere.
@@ -951,6 +954,17 @@ def _run_memento_de(
     memento_de_* and memento_dv_* columns for advanced inspection).
     This replaces the scanpy rank_genes_groups path when use_memento_de=True.
     """
+    # Fail fast on non-integer count layers before the optional import so
+    # design/data errors are not masked by missing memento-de on base installs.
+    if isinstance(counts, str):
+        if counts not in adata.layers:
+            raise ValueError(f"counts='{counts}' layer not found in adata.layers")
+        if not _is_integer_counts_like(adata.layers[counts]):
+            raise ValueError(
+                f"Memento counts layer {counts!r} does not look like raw integer counts. "
+                "Call store_raw_counts() before normalize/log1p, or pass a true count matrix."
+            )
+
     try:
         import memento
     except ImportError as e:
@@ -1001,6 +1015,7 @@ def _run_memento_de(
             if counts not in ad_temp.layers:
                 raise ValueError(f"counts='{counts}' layer not found in adata.layers")
             raw_counts = ad_temp.layers[counts]
+            # Integer check already applied on full adata above; re-check after subset.
             if not _is_integer_counts_like(raw_counts):
                 raise ValueError(
                     f"Memento counts layer {counts!r} does not look like raw integer counts. "
