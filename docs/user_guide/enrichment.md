@@ -11,7 +11,7 @@ enrich_res = scat.run_enrichment(
     adata=adata,   # if you called store_raw_counts(adata) earlier, this will
                    # automatically use the preserved full measured gene list as universe.
                    # Explicit `universe=` still takes precedence.
-    pval_cutoff=0.05,
+    padj_cutoff=0.05,  # preferred; legacy pval_cutoff= still accepted (filters adjusted p)
     min_size=5,
     max_size=500,
 )
@@ -22,7 +22,8 @@ enrich_res = scat.run_enrichment(
 
 ## `run_gsea` (pre-ranked GSEA)
 
-For ranked-list enrichment (the classic GSEA / prerank approach):
+For ranked-list enrichment (classic preranked GSEA; Subramanian et al. 2005 —
+see {doc}`../references`), via [GSEApy](https://github.com/zqfang/GSEApy):
 
 ```python
 # Prefer a *signed* ranking metric (logFC). Non-negative scores such as
@@ -50,11 +51,16 @@ GSEA needs **signed** ranks. Passing a full `all_results` table auto-prefers
 If you force `score_column="active_score"` (or pass a one-sided Series), a
 warning is emitted.
 
-Like ORA, GSEA checks the **mapping rate** of ranked genes into the gene-set
-universe (warns below 20%; returns empty with
-`reason="no_ranked_genes_mapped"` at 0%). Mismatched case is a common failure
-mode with Enrichr libraries (UPPERCASE) vs mouse symbols (`Tp53`) — pass
-`gene_case="upper"` when needed.
+**Low mapping rate and ID cleanup (same gate as ORA):** after loading gene
+sets, ranked genes are intersected with gene-set members via
+`_check_gene_set_mapping_rate`. Mapping rate **&lt; 20%** emits a
+`UserWarning` with input-symbol and gene-set examples; **0% overlap**
+returns an empty frame with `reason="no_ranked_genes_mapped"` (avoids
+opaque gseapy failures from case/ID mismatch). Duplicate gene IDs (common
+after case-folding or multi-mapped symbols) are collapsed by keeping the
+score with **largest absolute value** (`max |score|` per gene). Mismatched
+case is a common failure mode with Enrichr libraries (UPPERCASE) vs mouse
+symbols (`Tp53`) — pass `gene_case="upper"` when needed.
 
 `run_gsea` stores the full enrichment score curves in
 `.attrs["gsea_details"]` so that `gseaplot` renders exactly the same RES that
@@ -75,7 +81,7 @@ kegg_res = scat.run_kegg(
     # Defaults to the organism-specific built-in library (Hs_KEGG_2026 or Mm_KEGG_2026)
     adata=adata,   # if store_raw_counts was called earlier, this automatically uses
                    # the preserved full measured gene set as background.
-    pval_cutoff=0.05,
+    padj_cutoff=0.05,
 )
 ```
 
@@ -283,6 +289,20 @@ if len(gsea_res) > 0:
         save_path="gsea_running_score.pdf",
     )
 
+# Multi-group compareCluster-style grid (groups as columns, terms as rows).
+# Input: long table from compare_enrichment / concat_compare_results.
+scat.pl.compare_dotplot(
+    compare_df,          # must include Cluster + Term/Description + p.adjust
+    top_n=5,             # top terms kept *per group*, then unioned
+    size_by="GeneRatio",
+    color_by="p.adjust",
+    save_path="compare_dotplot.pdf",
+)
+
+# Overlap views across contrasts
+scat.pl.enrich_upsetplot(compare_df, pval_cutoff=0.05)
+scat.pl.enrich_vennplot(compare_df, pval_cutoff=0.05)  # best for 2–3 groups
+
 # Embed in multi-panel figure with ax=
 import matplotlib.pyplot as plt
 fig, ax = plt.subplots(figsize=(6, 5))
@@ -294,5 +314,8 @@ Additional options:
 
 - `show_terms=15` or `show_terms="auto"` or `show_terms=["term A", "term B"]`
 - `use_style=True` to apply publication style for that call only
+- `context="paper"` on major plotters for journal-sized defaults
 
-All `scat.pl.*` functions accept `save_path`, `ax`, `figsize`, `show`, and `dpi`.
+All `scat.pl.*` functions accept `save_path`, `ax`/`axes`, `figsize`, `show`,
+and `dpi`. Files written via `save_path` are always exported at ≥300 dpi.
+See {doc}`plotting` for display defaults and style helpers.

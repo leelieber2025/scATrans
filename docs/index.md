@@ -41,6 +41,14 @@ result["enrichment"].head()       # GO enrichment on those genes
 New here? Follow {doc}`installation` → {doc}`quickstart` → {doc}`tutorials/index`
 (real data, fully worked) in that order.
 
+:::{note}
+**API stability.** scATrans is currently **Beta (0.10.x)**. Import the package
+as `import scatrans as scat` and rely on the names in `scatrans.__all__`,
+`scat.pl`, and `scat.qc`. Leaf modules such as `scatrans.tl.active` are an
+implementation detail and may move between minor releases. The complete
+contract is documented in {doc}`api_stability`.
+:::
+
 ::::{grid} 1 2 3 3
 :gutter: 2
 
@@ -120,6 +128,7 @@ quickstart
 tutorials/index
 user_guide/index
 statistical_guidance
+domain_assumptions
 api_stability
 api/index
 ROADMAP

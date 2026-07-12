@@ -79,7 +79,9 @@ Memento, and `mode="advanced"`, can be **several times slower**. Use
 
 ## `bias_correction`
 
-By default the package applies a Huber regression of the raw unspliced
+By default the package applies a
+[Huber regression](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.HuberRegressor.html)
+(see also {doc}`../references`) of the raw unspliced
 excess delta on log(gene length) and log(intron number) and uses the
 residuals as `unspliced_excess_residual`. This step can be disabled by
 setting `bias_correction="none"`, in which case the raw (reference-gamma
@@ -165,7 +167,10 @@ Requires `sample_col` (the column identifying biological replicates/individuals)
 - Diagnostics under `adata.uns["scatrans"]["diagnostics"]["mixed_model"]`
   include `logFC_method`, `n_genes_logFC_mixedlm_sign_discordant` (genes
   where sample-mean logFC sign disagrees with the MixedLM coef), and
-  `failed_fit_rate`. Inspect these before publication.
+  `failed_fit_rate`. When the discordant count is &gt; 0, a **logger
+  warning** is emitted and those genes are excluded from the built-in
+  `significant` path / active_score significance leg (`mixedlm_coef > 0`
+  required). Inspect these before publication.
 - **Incompatible with `use_memento_de=True`** — both are cell-level DE
   backends; enabling both raises `ValueError` (choose one).
 - **With `use_permutation=True`:** default `perm_de_backend="same"` refits

@@ -16,6 +16,7 @@ Other internal modules are not part of the stable public surface.
 from __future__ import annotations
 
 from . import pl, qc
+from ._version import __version__
 from .enrich import (
     compare_enrichment,
     concat_compare_results,
@@ -82,14 +83,3 @@ __all__ = [
     "qc",
     "__version__",
 ]
-
-# Version is provided dynamically when possible
-try:
-    from ._version import version as __version__
-except ImportError:
-    __version__ = "0.10.2"
-
-# Optional: prevent some internal modules from appearing too prominently
-# in casual inspection while still allowing advanced users to do
-# `import scatrans.tl as tl` if they really need it.
-# We do not delete them aggressively to preserve scanpy-like ergonomics.

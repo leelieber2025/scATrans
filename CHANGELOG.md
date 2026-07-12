@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Changed
+- **Versioning (single source of truth)**: package version lives only in
+  `src/scatrans/_version.py` (`__version__`). `pyproject.toml` reads it via
+  `[tool.setuptools.dynamic]`; runtime import, Sphinx `release`, and
+  `scripts/make_release_zips.py` all consume the same value. Removed
+  `setuptools_scm` / `SETUPTOOLS_SCM_PRETEND_VERSION` and the multi-place
+  `0.10.2` fallbacks. **To bump a release, edit `_version.py` (and
+  CHANGELOG), then rebuild** — the release helper also syncs `CITATION.cff`
+  and `packaging/ecosystem-packages/meta.yaml`.
+- **Documentation (plotting)**: `docs/user_guide/plotting.md`,
+  `docs/user_guide/enrichment.md`, and `docs/api/index.md` now document the
+  full `scat.pl` surface aligned with current `pl.py`, including
+  `compare_dotplot`, `context=` / notebook vs paper defaults, `label_repel`,
+  `positive_logfc_only`, UpSet/Venn helpers, `gamma_shrinkage_plot`, and
+  batch export helpers. American English spelling in public plot docstrings.
+- **CI PyPI publish is manual only**: `.github/workflows/publish.yml` no longer
+  runs on GitHub Release `published`. Creating a release/tag will not upload to
+  PyPI. Use Actions → "Publish to PyPI" → Run workflow, or publish dist
+  artifacts via your separate path. Build version is taken from `_version.py`.
+- **Documentation / citations**: expanded `docs/references.md` with method papers
+  (GSEA, Enrichr, DESeq2, RNA velocity, BH FDR, Phipson–Smyth permutation *p*,
+  Huber, clusterProfiler, GSEApy paper) and verified external links; fixed
+  broken GO license URL and README Read-the-Docs markdown; domain-assumptions
+  README link points at in-repo `docs/domain_assumptions.md`.
+
 ### Fixed
 - **`active_score` direction consistency**: the significance leg
   (`-log10(p_adj)`) is gated by upregulation (`logFC > 0`, or
@@ -64,6 +89,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Regression tests for #1 / #4**: Huber fit must not let length=0 genes bias
   the slope; downregulated genes must not outrank mild-up on active_score when
   residual weight is 0.
+- **Docs / FAQ**: top-N `active_score` is not DE-gated (nascent excess can rank
+  alone); GSEA mapping/`gene_case` troubleshooting; design warnings under
+  `diagnostics["design"]`; MixedLM coef gate on significant list.
+- **CI statistical guards** (`tests/test_statistical_guards.py`, ~3s):
+  (1) null-label permutation Type I @0.05 in [0.03, 0.07];
+  (2) planted up/down ground-truth ranking (up in top-N, down not);
+  (3) Huber `n_genes_used_for_fit` excludes length 0/NaN; active_score
+  diagnostics match.
+- **Domain assumptions doc** (`docs/domain_assumptions.md`): explicit list of
+  product/domain conventions (active = upregulation-oriented; s2 independent
+  of DE; `pval_cutoff` → adjusted p; GSEA signed ranks; Huber length &gt; 0;
+  etc.) so semantic intent is not left implicit.
+- **`active_score` scale is within-run only**: soft-scale λ =
+  `median(positive)/ln(2)` from the run's gene vectors. Documented as
+  high-risk if used for cross-dataset / cross-subset / HVG comparisons;
+  lambdas + note stored in `diagnostics["scoring"]`; info log on each run;
+  guard test in `test_statistical_guards`.
+- **Domain-assumption verification suite**
+  (`tests/test_domain_assumptions_verified.py`): locks documented semantics
+  (λ data-dependence, s1/s3 gate, s2 DE-independence, MixedLM coef gate,
+  Huber length filter, padj vs raw-p, GSEA signed ranks, empty significant
+  without permutation).
 
 ## [0.10.2] - 2026-07-11
 

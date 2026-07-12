@@ -81,7 +81,7 @@ candidates = scat.filter_active_genes(
     preset="heuristic",           # or "pseudobulk" / "permissive"
     # active_score_cutoff=30,
     # logfc_cutoff=0.3,
-    # pval_cutoff=0.05,
+    # padj_cutoff=0.05,           # preferred; legacy pval_cutoff= still works
 )
 
 print(f"\nFiltered candidate genes: {len(candidates)}")
@@ -92,7 +92,7 @@ enrich_res = scat.run_enrichment(
     gene_sets="GO_Biological_Process",   # or "GO_BP"
     organism="mouse",                    # or "human"
     adata=adata,                         # uses stored raw genes as background
-    pval_cutoff=0.05,
+    padj_cutoff=0.05,
 )
 
 print("\nTop GO enrichment terms:")

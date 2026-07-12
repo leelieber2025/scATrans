@@ -151,10 +151,17 @@ Every `scat.pl.*` function accepts `ax=`/`axes=` (multi-panel embedding),
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|
 | `style` | `volcano_plot` | `"auto"` (legacy `active_score` colormap), `"ggvolcano"` (3-color classic), `"gradual"` (FDR gradient) |
+| `context` | major plotters | `"notebook"` defaults vs `"paper"` (larger figsize/fonts, dpi=300); aliases include `"print"` / `"publication"` |
 | `x` / `size_by` / `color_by` | `enrich_dotplot`, `enrich_barplot` | `x="GeneRatio"` (ORA) or `"NES"` (GSEA, auto-detected); `color_by` defaults to adjusted p-value |
-| `show_terms` | `enrich_dotplot` | `int` (top N), `"auto"` (significance + count heuristic), or an explicit term list |
-| `top_n` / `label_genes` | `comet_plot`, `volcano_plot` | control auto-labeling; `label_genes=[...]` adds manual labels |
+| `show_terms` | `enrich_dotplot`, `compare_dotplot` | `int` (top N), `"auto"` (significance + count heuristic), or an explicit term list |
+| `top_n` / `label_genes` / `label_repel` | `comet_plot`, `volcano_plot` | control auto-labeling; `label_genes=[...]` adds manual labels; `label_repel=False` skips adjustText |
+| `s` / `point_scale` / `min_size` / `max_size` | comet / volcano / volcano_3d | `s=` forces fixed point size; otherwise score-based sizing with hard bounds |
 | `use_style` / `set_style()` | all | opt-in publication style (off by default so notebooks are not surprised by global `rcParams` changes) |
+
+`compare_dotplot` is the clusterProfiler ``compareCluster``-style multi-group
+grid (groups on the x-axis, terms on the y-axis). Use it on the long table from
+`compare_enrichment` / `concat_compare_results`. Prefer `enrich_dotplot` for a
+single contrast or when faceting with `facet_by_cluster=True`.
 
 ```{eval-rst}
 .. autosummary::
@@ -166,6 +173,7 @@ Every `scat.pl.*` function accepts `ax=`/`axes=` (multi-panel embedding),
    pl.volcano_3d
    pl.bias_diagnostic_plot
    pl.enrich_dotplot
+   pl.compare_dotplot
    pl.enrich_barplot
    pl.enrich_upsetplot
    pl.enrich_vennplot

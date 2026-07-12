@@ -206,6 +206,20 @@ def active_score(
       what ``p_adj`` tests); downregulated genes do not receive score from the DE
       significance term alone. The p-value soft-scale λ is estimated on
       direction-positive genes only.
+    - The unspliced-excess leg (s2) is **independent of DE significance**: genes that
+      DE backends did not test or returned neutral (e.g. PyDESeq2 ``padj`` filled to 1
+      after independent filtering) still receive residual-based score when nascent
+      excess is high. **Top-N by ``active_score`` may therefore include DE-untested or
+      DE-nonsignificant genes** — that is a feature of composite ranking, not a bug.
+      For DE-gated lists use ``filter_active_genes`` (``p_adj`` / ``logFC`` cutoffs) or
+      the built-in ``significant`` conjunction.
+    - Soft-scale λ for each leg is **estimated from this run's data**
+      (``median(positive values) / ln(2)``, with floors). The 0–100 ``active_score`` is
+      therefore a **within-analysis relative rank**, not an absolute unit. Do **not**
+      compare scores across cell subsets, datasets, or gene filters (e.g. HVG vs all
+      genes): changing the gene pool re-estimates λ and rescales every gene even if
+      its raw logFC/residual/p is unchanged. Lambdas are stored under
+      ``adata.uns["scatrans"]["diagnostics"]["scoring"]``.
     - `unspliced_excess_*` columns are **group-contrast proxies** (reference-gamma excess),
       not outputs of a stochastic/dynamical RNA velocity model. Do not treat them as
       literal nascent transcription rates without independent validation.
@@ -1047,6 +1061,34 @@ def active_score(
     total_w = weight_fc + weight_unspliced + weight_pval
     real_score = (weight_fc * s1 + weight_unspliced * s2 + weight_pval * s3) / total_w * 100.0
     adata.var["active_score"] = real_score
+
+    # Soft-scale λ is estimated from *this* run's gene vectors (median positive / ln2).
+    # Scores are therefore within-run relative ranks — not absolute units for
+    # cross-dataset / cross-subset / pre-vs-post HVG comparison.
+    diagnostics["scoring"] = {
+        "lambda_fc": float(lambda_fc),
+        "lambda_res": float(lambda_res),
+        "lambda_pval": float(lambda_pval),
+        "weight_fc": float(weight_fc),
+        "weight_unspliced": float(weight_unspliced),
+        "weight_pval": float(weight_pval),
+        "scale_note": (
+            "active_score soft-scale λ = median(positive leg values)/ln(2) "
+            "(with floors). Changing the gene set or subset re-estimates λ and "
+            "rescales all scores even if a gene's raw logFC/residual/p is unchanged. "
+            "Compare ranks only within one active_score run; do not treat 0–100 as "
+            "absolute activity across cell types, datasets, or HVG filters."
+        ),
+    }
+    logger.info(
+        "active_score uses data-adaptive soft-scale λ "
+        "(λ_fc=%.4g, λ_res=%.4g, λ_pval=%.4g). "
+        "0–100 scores are within-run relative ranks only — not comparable across "
+        "datasets, cell subsets, or gene filters. See diagnostics['scoring'].",
+        lambda_fc,
+        lambda_res,
+        lambda_pval,
+    )
 
     # ==================== PERMUTATION ====================
     current_max_perm = None

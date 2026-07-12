@@ -220,3 +220,57 @@ def test_enrich_dotplot_auto_without_padj_column():
     )
     fig, ax = scat.pl.enrich_dotplot(df, show_terms="auto", top_n=2, show=False)
     plt.close(fig)
+
+
+def test_plot_display_defaults_are_notebook_oriented(results_df):
+    """Defaults target notebooks (dpi=150); context='paper' restores larger settings."""
+    fig, ax = scat.pl.volcano_plot(results_df, top_n=2, show=False)
+    assert fig.get_dpi() == scat.pl._DEFAULT_DPI == 150
+    plt.close(fig)
+
+    fig_p, ax_p = scat.pl.volcano_plot(results_df, top_n=2, context="paper", show=False)
+    assert fig_p.get_dpi() == 300
+    plt.close(fig_p)
+
+    fig_c, _ = scat.pl.comet_plot(results_df, top_n=2, show=False)
+    assert fig_c.get_dpi() == 150
+    plt.close(fig_c)
+
+
+def test_volcano_save_path_uses_at_least_300_dpi(results_df, tmp_path):
+    out = tmp_path / "volc.png"
+    fig, ax = scat.pl.volcano_plot(results_df, top_n=2, show=False, save_path=str(out), dpi=150)
+    assert out.is_file() and out.stat().st_size > 0
+    plt.close(fig)
+
+
+def test_enrich_dotplot_embedded_ax_does_not_raise(enrich_df):
+    """Size legend must stay inside axes when embedding (no exterior clip crash)."""
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3), dpi=100)
+    scat.pl.enrich_dotplot(enrich_df, top_n=3, ax=axes[0], show=False)
+    scat.pl.enrich_dotplot(enrich_df, top_n=3, ax=axes[1], show=False)
+    plt.close(fig)
+
+
+def test_volcano_dense_points_warns_when_s_is_none(results_df, caplog):
+    import logging
+
+    n = 450
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame(
+        {
+            "logFC": rng.normal(0, 1, n),
+            "p_adj": rng.uniform(1e-5, 1, n),
+            "active_score": rng.uniform(0, 100, n),
+        },
+        index=[f"gene{i}" for i in range(n)],
+    )
+    with caplog.at_level(logging.WARNING, logger="scatrans.pl"):
+        fig, ax = scat.pl.volcano_plot(df, top_n=2, s=None, show=False)
+    plt.close(fig)
+    assert any("variable sizing" in r.message for r in caplog.records)
+
+
+def test_invalid_plot_context_raises(results_df):
+    with pytest.raises(ValueError, match="context"):
+        scat.pl.volcano_plot(results_df, context="poster", show=False)

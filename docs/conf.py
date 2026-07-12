@@ -18,11 +18,14 @@ repository_url = "https://github.com/leelieber2025/scATrans"
 default_branch = "main"
 
 try:
-    from importlib.metadata import version as _pkg_version
-
-    release = _pkg_version("scatrans")
+    from scatrans._version import __version__ as release
 except Exception:
-    release = "0.10.2"
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        release = _pkg_version("scatrans")
+    except Exception:
+        release = "0.0.0+unknown"
 version = release
 
 html_context = {

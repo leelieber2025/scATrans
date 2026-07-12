@@ -63,7 +63,9 @@ Out of scope for **this** working tree (release repo is separate)
 - [ ] Real-data smoke signed off; `_de` gate still green with pydeseq2 present
 - [ ] Optional: TestPyPI dry-run of release workflow
 
-**Recommended versioning until then:** stay on **0.10.x** (Beta; current **0.10.2**). Do not label 1.0 until P1 real-data smoke + no open PipelineResult semantics changes.
+**Recommended versioning until then:** stay on **0.10.x** (Beta; current
+**0.10.2**, single source in `src/scatrans/_version.py`). Do not label 1.0 until
+P1 real-data smoke + no open PipelineResult semantics changes.
 
 ### P4 — nice-to-have / earlier review notes
 

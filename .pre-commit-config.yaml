@@ -21,8 +21,7 @@ repos:
         exclude: |
           (?x)^(
             tests/|
-            backup/|
-            src/scatrans/_version.py
+            backup/
           )
 
   # Optional pyright (static type checker, often stricter). Requires node + pyright.

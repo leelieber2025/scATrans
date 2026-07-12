@@ -73,6 +73,35 @@ def test_smoke_rankplot_bias_bar(mini_results, mini_enrich):
     plt.close(fig4)
 
 
+def test_enrich_barplot_labels_when_description_empty():
+    """Regression: bundled GO/KEGG libraries ship an empty ``Description`` column
+    (the readable name and ID both live in ``Term``). Empty strings pass
+    ``notna()``, so enrich_barplot must not select ``Description`` and render blank
+    bar labels — it should fall back to ``Term`` like enrich_dotplot does.
+    """
+    df = pd.DataFrame(
+        {
+            "Term": [
+                "myeloid leukocyte activation (GO:0002274)",
+                "lymphocyte proliferation (GO:0046651)",
+                "leukocyte degranulation (GO:0043299)",
+            ],
+            "Description": ["", "", ""],  # matches real bundled ORA output
+            "Count": [40, 37, 30],
+            "GeneRatio": [0.057, 0.052, 0.043],
+            "BgRatio": [0.01, 0.01, 0.008],
+            "pvalue": [5e-17, 2e-13, 1e-10],
+            "p.adjust": [5e-13, 4e-10, 1e-7],
+            "Genes": ["G0/G1", "G2/G3", "G4"],
+        }
+    )
+    fig, ax = scat.pl.enrich_barplot(df, top_n=3, show=False)
+    labels = [t.get_text().strip() for t in ax.get_yticklabels()]
+    plt.close(fig)
+    assert labels, "enrich_barplot produced no y tick labels"
+    assert all(labels), f"enrich_barplot rendered blank labels from empty Description: {labels}"
+
+
 def test_smoke_volcano_3d_and_styles(mini_results):
     fig, ax = scat.pl.volcano_3d(mini_results, show=False)
     assert fig is not None
@@ -165,6 +194,56 @@ def test_smoke_compare_enrich_venn_upset(mini_enrich):
         plt.close(fig2)
     except ImportError:
         pytest.skip("upsetplot optional dependency not installed")
+
+
+def _three_cluster_enrich() -> pd.DataFrame:
+    """Three groups with known overlaps: up∩down∩shared = 3, etc."""
+    def mock(cluster, terms):
+        return pd.DataFrame(
+            {"Term": terms, "Cluster": cluster, "p.adjust": [0.001] * len(terms),
+             "Count": [10] * len(terms)}
+        )
+    up = [f"UP_{i}" for i in range(7)] + [f"S_{i}" for i in range(4)]
+    down = [f"DN_{i}" for i in range(6)] + [f"S_{i}" for i in range(1, 5)]
+    shared = [f"S_{i}" for i in range(6)] + [f"MID_{i}" for i in range(4)]
+    return pd.concat([mock("up", up), mock("down", down), mock("shared", shared)],
+                     ignore_index=True)
+
+
+def test_enrich_vennplot_labels_all_three_set_regions():
+    """Regression: a 3-set Venn must label all 7 exclusive regions, not just the
+    three singletons (a 0.9.x bug only drew the pairwise-of-first-two counts).
+    """
+    fig, ax = scat.pl.enrich_vennplot(_three_cluster_enrich(), pval_cutoff=0.05, show=False)
+    nums = [t.get_text() for t in ax.texts if t.get_text().strip().lstrip("-").isdigit()]
+    plt.close(fig)
+    assert len(nums) == 7, f"expected 7 region counts for a 3-set Venn, got {len(nums)}: {nums}"
+
+
+def test_compare_dotplot_grid_layout():
+    """compare_dotplot must lay groups on the x-axis and terms on the y-axis, with a
+    dot at each enriched (group, term) cell (clusterProfiler compareCluster grid).
+    """
+    df = _three_cluster_enrich()  # up / down / shared, with shared S_* terms
+    fig, ax = scat.pl.compare_dotplot(df, top_n=4, show=False)
+    xlabels = [t.get_text().split("\n")[0] for t in ax.get_xticklabels()]
+    n_dots = len(ax.collections[0].get_offsets()) if ax.collections else 0
+    plt.close(fig)
+    # x-axis carries the group names (order-independent)
+    assert set(xlabels) == {"up", "down", "shared"}, xlabels
+    # a shared term enriched in multiple groups yields multiple dots -> more dots than rows
+    assert n_dots >= len(set(xlabels)), f"expected a grid of dots, got {n_dots}"
+
+
+def test_enrich_upsetplot_matrix_has_no_duplicate_row_labels():
+    """Regression: the UpSet matrix panel must not repeat the group names — they
+    are shown once on the aligned Set-size panel; repeating them collided with the
+    set-size value labels (e.g. "10" + "down" -> "10down").
+    """
+    fig, ax_mat = scat.pl.enrich_upsetplot(_three_cluster_enrich(), pval_cutoff=0.05, show=False)
+    mat_labels = [t.get_text() for t in ax_mat.get_yticklabels() if t.get_text().strip()]
+    plt.close(fig)
+    assert mat_labels == [], f"matrix axis should carry no row labels, got {mat_labels}"
 
 
 def test_smoke_heatmap_and_gamma(adata_basic, mini_results):

@@ -89,7 +89,7 @@ candidates = scat.filter_active_genes(
     unspliced_excess_residual_cutoff=0.5,
     unspliced_excess_fdr_cutoff=0.05,
     logfc_cutoff=0.3,
-    pval_cutoff=0.05,
+    padj_cutoff=0.05,  # preferred over legacy pval_cutoff=
 )
 
 # Or use presets that choose reasonable defaults for common analysis styles
@@ -116,8 +116,8 @@ For pure `differential_expression()` results you can also select
 downregulated genes:
 
 ```python
-down_cands = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
-both = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
+down_cands = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
+both = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
 ```
 
 The helper safely ignores filters for columns that do not exist (e.g.

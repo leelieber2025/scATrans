@@ -8,8 +8,16 @@ scATrans is currently **0.10.x (Beta)** (`Development Status :: 4 - Beta` in
 `pyproject.toml`). A future **1.0.0** release will adopt
 `Development Status :: 5 - Production/Stable` and treat the contract below
 under normal SemVer (breaking changes only with a major version bump).
-Until 1.0, minor versions may still refine behaviour with deprecation
+Until 1.0, minor versions may still refine behavior with deprecation
 warnings where practical.
+
+**Scientific heuristic defaults** (e.g. `HEURISTIC_FILTER_DEFAULTS` values
+such as `logfc_cutoff`, `active_score_cutoff`, residual/FDR gates) are
+**not frozen API**. They may change in a minor release when domain
+feedback warrants it; the public guarantee is the **parameter names and
+filter semantics**, not the numeric defaults. Always report the installed
+`scatrans.__version__` and the cutoffs you used (or
+`filter_active_genes(preset=...)`) when publishing.
 
 ## Recommended import style
 
@@ -96,7 +104,7 @@ as `scatrans.tl.active`.
 ## Deprecations
 
 Before removing or renaming a stable symbol after 1.0, scATrans will emit a
-`DeprecationWarning` for at least one minor release when practical. Behaviour
+`DeprecationWarning` for at least one minor release when practical. Behavior
 changes that affect scientific interpretation should be called out in
 `CHANGELOG.md`.
 

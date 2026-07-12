@@ -70,3 +70,9 @@ full signature of `add_gene_features` in the {doc}`../api/index`.
 **Tip**: The generated parquet must contain a `gene_name` column (plus
 `gene_length` and `intron_number`). `add_gene_features` does a `reindex` on
 your `adata.var_names`.
+
+**GTF notes**: Exon lines need a `transcript_id` attribute (slim GFF3
+conversions often drop it — you will get a clear error). Genes without a
+usable exon union get **NaN** length (not 0). Huber bias correction in
+`active_score` only fits genes with `gene_length > 0`; missing-length genes
+use median residual centering when expressed.

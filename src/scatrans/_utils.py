@@ -850,6 +850,13 @@ def _get_group_mean(matrix: Any, mask: np.ndarray) -> np.ndarray:
 
 
 def _get_exponential_scale_lambda(x: np.ndarray) -> float:
+    """Data-adaptive soft-scale length: median of positive values / ln(2).
+
+    **Not transportable across runs.** Changing which genes (or how many) enter
+    the vector changes λ and therefore all soft-scaled scores even if a gene's
+    own raw statistic is fixed. ``active_score`` 0–100 ranks are therefore
+    *within-analysis relative* only.
+    """
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     x_pos = np.clip(x, 0.0, None)
     nonzero_x = x_pos[x_pos > 0]

@@ -27,6 +27,9 @@ and shared environments.
   * use `with scat.pl.style_context(...): ...` (recommended for scoped, no side effects).
 - All plotting functions still respect use_style= , ax=, figsize=, save_path=, show= for
   consistency.
+- Display defaults are notebook-oriented (dpi=150, modest figsize/fonts). Pass
+  ``context="paper"`` on major plotters for journal-sized defaults, or override kwargs.
+  ``save_path`` always writes at least 300 dpi so exports stay sharp.
 """
 
 from __future__ import annotations
@@ -54,6 +57,88 @@ from ._utils import (
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+
+# ---------------------------------------------------------------------------
+# Display defaults (notebook / RTD friendly). Journal export: context="paper"
+# or save_path= (always written at least at _DEFAULT_SAVE_DPI).
+# ---------------------------------------------------------------------------
+_DEFAULT_DPI = 150
+_DEFAULT_SAVE_DPI = 300
+_DEFAULT_FONTSIZE = 10
+_DEFAULT_LABEL_FONTSIZE = 8
+_DEFAULT_FIGSIZE = (6.0, 4.5)
+_DEFAULT_FIGSIZE_WIDE = (9.0, 4.0)
+_DEFAULT_FIGSIZE_TALL = (6.5, 6.0)
+_DEFAULT_TOP_N_COMET = 8
+_DEFAULT_TOP_N_VOLCANO = 6
+_DEFAULT_TOP_N_RANK = 15
+_DEFAULT_TOP_N_ENRICH = 12
+
+_CONTEXT_PRESETS: dict[str, dict[str, object]] = {
+    "notebook": {
+        "figsize": _DEFAULT_FIGSIZE,
+        "dpi": _DEFAULT_DPI,
+        "fontsize": _DEFAULT_FONTSIZE,
+        "label_fontsize": _DEFAULT_LABEL_FONTSIZE,
+    },
+    "paper": {
+        "figsize": (8.0, 6.0),
+        "dpi": _DEFAULT_SAVE_DPI,
+        "fontsize": 12,
+        "label_fontsize": 10,
+    },
+}
+
+
+def _normalize_plot_context(context: str | None) -> str | None:
+    if context is None:
+        return None
+    key = str(context).lower().strip()
+    aliases = {
+        "nb": "notebook",
+        "screen": "notebook",
+        "default": "notebook",
+        "print": "paper",
+        "publication": "paper",
+        "pub": "paper",
+    }
+    key = aliases.get(key, key)
+    if key not in _CONTEXT_PRESETS:
+        raise ValueError(
+            f"context must be one of {sorted(_CONTEXT_PRESETS)}, or None; got {context!r}"
+        )
+    return key
+
+
+def _resolve_display_params(
+    context: str | None,
+    *,
+    figsize: tuple[float, float],
+    dpi: int,
+    fontsize: float | int,
+    label_fontsize: float | None = None,
+) -> tuple[tuple[float, float], int, float, float]:
+    """Apply optional context pack; resolve default gene-label size."""
+    ctx = _normalize_plot_context(context)
+    if ctx is not None:
+        pack = _CONTEXT_PRESETS[ctx]
+        figsize = pack["figsize"]  # type: ignore[assignment]
+        dpi = int(pack["dpi"])  # type: ignore[arg-type]
+        fontsize = float(pack["fontsize"])  # type: ignore[arg-type]
+        if label_fontsize is None:
+            label_fontsize = float(pack["label_fontsize"])  # type: ignore[arg-type]
+    if label_fontsize is None:
+        label_fontsize = float(_DEFAULT_LABEL_FONTSIZE)
+    return figsize, int(dpi), float(fontsize), float(label_fontsize)
+
+
+def _gene_label_fontsize(label_fontsize: float | None, fontsize: float) -> float:
+    if label_fontsize is not None:
+        return float(label_fontsize)
+    return float(_DEFAULT_LABEL_FONTSIZE)
+
+
 
 
 def set_style(
@@ -391,11 +476,18 @@ def _parse_gene_ratio(x):
     return pd.to_numeric(x, errors="coerce")
 
 
-def _save_and_maybe_show(fig, save_path=None, dpi=300, show=True, created=True, transparent=True):
-    """Internal: centralized save + conditional show to keep behavior identical across plotters."""
+def _save_and_maybe_show(fig, save_path=None, dpi=None, show=True, created=True, transparent=True):
+    """Internal: centralized save + conditional show to keep behavior identical across plotters.
+
+    Display figures use modest ``dpi`` (default 150). When ``save_path`` is set, the file
+    is written at least at ``_DEFAULT_SAVE_DPI`` (300) so exports stay publication-sharp
+    even if the on-screen figure is lighter.
+    """
     if save_path:
-        fig.savefig(save_path, dpi=dpi, bbox_inches="tight", transparent=transparent)
-        logger.info("Figure saved to %s", save_path)
+        fig_dpi = int(dpi) if dpi is not None else _DEFAULT_DPI
+        save_dpi = max(fig_dpi, _DEFAULT_SAVE_DPI)
+        fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight", transparent=transparent)
+        logger.info("Figure saved to %s (dpi=%s)", save_path, save_dpi)
     if created and show:
         plt.show()
 
@@ -413,7 +505,7 @@ def _empty_placeholder_fig(message="No data to plot", figsize=(6, 4), dpi=150):
 
 def comet_plot(
     df,
-    top_n=12,
+    top_n=_DEFAULT_TOP_N_COMET,
     save_path=None,
     title="Active Transcription Drivers",
     point_scale=1.0,
@@ -422,9 +514,9 @@ def comet_plot(
     s: float
     | None = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
     alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
-    figsize=(8, 6),
-    dpi=300,
-    fontsize=12,
+    figsize=_DEFAULT_FIGSIZE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
     cmap="coolwarm",
     ax=None,
     show: bool = True,
@@ -434,6 +526,7 @@ def comet_plot(
     label_repel: bool = True,
     label_fontsize: float | None = None,
     min_label_score: float | None = None,
+    context: str | None = None,
 ):
     """
     Comet plot of log fold change vs. bias-corrected unspliced residual.
@@ -467,6 +560,13 @@ def comet_plot(
     """
     with _style_context_if(use_style):
         logger.info("Generating comet plot...")
+        figsize, dpi, fontsize, label_fontsize = _resolve_display_params(
+            context,
+            figsize=figsize,
+            dpi=dpi,
+            fontsize=fontsize,
+            label_fontsize=label_fontsize,
+        )
 
         residual_col = _resolve_results_column(
             df, UNSPLICED_EXCESS_RESIDUAL_COL, LEGACY_VELOCITY_RESIDUAL_COL, required=False
@@ -566,7 +666,7 @@ def comet_plot(
         if min_label_score is not None and "active_score" in label_pool.columns:
             label_pool = label_pool[label_pool["active_score"] >= float(min_label_score)]
         top_genes = label_pool.nlargest(top_n, "active_score")
-        lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 2)
+        lbl_fs = _gene_label_fontsize(label_fontsize, fontsize)
         texts = []
         for idx, row in top_genes.iterrows():
             txt = ax.text(
@@ -574,8 +674,8 @@ def comet_plot(
                 row[residual_col],
                 f"{idx}",
                 fontsize=lbl_fs,
-                fontweight="bold",
-                color="#111111",
+                fontweight="normal",
+                color="#222222",
                 bbox={"boxstyle": "square,pad=0.1", "fc": "none", "ec": "none"},
             )
             texts.append(txt)
@@ -588,18 +688,17 @@ def comet_plot(
             label_repel=label_repel,
         )
 
-        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
-        ax.set_ylabel("Bias-corrected Unspliced Residual", fontsize=fontsize, fontweight="bold")
+        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize)
+        ax.set_ylabel("Bias-corrected Unspliced Residual", fontsize=fontsize)
         if title:
-            ax.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=15)
+            ax.set_title(title, fontsize=fontsize + 1, pad=10)
 
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.03, aspect=20)
         cbar.set_label(
             "Active Score",
-            fontsize=max(9, fontsize - 1),
-            fontweight="bold",
+            fontsize=max(8, fontsize - 1),
             rotation=270,
-            labelpad=15,
+            labelpad=12,
         )
         cbar.outline.set_visible(False)
 
@@ -618,7 +717,7 @@ def comet_plot(
 
 def volcano_3d(
     df,
-    top_n=8,
+    top_n=6,
     save_path=None,
     point_scale=1.0,
     min_size=2,
@@ -626,9 +725,9 @@ def volcano_3d(
     s: float | None = None,  # fixed point size (direct control, omicverse reference)
     alpha: float = 0.8,
     title="3D Active Volcano Plot",
-    figsize=(10, 8),
-    dpi=300,
-    fontsize=11,
+    figsize=(6.5, 5.0),
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
     cmap="coolwarm",
     ax=None,
     show: bool = True,
@@ -655,7 +754,7 @@ def volcano_3d(
             df,
             ["logFC", "p_adj", residual_col, "active_score"],
             ax=ax,
-            figsize=(8, 6),
+            figsize=_DEFAULT_FIGSIZE,
             dpi=dpi,
             message="No valid genes to plot",
         )
@@ -683,7 +782,7 @@ def volcano_3d(
         if plot_df.empty:
             logger.warning("No valid genes to plot after numeric coercion/dropna in volcano_3d.")
             if ax is None:
-                fig, ax = _empty_placeholder_fig("No valid genes to plot", figsize=(8, 6))
+                fig, ax = _empty_placeholder_fig("No valid genes to plot", figsize=_DEFAULT_FIGSIZE)
                 _created_fig = True
             else:
                 fig = ax.figure
@@ -765,12 +864,12 @@ def volcano_3d(
                 color="#111111",
             )
 
-        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold", labelpad=10)
-        ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize, fontweight="bold", labelpad=10)
-        ax.set_zlabel("Unspliced Residual", fontsize=fontsize, fontweight="bold", labelpad=10)
+        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, labelpad=8)
+        ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize, labelpad=8)
+        ax.set_zlabel("Unspliced Residual", fontsize=fontsize, labelpad=8)
 
         if title:
-            ax.set_title(title, fontsize=fontsize + 3, fontweight="bold", pad=15)
+            ax.set_title(title, fontsize=fontsize + 1, pad=10)
 
         ax.view_init(elev=20, azim=-55)
 
@@ -795,13 +894,13 @@ def volcano_3d(
 
 def enrich_dotplot(
     enrich_df,
-    top_n=15,
+    top_n=_DEFAULT_TOP_N_ENRICH,
     show_terms: int | str | list[str] | tuple[str, ...] | None = None,
     title="Enrichment Dotplot",
     save_path=None,
-    figsize=(7, 8),
-    dpi=300,
-    fontsize=12,
+    figsize=_DEFAULT_FIGSIZE_TALL,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
     x="GeneRatio",
     color_by="Adjusted P-value",
     size_by="Count",
@@ -815,6 +914,7 @@ def enrich_dotplot(
     cluster_col: str | None = None,
     facet_by_cluster: bool = False,
     return_data: bool = False,
+    context: str | None = None,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -859,6 +959,9 @@ def enrich_dotplot(
     Supports `ax` for embedding in publication multi-panel figures.
     """
     with _style_context_if(use_style):
+        figsize, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
+        )
         if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
             logger.warning("Enrichment dataframe is empty. Nothing to plot.")
             if ax is None:
@@ -1302,11 +1405,11 @@ def enrich_dotplot(
             alpha=0.9,
         )
 
-        ax.set_xlabel(x_label, fontsize=fontsize, fontweight="bold", labelpad=10)
+        ax.set_xlabel(x_label, fontsize=fontsize, labelpad=8)
         ax.set_ylabel("", fontsize=fontsize)
 
         if title:
-            ax.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=20)
+            ax.set_title(title, fontsize=fontsize + 1, pad=12)
 
         ax.xaxis.grid(True, linestyle="--", color="#DDDDDD", alpha=0.8, zorder=0)
         ax.yaxis.grid(True, linestyle=":", color="#EEEEEE", alpha=0.5, zorder=0)
@@ -1319,7 +1422,7 @@ def enrich_dotplot(
         if color_col == "Adjusted P-value":
             cbar_label = "Adjusted P-value (smaller = more sig.)"
         cbar.set_label(
-            cbar_label, fontsize=fontsize - 1, fontweight="bold", rotation=270, labelpad=18
+            cbar_label, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14
         )
         cbar.outline.set_visible(False)
 
@@ -1411,16 +1514,37 @@ def enrich_dotplot(
                     else:
                         labels.append(f"{rv:.2g}" if rv < 1 else f"{rv:.2f}")
                 if handles:
-                    ax.legend(
-                        handles,
-                        labels,
-                        title=size_col,
-                        loc="upper left",
-                        bbox_to_anchor=(1.02, 0.9),
-                        frameon=False,
-                        title_fontsize=fontsize - 1,
-                        labelspacing=1.1,
-                    )
+                    if _created_fig:
+                        # Standalone figure: park size legend outside to the right
+                        # (above/beside colorbar; constrained_layout owns spacing).
+                        ax.legend(
+                            handles,
+                            labels,
+                            title=size_col,
+                            loc="upper left",
+                            bbox_to_anchor=(1.02, 0.9),
+                            frameon=False,
+                            title_fontsize=max(7, fontsize - 2),
+                            labelspacing=1.0,
+                            fontsize=max(7, fontsize - 2),
+                        )
+                    else:
+                        # Embedded ax=: keep legend inside so multipanel layouts
+                        # do not clip an exterior legend against neighboring axes.
+                        ax.legend(
+                            handles,
+                            labels,
+                            title=size_col,
+                            loc="best",
+                            frameon=True,
+                            fancybox=False,
+                            framealpha=0.85,
+                            edgecolor="#CCCCCC",
+                            title_fontsize=max(7, fontsize - 2),
+                            labelspacing=0.8,
+                            fontsize=max(7, fontsize - 2),
+                            borderpad=0.35,
+                        )
         except Exception:
             # Never let legend problems break the main plot
             pass
@@ -1439,6 +1563,266 @@ def enrich_dotplot(
         return fig, ax
 
 
+def compare_dotplot(
+    enrich_df,
+    *,
+    cluster_col: str | None = None,
+    top_n: int = 5,
+    show_terms=None,
+    size_by: str = "GeneRatio",
+    color_by: str = "p.adjust",
+    cmap: str = "auto",
+    cluster_order: list | None = None,
+    show_cluster_size: bool = True,
+    title: str | None = None,
+    figsize: tuple[float, float] | None = None,
+    dpi: int = _DEFAULT_DPI,
+    fontsize: int = _DEFAULT_FONTSIZE,
+    context: str | None = None,
+    dot_size_range: tuple[float, float] = (40.0, 340.0),
+    save_path: str | None = None,
+    show: bool = True,
+    use_style: bool = False,
+    ax=None,
+):
+    """clusterProfiler ``compareCluster``-style grid dot plot.
+
+    Groups (clusters/contrasts) are columns on the **x-axis**, enriched terms are
+    rows on the **y-axis**, and a dot is drawn at each (group, term) cell where
+    that term is enriched in that group — dot **size** encodes ``size_by``
+    (``GeneRatio`` by default, or ``Count``) and dot **color** encodes ``color_by``
+    (``p.adjust`` by default). This is the canonical multi-group comparison view
+    produced by ``dotplot(compareCluster(...))`` in clusterProfiler.
+
+    Works directly on the output of :func:`compare_enrichment` /
+    :func:`concat_compare_results` (any table with a ``Cluster`` column plus
+    ``Term``/``Description`` and ``p.adjust``). For a single-panel or per-facet
+    dot plot use :func:`enrich_dotplot` instead.
+
+    Parameters
+    ----------
+    cluster_col : str or None
+        Column that defines the groups. Auto-detected (``Cluster``/``cluster``/
+        ``Group``/``group``) if None.
+    top_n : int
+        Terms kept **per group** (by ascending ``color_by``) before taking the
+        union across groups. Ignored when ``show_terms`` is provided.
+    show_terms : int, list of str, or None
+        ``int`` overrides ``top_n`` (per-group quota); a list selects exactly
+        those terms (matched on ``Term``/``Description``); ``None`` uses ``top_n``.
+    size_by : str
+        Column mapped to dot size (``GeneRatio`` or ``Count``). ``GeneRatio``
+        strings like ``"3/120"`` are parsed automatically.
+    color_by : str
+        Column mapped to dot color (default ``p.adjust``).
+    cmap : str
+        ``"auto"`` uses a clusterProfiler-style red→blue gradient for p-value-like
+        color columns (red = most significant), else viridis. Any Matplotlib
+        colormap name overrides this.
+    cluster_order : list or None
+        Explicit left-to-right order of the group columns.
+    show_cluster_size : bool
+        Append the number of shown terms to each x tick label, e.g. ``up\\n(5)``.
+    """
+    with _style_context_if(use_style):
+        figsize0, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize or _DEFAULT_FIGSIZE, dpi=dpi, fontsize=fontsize
+        )
+        if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
+            fig, ax0 = _empty_placeholder_fig("No enrichment data to compare")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        df = enrich_df.copy()
+
+        # -- resolve columns -------------------------------------------------
+        if cluster_col is None:
+            for cand in ("Cluster", "cluster", "Group", "group"):
+                if cand in df.columns:
+                    cluster_col = cand
+                    break
+        if not cluster_col or cluster_col not in df.columns:
+            logger.warning(
+                "compare_dotplot: no Cluster column found; falling back to enrich_dotplot."
+            )
+            return enrich_dotplot(
+                df, top_n=top_n, title=title, figsize=figsize or _DEFAULT_FIGSIZE,
+                dpi=dpi, fontsize=fontsize, save_path=save_path, show=show,
+                use_style=use_style, ax=ax,
+            )
+
+        term_c = next((c for c in ("Term", "Description", "term", "description", "ID")
+                       if c in df.columns), None)
+        if term_c is None:
+            raise ValueError("compare_dotplot requires a term column (Term/Description/ID).")
+        p_c = next((c for c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
+                    if c in df.columns), None)
+        color_c = color_by if color_by in df.columns else (p_c or df.columns[0])
+        df[color_c] = pd.to_numeric(df[color_c], errors="coerce")
+
+        size_c = size_by if size_by in df.columns else None
+        if size_c is None:
+            size_c = "GeneRatio" if "GeneRatio" in df.columns else (
+                "Count" if "Count" in df.columns else None)
+        if size_c == "GeneRatio" and "GeneRatio" in df.columns:
+            df["GeneRatio"] = df["GeneRatio"].apply(_parse_gene_ratio)
+        if size_c is not None:
+            df[size_c] = pd.to_numeric(df[size_c], errors="coerce")
+
+        df[term_c] = df[term_c].astype(str)
+        df[cluster_col] = df[cluster_col].astype(str)
+
+        # -- pick clusters and terms ----------------------------------------
+        clusters = cluster_order or list(dict.fromkeys(df[cluster_col].tolist()))
+        clusters = [c for c in clusters if c in set(df[cluster_col])]
+
+        sort_p = p_c or color_c
+        per_group = show_terms if isinstance(show_terms, int) else top_n
+        if isinstance(show_terms, (list, tuple, set)):
+            wanted = {str(t).strip().lower() for t in show_terms}
+            chosen = [t for t in df[term_c].unique()
+                      if str(t).strip().lower() in wanted]
+        else:
+            chosen = []
+            for cl in clusters:
+                sub = df[df[cluster_col] == cl]
+                if sort_p in sub.columns:
+                    sub = sub.sort_values(sort_p, ascending=True)
+                chosen.extend(sub[term_c].head(per_group).tolist())
+            chosen = list(dict.fromkeys(chosen))
+        if not chosen:
+            fig, ax0 = _empty_placeholder_fig("No terms to compare")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        # order terms most-significant-first (best across groups)
+        sub_all = df[df[term_c].isin(chosen)]
+        if sort_p in sub_all.columns:
+            best = sub_all.groupby(term_c)[sort_p].min().sort_values(ascending=True)
+            ordered = [t for t in best.index if t in chosen]
+        else:
+            ordered = chosen
+        # keep union small enough to read
+        ordered = ordered[:max(1, min(len(ordered), 60))]
+
+        # -- assemble dot coordinates ---------------------------------------
+        cell = {(r[cluster_col], r[term_c]): r for _, r in sub_all.iterrows()}
+        xs, ys, svals, cvals = [], [], [], []
+        for ti, term in enumerate(ordered):
+            y = len(ordered) - 1 - ti  # first term at top after we set limits
+            for ci, cl in enumerate(clusters):
+                row = cell.get((cl, term))
+                if row is None:
+                    continue
+                xs.append(ci)
+                ys.append(y)
+                sv = row.get(size_c) if size_c else np.nan
+                svals.append(float(sv) if pd.notna(sv) else np.nan)
+                cvals.append(float(row.get(color_c)) if pd.notna(row.get(color_c)) else np.nan)
+        if not xs:
+            fig, ax0 = _empty_placeholder_fig("No enriched cells to plot")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        svals = np.asarray(svals, dtype=float)
+        cvals = np.asarray(cvals, dtype=float)
+
+        # size scaling to a visible area range
+        s_min, s_max = float(dot_size_range[0]), float(dot_size_range[1])
+        finite_s = svals[np.isfinite(svals)]
+        if finite_s.size == 0 or np.nanmax(finite_s) <= np.nanmin(finite_s):
+            sizes = np.full(len(svals), (s_min + s_max) / 2.0)
+        else:
+            lo, hi = float(np.nanmin(finite_s)), float(np.nanmax(finite_s))
+            sizes = s_min + (np.nan_to_num(svals, nan=lo) - lo) / (hi - lo) * (s_max - s_min)
+
+        # -- colormap (clusterProfiler red=low p.adjust) --------------------
+        from matplotlib.colors import LinearSegmentedColormap
+
+        is_pval_color = color_c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
+        if cmap == "auto":
+            eff_cmap = (
+                LinearSegmentedColormap.from_list("cp_red_blue", ["#B2182B", "#F4A582", "#92C5DE", "#2166AC"])
+                if is_pval_color else "viridis"
+            )
+        else:
+            eff_cmap = cmap
+        finite_c = cvals[np.isfinite(cvals)]
+        vmin = float(np.nanmin(finite_c)) if finite_c.size else 0.0
+        vmax = float(np.nanmax(finite_c)) if finite_c.size else 1.0
+        if vmax <= vmin:
+            vmax = vmin + 1e-9
+        norm = Normalize(vmin=vmin, vmax=vmax)
+
+        # -- figure ---------------------------------------------------------
+        if figsize is None:
+            fig_w = max(3.6, 1.15 * len(clusters) + 2.6)
+            fig_h = max(2.6, 0.34 * len(ordered) + 1.4)
+            figsize0 = (fig_w, fig_h)
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize0, dpi=dpi, constrained_layout=True)
+            _created = True
+        else:
+            fig = ax.figure
+            _created = False
+
+        ax.set_axisbelow(True)
+        ax.grid(True, which="major", linestyle="--", color="#DDDDDD", alpha=0.7, zorder=0)
+        scatter = ax.scatter(
+            xs, ys, s=sizes, c=cvals, cmap=eff_cmap, norm=norm,
+            edgecolors="#333333", linewidths=0.5, alpha=0.95, zorder=3,
+        )
+
+        ax.set_xlim(-0.5, len(clusters) - 0.5)
+        ax.set_ylim(-0.5, len(ordered) - 0.5)
+        ax.set_xticks(range(len(clusters)))
+        if show_cluster_size:
+            shown = {cl: sum(1 for t in ordered if (cl, t) in cell) for cl in clusters}
+            ax.set_xticklabels([f"{cl}\n({shown[cl]})" for cl in clusters], fontsize=fontsize)
+        else:
+            ax.set_xticklabels(clusters, fontsize=fontsize)
+
+        def _clean(t):
+            t = str(t).split(" (GO:")[0].split(" (KEGG")[0]
+            return t[:48] + "…" if len(t) > 48 else t
+
+        ax.set_yticks(range(len(ordered)))
+        # ordered[0] was placed at the highest y, so label rows top-to-bottom
+        ax.set_yticklabels([_clean(t) for t in ordered][::-1], fontsize=max(7, fontsize - 1))
+        ax.set_xlabel("")
+        if title:
+            ax.set_title(title, fontsize=fontsize + 1, pad=10)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+        ax.tick_params(length=0)
+
+        # colorbar
+        cbar = fig.colorbar(scatter, ax=ax, shrink=0.35, aspect=14, pad=0.02)
+        cbar.set_label(color_c, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14)
+        cbar.outline.set_visible(False)
+
+        # size legend
+        if size_c is not None and finite_s.size and np.nanmax(finite_s) > np.nanmin(finite_s):
+            lo, hi = float(np.nanmin(finite_s)), float(np.nanmax(finite_s))
+            reps = [lo, (lo + hi) / 2.0, hi]
+            handles = []
+            labels = []
+            for rv in reps:
+                s_rv = s_min + (rv - lo) / (hi - lo) * (s_max - s_min)
+                handles.append(ax.scatter([], [], s=s_rv, c="#888888",
+                                          edgecolors="#333333", linewidths=0.5))
+                labels.append(f"{int(rv)}" if size_c == "Count" else f"{rv:.2g}")
+            ax.legend(
+                handles, labels, title=size_c, loc="upper left",
+                bbox_to_anchor=(1.02, 0.95) if _created else (1.0, 1.0),
+                frameon=False, labelspacing=1.1,
+                fontsize=max(7, fontsize - 2), title_fontsize=max(7, fontsize - 2),
+            )
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
+        return fig, ax
+
+
 def enrich_upsetplot(
     enrich_df,
     cluster_col: str | None = None,
@@ -1446,9 +1830,9 @@ def enrich_upsetplot(
     min_count: int = 1,
     max_terms: int = 40,
     title: str = "Enriched Term Overlap (UpSet-style)",
-    figsize: tuple[float, float] = (11, 6.5),
-    dpi: int = 300,
-    fontsize: int = 10,
+    figsize: tuple[float, float] = (8.5, 4.8),
+    dpi: int = _DEFAULT_DPI,
+    fontsize: int = _DEFAULT_FONTSIZE,
     save_path: str | None = None,
     show: bool = True,
     use_style: bool = False,
@@ -1637,7 +2021,10 @@ def enrich_upsetplot(
         ax_mat.set_xlim(-0.5, len(inter_sizes) - 0.5)
         ax_mat.set_ylim(-0.5, len(clusters_sorted) - 0.5)
         ax_mat.set_yticks(np.arange(len(clusters_sorted)))
-        ax_mat.set_yticklabels(clusters_sorted, fontsize=fontsize - 1)
+        # Row identity is shown once, on the vertically-aligned "Set size" panel
+        # to the left. Repeating the group names on the matrix axis collides with
+        # the set-size value labels (e.g. "10" + "down" -> "10down").
+        ax_mat.set_yticklabels([])
         ax_mat.set_xticks([])
 
         # Draw dots and lines for each shown intersection
@@ -1692,9 +2079,9 @@ def enrich_vennplot(
     min_count: int = 1,
     max_terms: int = 200,
     title: str | None = None,
-    figsize: tuple[float, float] = (8, 6),
-    dpi: int = 300,
-    fontsize: int = 11,
+    figsize: tuple[float, float] = _DEFAULT_FIGSIZE,
+    dpi: int = _DEFAULT_DPI,
+    fontsize: int = _DEFAULT_FONTSIZE,
     colors: list | None = None,
     save_path: str | None = None,
     show: bool = True,
@@ -1812,7 +2199,17 @@ def enrich_vennplot(
         for (cx, cy, r), col, name in zip(pos_list, cols, cluster_names):
             circ = Circle((cx, cy), r, facecolor=col, alpha=0.25, edgecolor=col, linewidth=2)
             ax.add_patch(circ)
-            ax.text(cx, cy + r + 0.12, name, ha="center", fontsize=fontsize - 1, fontweight="bold")
+            # Place each circle's name on its *outer* side (above circles in the
+            # upper half, below the bottom circle) so names never land in the
+            # central intersection zone on top of the region counts.
+            if cy >= 0:
+                label_y, label_va = cy + r + 0.12, "bottom"
+            else:
+                label_y, label_va = cy - r - 0.14, "top"
+            ax.text(
+                cx, label_y, name, ha="center", va=label_va,
+                fontsize=fontsize - 1, fontweight="bold",
+            )
 
         # Region counts (exclusive set differences so unlabeled regions are not implied zero)
         if n >= 2:
@@ -2300,7 +2697,7 @@ def _volcano_collect_labels(
 
 def volcano_plot(
     df,
-    top_n=10,
+    top_n=_DEFAULT_TOP_N_VOLCANO,
     label_genes: Iterable[str] | None = None,
     save_path=None,
     title="Volcano Plot of Active Transcription",
@@ -2310,9 +2707,9 @@ def volcano_plot(
     s: float
     | None = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
     alpha: float = 0.75,
-    figsize=(8, 6),
-    dpi=300,
-    fontsize=12,
+    figsize=_DEFAULT_FIGSIZE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
     cmap="coolwarm",
     logfc_cutoff=0.5,
     pval_cutoff=0.05,
@@ -2330,6 +2727,7 @@ def volcano_plot(
     label_repel: bool = True,
     label_fontsize: float | None = None,
     min_label_score: float | None = None,
+    context: str | None = None,
 ):
     """
     2D volcano plot with ggVolcano-inspired flexibility and style options.
@@ -2353,14 +2751,14 @@ def volcano_plot(
       - When no "active_score" (pure DE volcano), uses small p-value based base so points start small.
 
     style : {"auto", "ggvolcano", "gradual"}, default "auto"
-        - ``"auto"``: legacy scATrans behaviour (active_score colormap when present).
-        - ``"ggvolcano"``: classic three-colour volcano from
+        - ``"auto"``: legacy scATrans behavior (active_score colormap when present).
+        - ``"ggvolcano"``: classic three-color volcano from
           `ggVolcano <https://github.com/BioSenior/ggVolcano>`_ (teal Down /
-          grey Normal / orange Up, ``theme_bw``, dashed cutoffs, labels by FDR).
+          gray Normal / orange Up, ``theme_bw``, dashed cutoffs, labels by FDR).
         - ``"gradual"``: ``gradual_volcano`` gradient fill/size by ``-log10(FDR)``.
     legend_position : {"UL", "UR", "DL", "DR"}, default "UL"
         In-axes legend anchor (ggVolcano styles only).
-    fills, colors : tuple of 3 hex colours, optional
+    fills, colors : tuple of 3 hex colors, optional
         Override Down / Normal / Up fill and stroke (``style="ggvolcano"``).
     add_cutoff_lines : bool, default True
         Draw dashed logFC and FDR threshold lines.
@@ -2368,6 +2766,12 @@ def volcano_plot(
         Rank genes for automatic labels (``top_n``). ggVolcano uses smallest FDR.
 
     Style reference: https://github.com/BioSenior/ggVolcano
+
+    Display defaults are notebook-oriented (``dpi=150``, modest figsize/fonts).
+    Pass ``context="paper"`` for larger journal-style defaults, or set kwargs
+    explicitly. ``save_path`` always writes at least 300 dpi. Default ``style``
+    remains ``"auto"`` (active_score coloring when present); use ``"ggvolcano"``
+    for a classic two-sided teal/orange look.
     """
     style_norm = str(style).lower().strip()
     if style_norm not in ("auto", "ggvolcano", "gradual"):
@@ -2375,6 +2779,13 @@ def volcano_plot(
 
     with _style_context_if(use_style):
         logger.info("Generating 2D volcano plot...")
+        figsize, dpi, fontsize, label_fontsize = _resolve_display_params(
+            context,
+            figsize=figsize,
+            dpi=dpi,
+            fontsize=fontsize,
+            label_fontsize=label_fontsize,
+        )
 
         placeholder = _placeholder_for_unplottable(
             df,
@@ -2551,7 +2962,7 @@ def volcano_plot(
                 label_by=label_by if style_norm == "ggvolcano" else "p_adj",
                 min_label_score=min_label_score,
             )
-            lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 3)
+            lbl_fs = _gene_label_fontsize(label_fontsize, fontsize)
             texts = []
             for idx, row in label_df.iterrows():
                 txt = ax.text(
@@ -2641,11 +3052,12 @@ def volcano_plot(
             raw_sizes = size_val**1.3 * 8 * point_scale + 3 * point_scale
             sizes = np.clip(raw_sizes, min_size, max_size)
 
-        # Light diagnostic (omicverse style)
-        if len(plot_df) > 1000 and (s is None) and point_scale > 0.25:
-            logger.info(
-                "Large number of points (%d) in volcano. For cleaner view consider "
-                "s=2 (fixed small) or point_scale<=0.15 + min_size=1.",
+        # Dense-cloud guidance (notebook / real-data tables)
+        if len(plot_df) > 400 and (s is None) and point_scale > 0.25:
+            logger.warning(
+                "volcano_plot: %d points with variable sizing (s is None). "
+                "For a cleaner dense cloud try s=8–12, alpha=0.45–0.6; "
+                "for classic two-sided colors use style='ggvolcano'.",
                 len(plot_df),
             )
 
@@ -2693,7 +3105,7 @@ def volcano_plot(
             min_label_score=min_label_score,
         )
 
-        lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 2)
+        lbl_fs = _gene_label_fontsize(label_fontsize, fontsize)
         texts = []
         for idx, row in label_df.iterrows():
             txt = ax.text(
@@ -2701,9 +3113,9 @@ def volcano_plot(
                 row["neg_log_pval"],
                 str(idx),
                 fontsize=lbl_fs,
-                fontweight="bold",
-                color="#111111",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
+                fontweight="normal",
+                color="#222222",
+                bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": "none", "alpha": 0.7},
             )
             texts.append(txt)
 
@@ -2715,19 +3127,18 @@ def volcano_plot(
             label_repel=label_repel,
         )
 
-        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize, fontweight="bold")
-        ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize, fontweight="bold")
+        ax.set_xlabel("Log2 Fold Change", fontsize=fontsize)
+        ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize)
         if title:
-            ax.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=15)
+            ax.set_title(title, fontsize=fontsize + 1, pad=10)
 
         if color_by == "active_score" and "active_score" in plot_df.columns:
             cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.02, aspect=20)
             cbar.set_label(
                 cbar_label,
-                fontsize=max(9, fontsize - 1),
-                fontweight="bold",
+                fontsize=max(8, fontsize - 1),
                 rotation=270,
-                labelpad=15,
+                labelpad=12,
             )
             cbar.outline.set_visible(False)
         else:
@@ -2750,9 +3161,9 @@ def bias_diagnostic_plot(
     results_df,
     save_path=None,
     title="Bias Correction Diagnostic",
-    figsize=(12, 5),
-    dpi=300,
-    fontsize=11,
+    figsize=_DEFAULT_FIGSIZE_WIDE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
     show_regression=True,
     point_size=10,
     axes=None,
@@ -2841,9 +3252,9 @@ def bias_diagnostic_plot(
             )
         except Exception:
             pass
-    ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize, fontweight="bold")
-    ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+    ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
+    ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize)
+    ax1.set_title("Before Bias Correction", fontsize=fontsize + 1)
     # Clarify that the drawn trend is 1D length-only (actual fit uses length+intron)
     ax1.text(
         0.02,
@@ -2862,11 +3273,9 @@ def bias_diagnostic_plot(
     y_res = plot_df[residual_col]
     ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
     ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
-    ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
-    ax2.set_ylabel(
-        "Unspliced excess residual (bias-corrected)", fontsize=fontsize, fontweight="bold"
-    )
-    ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+    ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
+    ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize)
+    ax2.set_title("After Bias Correction", fontsize=fontsize + 1)
     sns.despine(ax=ax2)
 
     if title:
@@ -2885,15 +3294,15 @@ def bias_diagnostic_plot(
 
 def enrich_barplot(
     enrich_df,
-    top_n=15,
+    top_n=_DEFAULT_TOP_N_ENRICH,
     title="Enrichment Barplot",
     save_path=None,
     *,
     x: str | None = None,
     color_by: str | None = None,
-    figsize: tuple[float, float] = (7.5, 5.5),
-    dpi: int = 300,
-    fontsize: int = 11,
+    figsize: tuple[float, float] = _DEFAULT_FIGSIZE,
+    dpi: int = _DEFAULT_DPI,
+    fontsize: int = _DEFAULT_FONTSIZE,
     ax=None,
     show: bool = True,
     use_style: bool = False,
@@ -2928,8 +3337,12 @@ def enrich_barplot(
             return fig, ax0
 
         df = enrich_df.copy()
-        # Term labels
-        if "Description" in df.columns and df["Description"].notna().any():
+        # Term labels. Prefer Description only when it actually carries non-empty
+        # text: bundled GO/KEGG libraries ship an empty Description (the readable
+        # name and ID both live in Term), and empty strings pass notna(), which
+        # would otherwise blank out every bar label. Fall back to Term in that case
+        # (matching enrich_dotplot, which prefers Term first).
+        if "Description" in df.columns and df["Description"].astype(str).str.strip().ne("").any():
             term_col = "Description"
         elif "Term" in df.columns:
             term_col = "Term"
@@ -3058,12 +3471,16 @@ def enrich_barplot(
 
 def active_score_rankplot(
     results_df,
-    top_n=20,
+    top_n=_DEFAULT_TOP_N_RANK,
     save_path=None,
     ax=None,
-    dpi=300,
+    dpi=_DEFAULT_DPI,
     show: bool = True,
     use_style: bool = False,
+    fontsize: float | int = _DEFAULT_FONTSIZE,
+    label_fontsize: float | None = None,
+    figsize: tuple[float, float] | None = None,
+    context: str | None = None,
     **kwargs,
 ):
     """
@@ -3080,6 +3497,12 @@ def active_score_rankplot(
     logger.info("Generating active score rank plot...")
     if use_style:
         set_style()
+    _fs0 = float(fontsize)
+    _fig0 = figsize if figsize is not None else (6.0, max(3.5, 0.32 * int(top_n)))
+    _fig0, dpi, fontsize, label_fontsize = _resolve_display_params(
+        context, figsize=_fig0, dpi=dpi, fontsize=_fs0, label_fontsize=label_fontsize
+    )
+    figsize = _fig0
 
     if results_df is None or results_df.empty:
         logger.warning("No results to plot.")
@@ -3103,7 +3526,7 @@ def active_score_rankplot(
     plot_df = plot_df.nlargest(top_n, "active_score").iloc[::-1]  # top at top for horizontal bar
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(7, max(4, 0.38 * top_n)), dpi=dpi, constrained_layout=True)
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
         _created = True
     else:
         fig = ax.figure
@@ -3153,9 +3576,11 @@ def active_score_rankplot(
             color="#222222",
         )
 
-    ax.set_xlabel("Active Score", fontweight="bold")
+    ax.set_xlabel("Active Score", fontsize=fontsize)
+    ax.tick_params(axis="y", labelsize=_gene_label_fontsize(label_fontsize, fontsize))
+    ax.tick_params(axis="x", labelsize=max(7, fontsize - 1))
     ax.set_ylabel("")
-    ax.set_title("Top Active Drivers (rank)", fontweight="bold", pad=10)
+    ax.set_title(kwargs.get("title", "Top Active Drivers (rank)"), fontsize=fontsize + 1, pad=8)
 
     # Outward spines (omicverse bulk style)
     sns.despine(ax=ax, top=True, right=True)
@@ -3235,9 +3660,9 @@ def velocity_phase_portraits(
     spliced_layer="spliced",
     unspliced_layer="unspliced",
     max_genes=6,
-    figsize_per_gene=(2.8, 2.4),
+    figsize_per_gene=(2.4, 2.1),
     save_path=None,
-    dpi=300,
+    dpi=_DEFAULT_DPI,
     show: bool = True,
     use_style: bool = False,
     **kwargs,
@@ -3400,8 +3825,8 @@ def gamma_shrinkage_plot(
     x_col: str = "total_us_counts",
     save_path=None,
     title: str = "Empirical Bayes gamma shrinkage",
-    figsize=(7, 5),
-    dpi: int = 300,
+    figsize=_DEFAULT_FIGSIZE,
+    dpi: int = _DEFAULT_DPI,
     ax=None,
     show: bool = True,
     use_style: bool = False,
@@ -3502,6 +3927,7 @@ __all__ = [
     "volcano_3d",
     "bias_diagnostic_plot",
     "enrich_dotplot",
+    "compare_dotplot",
     "enrich_barplot",
     "enrich_upsetplot",
     "enrich_vennplot",

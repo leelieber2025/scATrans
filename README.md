@@ -19,7 +19,7 @@ uses bundled gene sets with consistent universe handling, and a set of
 visualization functions is provided.
 
 **📚 Full documentation, tutorials, and the complete API reference are on
-Read the Docs: https://scatrans.readthedocs.io**
+[Read the Docs](https://scatrans.readthedocs.io/en/latest/).**
 
 ## Installation
 
@@ -70,15 +70,10 @@ its own. See
 [Statistical Guidance](https://scatrans.readthedocs.io/en/latest/statistical_guidance.html)
 for what each output column means, safe vs. unsafe uses, and a reporting
 checklist before you cite scATrans results in a manuscript or supplement.
-
-## API stability
-
-scATrans is **Beta (0.10.x)**. Prefer `import scatrans as scat` and the names
-in `scatrans.__all__` / `scat.pl` / `scat.qc`. Leaf modules such as
-`scatrans.tl.active` are **implementation detail** and may move. Full
-contract: [API stability](https://scatrans.readthedocs.io/en/latest/api_stability.html)
-(source: `docs/api_stability.md`).
-
+Domain conventions (upregulation-oriented scoring, residual vs DE, cutoff
+names, GSEA ranks, within-run λ scale) are spelled out in
+[Domain Assumptions](docs/domain_assumptions.md)
+(also on Read the Docs after the next docs deploy).
 
 ## License
 

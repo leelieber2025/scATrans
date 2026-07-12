@@ -1,7 +1,9 @@
 # FAQ / Troubleshooting
 
 Common questions and errors, collected in one place. Each links to the
-fuller explanation.
+fuller explanation. Domain conventions (why top-N is not DE, why residual
+can score without significant `p_adj`, cutoff names, etc.) are summarized in
+{doc}`domain_assumptions`.
 
 ## "My `significant` gene list is empty" — is that a bug?
 
@@ -12,6 +14,54 @@ powered real designs it is often empty by design. Use the full
 `all_results` table with `filter_active_genes(preset="heuristic")` or your
 own cutoffs (see {doc}`user_guide/workflow`) — ranking + biological
 follow-up is the intended workflow, not a `p<0.05` gate on every run.
+
+## Top-N by `active_score` includes genes with `p_adj ≈ 1` — is that a bug?
+
+No. The residual (nascent excess) leg of `active_score` is **independent of
+DE significance**. Genes that DE backends did not test or filled as neutral
+(e.g. PyDESeq2 independent filtering → `padj` set to 1) can still score from
+positive unspliced excess. Top-N ranking is therefore **not** a
+DE-significant gene list. For DE-gated candidates use
+`filter_active_genes(..., padj_cutoff=0.05, logfc_cutoff=...)` (preferred;
+legacy `pval_cutoff=` still works but maps to **adjusted** p) or the
+built-in `significant` conjunction. See {doc}`statistical_guidance` for the
+full default cutoff table.
+
+## Can I compare `active_score` across cell types or datasets?
+
+**Not as absolute numbers.** Soft-scale λ is estimated from the genes present
+in **that** run (`median(positive)/ln(2)`). The same gene with the same raw
+logFC can score ~40 in one subset and ~70 in another if the background gene
+pool (or HVG filter) differs. Safe uses: rank genes **within one**
+`active_score` call. For cross-group claims use `logFC` / `p_adj` / residual
+on a shared analysis design, or re-run with a **shared gene universe** knowing
+scores still are not absolute units. Inspect the within-run λ scale via:
+
+```python
+print(adata.uns["scatrans"]["diagnostics"]["scoring"])
+# typically: lambda_fc, lambda_res, lambda_pval, …
+```
+
+See {doc}`domain_assumptions` and {doc}`statistical_guidance`.
+
+## Should I use `padj_cutoff` or `pval_cutoff`?
+
+**Prefer `padj_cutoff=`** on `filter_active_genes`, `extract_gene_lists`, and
+enrichment helpers. Legacy `pval_cutoff=` still works but is a misleading
+name: when adjusted p-values exist it filters **`p_adj` / `p.adjust`**, not
+raw `p_val`. Using the modern name avoids deprecation warnings and makes
+reporting clearer.
+
+## `run_gsea` returns empty / warns about mapping rate or `gene_case`
+
+Preranked GSEA needs **signed** ranks (prefer `logFC`; `active_score` is
+not auto-selected). It also checks symbol overlap with gene sets (same
+`_check_gene_set_mapping_rate` gate as ORA): below **20%** mapping rate you
+get a warning with input vs gene-set examples; at **0%** the result is empty
+with `reason="no_ranked_genes_mapped"`. Duplicate gene IDs (e.g. after
+case-folding) keep the entry with **max |score|**. Enrichr libraries are
+typically **UPPERCASE** — for mixed-case mouse symbols (`Tp53`) pass
+`gene_case="upper"`. See {doc}`user_guide/enrichment`.
 
 ## `ValueError` from `use_mixed_model=True`
 
@@ -82,6 +132,20 @@ not present in the bundled (or custom) feature table gets `NaN` and falls
 back to no bias correction for that gene. If you are using a custom table,
 make sure it has a `gene_name` column that matches your `var_names`
 exactly. See {doc}`user_guide/gene_features`.
+
+Huber bias correction only uses genes with **`gene_length > 0`** (and finite
+intron). Missing or non-positive lengths from GTF generation are stored as
+`NaN` / excluded from the fit so they cannot act as `log1p(0)` leverage
+points. Partial feature tables on the simple path may be completed from the
+bundled organism table without overwriting existing positive lengths.
+
+## Design / sample-size warnings from `active_score`
+
+When `sample_col` or `use_pseudobulk` is set, `active_score` runs
+`diagnose_design` automatically, logs each design warning, and stores the
+full payload under `adata.uns["scatrans"]["diagnostics"]["design"]` (including
+`warnings` and `recommendations`). Inspect that block if logs are hard to
+see in notebooks.
 
 ## Do I need spliced/unspliced layers at all?
 

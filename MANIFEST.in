@@ -1,36 +1,55 @@
-# Control what goes into the source distribution (sdist).
-# The wheel only contains the runtime package (src/scatrans + data).
+# Source distribution (sdist) contents for PyPI / GitHub source installs.
+# The *wheel* only ships the runtime package (src/scatrans + package data) —
+# controlled by [tool.setuptools.packages.find] + package-data, not this file.
 
-# Standard important files
+# Project metadata
 include LICENSE
 include README.md
 include CHANGELOG.md
 include CITATION.cff
+include SECURITY.md
 include pyproject.toml
+include setup.cfg
+include MANIFEST.in
+include .gitignore
+include .pre-commit-config.yaml
+include .readthedocs.yaml
+
+# Test suite (run from sdist: pytest)
 include conftest.py
 include conftest_fixtures.py
-
-# Include the full test suite so that `pytest` can be run from sdist/unpacked source
 graft tests
 
-# Include the GitHub Actions workflows (requested)
-include .github/workflows/ci.yml
-include .github/workflows/publish.yml
+# Documentation sources (not built HTML)
+graft docs
+prune docs/_build
 
-# If more workflows are added in the future, this will catch them:
-include .github/workflows/*.yml
+# Examples & packaging helpers
+graft examples
+graft packaging
 
-# Never ship generated metadata directories inside the sdist
+# CI workflows
+graft .github/workflows
+
+# Never ship
 recursive-exclude src/scatrans.egg-info *
 prune build
 prune dist
+prune backup
+prune .git
+prune .mypy_cache
+prune .pytest_cache
+prune .ruff_cache
+prune .tox
+prune htmlcov
 global-exclude *.pyc
 global-exclude __pycache__/*
 global-exclude *.egg-info
 global-exclude *.egg-info/*
+global-exclude *.h5ad
+global-exclude *.zip
+global-exclude .DS_Store
 
-# Pre-split monorepo modules (scatrans/tl.py, scatrans/enrich.py) must not re-enter
-# the tree: they shadow the real packages scatrans/tl/ and scatrans/enrich/ and
-# would ship as unreachable dead code. Keep this exclusion even if files reappear.
+# Pre-split monorepo modules must not re-enter (shadow real packages)
 global-exclude src/scatrans/tl.py
 global-exclude src/scatrans/enrich.py

@@ -26,7 +26,9 @@ You may redistribute these tables under the project Apache-2.0 license.
 | `Hs_GO_Biological_Process_2026.txt` | clusterProfiler GO map via `org.Hs.eg.db` + `GO.db` (Bioconductor) | Bioconductor / GO terms — see below |
 | `Mm_GO_Biological_Process_2026.txt` | clusterProfiler GO map via `org.Mm.eg.db` + `GO.db` (Bioconductor) | Same |
 
-- **Gene Ontology**: [GO license](http://geneontology.org/docs/go-licenses/) (CC BY 4.0 for ontology; annotation sets have additional terms).
+- **Gene Ontology**: [GO citation / reuse policy](https://geneontology.org/docs/go-citation-policy/)
+  ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) for ontology content;
+  annotation sets may carry additional terms).
 - **Bioconductor annotation packages** (`org.*.eg.db`, `GO.db`): subject to Bioconductor and upstream data-provider terms.
 
 These files are **derived mappings** (gene symbol ↔ GO BP term) extracted for offline

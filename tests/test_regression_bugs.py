@@ -583,22 +583,53 @@ def test_extract_gene_lists_accepts_padj_and_p_adjust_columns():
 
 @pytest.mark.skipif(importlib.util.find_spec("gseapy") is None, reason="gseapy not installed")
 def test_run_gsea_collapses_duplicate_ids_by_max_abs():
+    """Case-fold collisions keep max |score|; ranking must stay large enough for prerank.
+
+    Note: a 2–3 gene ranking triggers gseapy "No gene sets passed filtering" even with
+    100% symbol overlap — that is a size filter, not the case-mismatch path covered by
+    test_gsea_mapping_rate_warns_and_empty_on_zero_overlap.
+    """
     from scatrans.enrich.gsea import run_gsea
 
-    ranked = pd.Series([0.1, 2.0, -3.0], index=["geneA", "GENEA", "geneB"])
-    # With gene_case upper, geneA and GENEA collide
+    # Wide signed ranking so gseapy.prerank can run after case-fold collapse.
+    ranked = pd.Series(
+        {f"Gene{i}": float(20 - i) for i in range(40)}
+        | {
+            "geneA": 0.1,  # collides with GENEA under gene_case="upper"
+            "GENEA": 5.0,  # larger |score| → kept
+            "geneB": -3.0,
+        }
+    )
+    gene_sets = {
+        "SET_HIT": ["GENEA", "GENEB"] + [f"GENE{i}" for i in range(5, 15)],
+        "SET_OTHER": [f"GENE{i}" for i in range(20, 35)],
+    }
     res = run_gsea(
         ranked,
-        gene_sets={"SET": ["GENEA", "GENEB", "GENEC"]},
+        gene_sets=gene_sets,
         organism="mouse",
         gene_case="upper",
-        nperm=10,
-        min_size=1,
-        max_size=10,
+        nperm=20,
+        min_size=3,
+        max_size=40,
         verbose=False,
     )
-    # Should complete without error; duplicate collapsed
     assert isinstance(res, pd.DataFrame)
+    # Collapse succeeded and mapping was healthy — not a silent zero-overlap failure
+    assert res.attrs.get("reason") != "no_ranked_genes_mapped"
+    ginfo = res.attrs.get("gsea_info") or {}
+    mapping = (res.attrs.get("gene_set_info") or {}).get("mapping") or {}
+    n_ranked = ginfo.get("n_genes_ranked") or mapping.get("n_input")
+    assert n_ranked is not None and n_ranked < len(ranked)  # at least geneA/GENEA collapsed
+    # If prerank produced terms, fine; if empty, only size-filter reasons allowed
+    if res.empty:
+        assert res.attrs.get("reason") in (
+            None,
+            "no_results_after_filters",
+            "gseapy_error",
+        )
+    else:
+        assert "Term" in res.columns or "NES" in res.columns
 
 
 def test_gseaplot_fallback_sorts_by_score():

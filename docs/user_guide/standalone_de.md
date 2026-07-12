@@ -23,7 +23,7 @@ adata, de_results = scat.differential_expression(
 )
 
 # Then use the same downstream tools as with active_score results
-candidates = scat.filter_active_genes(de_results, pval_cutoff=0.05, logfc_cutoff=0.3)  # upregulated (default)
+candidates = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3)  # upregulated (default)
 # downregulated: logfc_direction="down"
 # both: logfc_direction="both"
 
