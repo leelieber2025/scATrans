@@ -138,7 +138,7 @@ Summary:
 
 ### Provenance of bundled `*_2026.txt` libraries (for Methods / reproducibility)
 
-The four default organism-specific libraries shipped with scATrans 0.9.x are:
+The four default organism-specific libraries shipped with scATrans 0.10.x are:
 
 | File | Species | Terms (approx.) | Source pipeline |
 |------|---------|-----------------|-----------------|

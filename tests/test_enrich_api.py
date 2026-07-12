@@ -17,7 +17,7 @@ def tiny_gene_sets():
 
 def test_resolve_gene_set_name_historical_versions_passthrough():
     """Explicit Enrichr year versions must not be silently remapped to bundled 2026."""
-    from scatrans.enrich import _resolve_gene_set_name
+    from scatrans.enrich._data import _resolve_gene_set_name
 
     assert _resolve_gene_set_name("KEGG_2021", "scatrans", "mouse") == "KEGG_2021"
     assert _resolve_gene_set_name("GO_Biological_Process_2023", "scatrans", "human") == (
@@ -165,6 +165,38 @@ def test_compare_enrichment_adjust_across_clusters(tiny_gene_sets):
     )
     sc_meta = res.attrs.get("scatrans", {})
     assert sc_meta.get("adjust_across_clusters") is True
+    # Default method is fdr_bh; must be recorded (not a silent hardcoded label only)
+    mt = sc_meta.get("multiple_testing", {})
+    assert mt.get("scope") == "all_clusters"
+    assert mt.get("method") == "fdr_bh"
+
+
+def test_compare_enrichment_adjust_across_clusters_honors_bonferroni(tiny_gene_sets):
+    """Global re-adjust must use p_adjust_method, not always BH."""
+    import numpy as np
+
+    from scatrans.enrich._data import _apply_p_adjust
+
+    clusters = {"G1": ["GeneA", "GeneB"], "G2": ["GeneB", "GeneC"]}
+    res = scat.compare_enrichment(
+        clusters,
+        gene_sets=tiny_gene_sets,
+        pval_cutoff=1.0,
+        min_size=1,
+        adjust_across_clusters=True,
+        return_all=True,
+        p_adjust_method="bonferroni",
+        verbose=False,
+    )
+    assert res.attrs.get("p_adjust_method") == "bonferroni"
+    mt = res.attrs.get("scatrans", {}).get("multiple_testing", {})
+    assert mt.get("method") == "bonferroni"
+    if not res.empty and "pvalue" in res.columns:
+        expected = _apply_p_adjust(res["pvalue"].to_numpy(dtype=float), method="bonferroni")
+        np.testing.assert_allclose(
+            res["p.adjust"].to_numpy(dtype=float), expected, rtol=1e-10, atol=1e-12
+        )
+        assert "p.adjust.within_cluster" in res.columns
 
 
 def test_concat_compare_results_skips_none_and_empty_clusters():
@@ -184,7 +216,7 @@ def test_concat_compare_results_skips_none_and_empty_clusters():
 
 
 def test_resolve_gseapy_weight_broad_semantics():
-    from scatrans.enrich import _resolve_gseapy_weight
+    from scatrans.enrich._data import _resolve_gseapy_weight
 
     assert _resolve_gseapy_weight() == 1.0
     assert _resolve_gseapy_weight(weighted_score_type="classic") == 0.0

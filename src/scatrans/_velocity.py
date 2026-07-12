@@ -20,7 +20,7 @@ import numpy as np
 import scanpy as sc
 from scipy import sparse
 
-from ._utils import _get_group_mean
+from ._utils import _get_group_mean, _matrix_shape
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -268,17 +268,22 @@ def _compute_velocity_delta(
         gamma_info["effective_gamma_stats"] = _gamma_stats(gamma_ref, post_sd)
         gamma_info["eb_prior"] = eb_prior
     elif gamma_method == "robust_median":
+        # Exclude zero-expression genes from the median anchor: (eps/eps)≈1 would
+        # otherwise dominate on sparse scRNA-seq and pull base_gamma toward 1.
         raw_ratios = (U_r + eps) / (S_r + eps)
+        expressed = (U_r + S_r) > 0
+        ratios_use = raw_ratios[expressed] if np.any(expressed) else raw_ratios
         base_gamma = (
-            np.median(raw_ratios)
-            if raw_ratios.size > 0
-            else (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
+            float(np.median(ratios_use))
+            if ratios_use.size > 0
+            else (float(np.sum(U_r)) + eps) / (float(np.sum(S_r)) + eps)
         )
         beta = prior_weight
         alpha = base_gamma * beta
         gamma_ref = (U_r + alpha) / (S_r + beta)
         gamma_info["effective_gamma_stats"] = _gamma_stats(gamma_ref)
         gamma_info["gamma_method_detailed"] = "robust_median_additive_shrink"
+        gamma_info["n_genes_used_for_median_anchor"] = int(ratios_use.size)
     elif gamma_method in ("heuristic_shrink", None, ""):
         global_gamma = (np.sum(U_r) + eps) / (np.sum(S_r) + eps)
         beta = prior_weight
@@ -287,9 +292,18 @@ def _compute_velocity_delta(
         gamma_info["effective_gamma_stats"] = _gamma_stats(gamma_ref)
         gamma_info["gamma_method_detailed"] = "heuristic_shrink_additive"
     else:
-        gamma_ref = (U_r + eps) / (S_r + eps)
+        # raw: per-gene U/S; zero-expression ref genes get the global sum ratio
+        # (not eps/eps≈1, which mis-scales excess when S_t > 0).
+        expressed = (U_r + S_r) > 0
+        gamma_ref = np.empty_like(U_r, dtype=float)
+        gamma_ref[expressed] = (U_r[expressed] + eps) / (S_r[expressed] + eps)
+        global_gamma = (float(np.sum(U_r)) + eps) / (float(np.sum(S_r)) + eps)
+        gamma_ref[~expressed] = global_gamma
         gamma_info["effective_gamma_stats"] = _gamma_stats(gamma_ref)
         gamma_info["gamma_method_detailed"] = "raw_ratio"
+        gamma_info["n_genes_raw_ratio"] = int(np.sum(expressed))
+        gamma_info["n_genes_global_ratio_fallback"] = int(np.sum(~expressed))
+        gamma_info["global_ratio_fallback"] = float(global_gamma)
 
     delta_velocity = U_t - (gamma_ref * S_t)
 
@@ -339,9 +353,9 @@ def _compute_moments_velocity_delta(
         n_neighbors_eff = None
         n_pcs_eff = None
 
-        if adata_comp.layers["Mu"].shape != adata_comp.shape:
+        if _matrix_shape(adata_comp.layers["Mu"]) != tuple(adata_comp.shape):
             raise ValueError("Layer 'Mu' shape does not match adata shape.")
-        if adata_comp.layers["Ms"].shape != adata_comp.shape:
+        if _matrix_shape(adata_comp.layers["Ms"]) != tuple(adata_comp.shape):
             raise ValueError("Layer 'Ms' shape does not match adata shape.")
     else:
         used_precomputed = False
@@ -379,9 +393,9 @@ def _compute_moments_velocity_delta(
 
         scv.pp.moments(adata_comp, n_pcs=n_pcs_eff, n_neighbors=n_neighbors_eff)
 
-        if adata_comp.layers["Mu"].shape != adata_comp.shape:
+        if _matrix_shape(adata_comp.layers["Mu"]) != tuple(adata_comp.shape):
             raise ValueError("Layer 'Mu' shape does not match adata shape after moments.")
-        if adata_comp.layers["Ms"].shape != adata_comp.shape:
+        if _matrix_shape(adata_comp.layers["Ms"]) != tuple(adata_comp.shape):
             raise ValueError("Layer 'Ms' shape does not match adata shape after moments.")
 
         info.update(

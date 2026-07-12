@@ -5,13 +5,16 @@
 pip install scatrans
 
 # With support for scVelo-based advanced mode and the gene feature generation CLI
-pip install "scatrans[advanced,gene_features]" gseapy
+pip install "scatrans[advanced,gene_features]"
 
 # With support for pseudobulk differential expression using PyDESeq2
 pip install "scatrans[pseudobulk]"
 
 # Optional: Memento (Cell 2024) as an additional cell-level DE backend
 pip install "scatrans[memento]"
+
+# Optional: GSEA (pulls in gseapy)
+pip install "scatrans[gsea]"
 ```
 
 The package ships precomputed gene feature tables (gene length + intron

@@ -4,6 +4,270 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+## [0.10.1] - 2026-07-11
+
+### Added
+- **API stability doc** (`docs/api_stability.md`): public surface vs
+  implementation modules (`scatrans.tl.active`, …); linked from README and
+  API reference.
+- **Roadmap** (`docs/ROADMAP.md`): done vs open work (1.0 prep, coverage,
+  packaging) for continuing after the 0.9.x / 0.10.x refactor track.
+- **DE core tests** (`tests/test_de_core_coverage.py`): scanpy / PyDESeq2 /
+  MixedLM / memento branches for default-suite coverage of `scatrans._de`.
+- **High-risk combo regression tests** (`tests/test_combo_regressions.py`):
+  `mode="advanced"` + permutation, `allow_advanced_pseudobulk` gate,
+  Memento consistent/inconsistent null metadata, `ranking_mode="nascent_excess"`
+  residual-only score (including DE-poisoned MixedLM null independence).
+- **Sample / RE-cluster label shuffle** for MixedLM permutation nulls
+  (`_shuffle_condition_labels` in `_permutation.py`).
+
+### Changed
+- **CI**: mypy on `src/scatrans` is a **hard fail** (Python 3.11 core job);
+  coverage reports split into `coverage-default.xml` (no slow/plot) and
+  `coverage-with-slow.xml`; default suite must keep `scatrans._de` line
+  coverage ≥ 70%. Coverage steps install optional science deps
+  (`pydeseq2`, `memento-de`, `gseapy`, `gtfparse`) so Codecov is not
+  under-counted for DE / GSEA / gene-features when the matrix cell is only
+  `.[dev]`.
+- **`tl` / `enrich` package layout**: implementation split into submodules
+  (`scatrans.tl.active`, `scatrans.enrich.ora`, …). Public imports
+  (`import scatrans as scat`, `from scatrans.tl import active_score`) are
+  unchanged.
+- **`run_default_pipeline` returns `PipelineResult`**: a **read-only**
+  `dict` subclass (so `isinstance(result, dict)` is still `True`) with
+  attribute access (`result.candidates`). Item/attribute assignment and
+  `update`/`pop`/`clear` raise `TypeError`; use `result.to_dict()` for a
+  mutable shallow copy. New optional key `meta` always has
+  `scatrans_version` / `organism`, and now also surfaces
+  `diagnostics` plus selected run flags from `adata.uns["scatrans"]`
+  (`use_permutation`, `gamma_method`, `mode`, …) when `active_score` ran.
+- **Public `__all__` tightened** on `scatrans.pl`, `scatrans.qc`,
+  `scatrans.tl`, and `scatrans.enrich` (private helpers no longer listed;
+  import them from implementation submodules if needed).
+- **Top-level API**: `generate_gene_features_main` is no longer re-exported
+  from `scatrans` (CLI entry point `generate-gene-features` unchanged).
+
+### Fixed
+- **`use_mixed_model=True` + `use_permutation=True`**: with
+  `perm_de_backend='same'` (default), each permutation now refits the same
+  MixedLM (`condition + (1|sample)`) used for the observed DE so
+  `active_score_pval` / `active_score_fdr` compare like with like. Previously
+  the null always used scanpy `t-test_overestim_var` while logging that it
+  used the “same” backend — invalid active_score FDR under sample structure.
+  **Also:** MixedLM nulls shuffle labels at the **sample / RE-cluster** level
+  (not independently per cell). Cell-level shuffle splits a biological sample
+  across conditions and breaks hierarchical exchangeability; unpaired nulls
+  reassign conditions to whole observed RE clusters and pin those cluster IDs
+  as `sample_col` so `n_groups` cannot collapse. Paired designs
+  (`paired_replicates=True`) shuffle within subject. Non-MixedLM backends keep
+  cell-level shuffle. `perm_de_backend='fast'` still uses t-test (with warning);
+  `unspliced_excess_fdr` remains DE-backend-independent.
+  **Scope:** DE-null / shuffle-unit mismatches only affect composite
+  `active_score_pval`/`fdr` when `weight_fc`/`weight_pval` are non-zero
+  (default `ranking_mode="composite"`). Under
+  `ranking_mode="nascent_excess"` those weights are forced to 0, so
+  active_score FDR tracks residual only.
+- **`extract_gene_lists`**: accepts `padj` / `p.adjust` / `log2FoldChange` etc.;
+  warns when no p-value column exists (avoids silent empty lists).
+- **`gseaplot` fallback RES**: sorts the ranked list high→low before the
+  running ES walk (unsorted `all_results['logFC']` no longer draws a wrong curve).
+- **`run_gsea` duplicate gene IDs**: keep max |score| per gene (not first row).
+- **`active_score_simple` / `differential_expression_simple`**: always isolate
+  a working copy before mutation so `copy_input=False` cannot write gene
+  features into the caller's `.var`.
+- **`perm_de_backend='fast'` on pseudobulk counts**: scanpy path now
+  `normalize_log1p`s integer pb `.X` before `rank_genes_groups` (avoids
+  expm1 overflow / inf logFC under `pb_use_total_for_x` + PyDESeq2 main).
+- **Scanpy DE non-finite fill**: ±inf / NaN logFC and p-values neutral-filled
+  after `rank_genes_groups` (defense if raw counts still reach scanpy).
+- **Memento counts safety**: refuses non-integer `counts=` / `layers['counts']`
+  (uses `_resolve_aligned_raw_counts` + integer check); no silent log-scale DE.
+- **`volcano_plot` style='auto'**: labels respect `label_by` (default `p_adj`)
+  instead of always preferring `active_score`.
+- **`enrich_vennplot` 4-set**: fixed `NameError` (`groups` → `clusters`) that
+  crashed any 4-cluster Venn after the region-legend addition.
+- **`active_score` metadata**: `sample_col` is recorded under
+  `uns["scatrans"]` for pseudobulk runs (not only MixedLM), matching
+  `differential_expression`.
+- **MixedLM + Memento**: mutually exclusive — raising instead of silently
+  preferring MixedLM and ignoring Memento.
+- **`paired_replicates=True` without shared sample IDs**: warning that
+  pairing has no effect.
+- **`ranking_mode='nascent_excess'`**: always forces residual-only weights
+  `(0, 0, 1)`, overriding custom `weight_*` with a warning (no silent
+  composite score under a residual-only mode name).
+- **`gamma_method='raw'`**: zero-expression reference genes use the global
+  U/S sum ratio instead of `eps/eps ≈ 1`.
+- **PathwayDenester**: hypergeometric tail via `scipy.stats.hypergeom.sf`
+  (exact combinatorial sum for large GO terms no longer hangs on `n!`).
+- **`enrich_barplot`**: real horizontal barplot (not a dotplot alias).
+- **4-set `enrich_vennplot`**: side legend lists all exclusive region sizes
+  (pairwise/triple/all), not only on-circle uniques.
+- **`copy_input=False`**: always isolates a working copy before mutation so
+  the caller's AnnData is never modified (active_score / differential_expression).
+- **`store_raw_counts` after HVG**: preserves prior full universe as
+  `raw_gene_list_full` (sticky); ORA prefers it for enrichment background.
+- **`robust_median` gamma**: median anchor now excludes zero-expression
+  genes in the reference (same mask as EB); sparse data no longer pulls
+  `base_gamma` toward 1 via `(eps/eps)`.
+- **Size-factor U/S**: zero-total cells keep factor=1 (not `target/1e-8`).
+- **`extract_gene_lists` / `_expand_gene_list_input`**: RangeIndex tables
+  without a gene column no longer treat `logFC` as gene IDs (return empty +
+  warning).
+- **`diagnose_design`**: missing/wrong `sample_col` is a warning (not “no
+  sample_col provided”); `workflow_preset="pseudobulk_report"` only when
+  samples/group ≥ mixed-model minimum (avoids recommending permutation
+  while also warning against it).
+- **gseapy Enrichr organism**: map `mouse`→`Mouse` / `human`→`Human`;
+  organism-less fallback logs a loud warning.
+- **GSEA**: Entrez-style numeric index accepted; log when both `logFC`
+  and `active_score` exist and default rank is logFC.
+- **`expand_enrichment_genes`**: split genes on `;` or `,`.
+- **`copy_input=False`**: docstring + runtime warning when the caller's
+  object is mutated in place.
+- **MixedLM diagnostics export**: `logFC_method` and
+  `n_genes_logFC_mixedlm_sign_discordant` from `de_df.attrs` are now copied
+  into `adata.uns["scatrans"]["diagnostics"]["mixed_model"]` for both
+  `active_score` and `differential_expression` (previously only logged).
+- **Permutation DE matrix matches observed**: each permutation re-resolves
+  `layers['counts']` and forwards `min_counts_per_gene=pydeseq2_min_counts`
+  into `_run_de_wrapper`, so null DE uses the same count source as the main
+  PyDESeq2/Memento path (not post-aggregation `.X` = U+S). Fixes invalid
+  `active_score_fdr` under recommended `store_raw_counts` + pseudobulk.
+- **`subset_col` / `subset_values` label normalize**: numeric /
+  CSV-style `"1.0"` labels match the same way as `groupby` contrasts.
+- **`de_preprocess='normalize_log1p'` on PyDESeq2 path**: skipped (with
+  warning) when `skip_auto=True` so counts are not log-transformed before
+  DESeq2.
+- **`uns['log1p']` with max>20**: trust the marker for non-integer data
+  (high-depth / bulk-like log matrices) instead of clearing it and risking
+  double `log1p`; still reject when the matrix looks raw + library-size
+  dominated (stale marker).
+- **DE label Categorical defense**: MixedLM / Memento / perm inject labels
+  via `_as_contrast_categorical` (float `1.0` ↔ `"1"`).
+- **`filter_active_genes` unknown preset message**: lists `significant`
+  and aliases.
+- **`strict_pydeseq2_counts` gap for aggregated `layers['counts']`**:
+  `_pseudobulk_with_layers` now records pre-aggregation count-likeness for
+  every aggregated layer (`pb_layer_is_count_like`, plus
+  `pb_counts_is_count_like` for the `counts` layer). PyDESeq2 and
+  `_resolve_aligned_raw_counts` honor that flag so a non-count matrix stored
+  under `layers['counts']` cannot pass the safety net after `np.round()`
+  (previously only `.X` / `pb_x_is_count_like` was protected).
+- **MixedLM `logFC` is sample-aware**: effect size is the scanpy-style log2FC
+  of *mean of per-sample means* within each condition (equal weight per
+  biological sample), not a cell-weighted group mean that a large sample can
+  dominate. `mixedlm_coef` remains the LMM fixed-effect coefficient that
+  `p_val` tests; `attrs['logFC_method']` /
+  `n_genes_logFC_mixedlm_sign_discordant` document the dual statistics.
+- **`active_score(..., show_plot=True)`** after the `tl` package split used
+  `from . import pl` (resolved to missing `scatrans.tl.pl`) and silently
+  skipped plotting. Now imports `scatrans.pl` correctly.
+- **`PipelineResult` read-only semantics** (dict-subclass edge cases):
+  - `copy.copy` / `copy.deepcopy` / pickle via `__copy__` / `__deepcopy__` /
+    `__reduce__` (all pickle protocols; no `__getstate__`/`__setstate__` —
+    once `__reduce__` is defined those hooks are never called)
+  - **`result |= {...}`** no longer silently mutates via C-level
+    `dict.__ior__` (raises `TypeError`)
+  - **`result | other`** returns a **new mutable** `dict` (left operand
+    unchanged)
+  - **`result.copy()`** matches **`to_dict()`** (mutable plain `dict`);
+    `copy.copy(result)` still returns a read-only `PipelineResult`
+- **`run_default_pipeline` `meta` now includes diagnostics**: previously the
+  pipeline read `adata.uns["scatrans"]` only for a log branch, then overwrote
+  a same-named `meta` variable with just version/organism. `result.meta`
+  now merges the nested `diagnostics` block and selected run flags so the
+  docstring / CHANGELOG promise matches runtime.
+- **Memento DE `.attrs` after reindex**: `_run_memento_de` now re-assigns
+  `n_genes_not_returned_by_memento` / `n_genes_missing_pval` after
+  `reindex`/`fillna` instead of relying on experimental pandas
+  `DataFrame.attrs` propagation (which can silently drop diagnostics).
+- **`filter_active_genes` numeric validation**: residual / FDR /
+  `effective_gamma_*` / `delta_variance_min` cutoffs now use the same
+  `_coerce_numeric_cutoff` path as `active_score_cutoff` / `pval_cutoff` /
+  `logfc_cutoff` (clear `ValueError` on non-numeric input; `None` still
+  allowed for optional FDR / optional bounds).
+- **`_compute_perm_velocity_delta`**: removed no-op if/else that called the
+  same estimator on both branches; both tracks still share
+  `_compute_velocity_delta` (layers encode the track).
+- **`active_score` mode branch**: defensive `else: raise AssertionError` if
+  an unhandled `mode` reaches velocity estimation (avoids silent all-NaN
+  `gamma_ref` if a new mode is added without wiring).
+- **`gseaplot` fallback RES**: removed incorrect min-max scaling of the
+  approximate running enrichment score to [0, 1], which destroyed sign and
+  contradicted negative NES annotations. Fallback now plots the signed
+  weighted KS curve (and warns when precomputed `gsea_details` are missing).
+- **`enrich_dotplot` multi-cluster term selection**: no longer applies a
+  global positional `.head()` after per-cluster sampling that could drop
+  entire later clusters; keeps a per-cluster union as documented.
+- **`enrich_vennplot`**: full exclusive-region counts for 3-set diagrams;
+  4-set warns that only exclusive counts are labeled (prefer upset).
+- **`bias_diagnostic_plot`**: document and annotate that the left-panel
+  trend is length-only 1D, while the real Huber correction uses
+  length + intron number.
+- **Cross-group enrichment p-adjust**: `run_go(..., adjust_across_all=True)`
+  and `compare_enrichment(..., adjust_across_clusters=True)` now re-adjust
+  with the same `p_adjust_method` as the sub-calls (via kwargs; default
+  `fdr_bh`), instead of always hardcoding Benjamini–Hochberg.
+- **PyDESeq2 uses `counts=` / `layers['counts']`**: count matrix for DESeq2
+  no longer always comes from `.X`. Aligned `counts=` is preferred; when
+  `use_pseudobulk` + `pydeseq2` and a `counts` layer exists, pseudobulk
+  aggregates that layer into `.X` so log1p `.X` is not mistaken for counts.
+- **MixedLM BH NaN safety**: non-finite Wald/LRT p-values are neutral-filled
+  *before* `multipletests`; a single NaN no longer collapses all `p_adj` to 1.
+- **Built-in `significant` list scale**: uses
+  `PSEUDOBULK_FILTER_DEFAULTS` (residual > 0.05, active_score ≥ 5, …) when
+  `is_pseudobulk=True`, matching `filter_active_genes(preset="pseudobulk")`.
+- **Huber residual for unannotated genes**: after a successful fit, genes
+  missing length/intron features get median-centered delta (not residual=0).
+- **`velocity_delta_layer` metadata**: cell-level path correctly reports
+  `size_factor_normalized_spliced_unspliced` (always normalized).
+- **Default mouse gene features**: prefer `mouse_2020A_...` over
+  lexicographic `Mus_musculus.GRCm39...`.
+- **ORA term-count diagnostics**: `n_terms_tested` /
+  `n_terms_size_excluded` replace the misnamed “filtered” counter; legacy
+  key kept as alias of tested count.
+- **Permutation failure vectors**: failed shuffle replicates return length
+  `n_vars` (not `n_obs`).
+- **MixedLM false “failed fits”**: no longer discard genes solely because
+  statsmodels reports `converged=False` (common when random-effect variance
+  is on the boundary / singular `cov_re`). Results are kept when the target
+  condition coefficient and Wald p-value are finite; LRT falls back to Wald
+  when log-likelihoods are non-finite. Fixes flaky reverse-contrast tests on
+  small paired designs.
+- **Permutation method note**: metadata now states that γ/DE/residual are
+  recomputed under shuffled labels (layers fixed), not that gamma is frozen.
+- **`.uns["scatrans"]` merge**: non-sticky keys from prior runs are cleared;
+  `None` means “feature off” and removes the key (no sticky `sample_col` etc.).
+- **Group label `"1.0"` strings**: `_normalize_group_label` maps CSV-style
+  integer floats to `"1"` / `"2"` like true floats.
+- **Advanced precomputed Mu/Ms**: after size-factor rewriting U/S, precomputed
+  moments are discarded and recomputed (with warning).
+- **Memento `counts=` alignment**: matrices go through the same shape/name
+  coercion as PyDESeq2; misaligned counts raise clearly.
+- **MixedLM `logFC`**: sample-aware (mean of per-sample means) scanpy-style
+  log2FC for cutoffs; LMM coefficient stored as `mixedlm_coef` (see Unreleased
+  Fixed for the cell-weighted → sample-aware correction).
+- **Filter presets**: `effective_gamma_min/max` default to `None` (no silent
+  drop when `show_effective_gamma=True`).
+- **`differential_expression`**: default `pb_use_total_for_x=False` (do not
+  silently DE on U+S total when velocity layers exist).
+- **Enrichment `_apply_p_adjust`**: NaN-safe (finite-only multipletests).
+- **Empty `significant` UX**: clearer warnings pointing to `filter_active_genes`.
+- **Docs**: `docs/api/index.md` no longer claims `generate_gene_features_main`
+  is importable from the top-level `scatrans` package.
+- **mypy clean** under `mypy src/scatrans --ignore-missing-imports` (union
+  narrowing for AnnData/matrices, `Path` vs `str`, heterogeneous
+  `load_info` dicts, pl size-legend numerics, etc.).
+- **Matrix union-type helpers** in `_utils` (`_dense_expression_matrix`,
+  `_matrix_copy`, `_matrix_shape`, `_matrix_sum_axis0/1`,
+  `_matrix_row_subset_sum_axis0`, `_as_var_dataframe`) used from `_de`,
+  `_velocity`, `tl.active`, and pseudobulk paths so AnnData ``.X`` /
+  ``.layers`` wide unions no longer need per-line mypy ignore. Also
+  replace ``matplotlib.cm.viridis`` with ``plt.get_cmap("viridis")``.
+
 ## 2026-07-05
 
 ### Fixed

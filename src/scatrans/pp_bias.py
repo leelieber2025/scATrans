@@ -139,17 +139,17 @@ def generate_gene_features_from_gtf(
             "Install with: pip install 'scatrans[gene_features]' or pip install gtfparse"
         ) from None
 
-    gtf_path = Path(gtf_path).expanduser()
-    if not gtf_path.exists():
-        raise FileNotFoundError(f"GTF file not found: {gtf_path}")
+    gtf_file = Path(gtf_path).expanduser()
+    if not gtf_file.exists():
+        raise FileNotFoundError(f"GTF file not found: {gtf_file}")
 
     if output_name is None:
         output_name = f"{organism}_gene_features.parquet"
     else:
         output_name = str(Path(output_name).expanduser())
 
-    logger.info("Parsing GTF file (may take 30-60 seconds)... %s", gtf_path)
-    df = gtfparse.read_gtf(gtf_path)
+    logger.info("Parsing GTF file (may take 30-60 seconds)... %s", gtf_file)
+    df = gtfparse.read_gtf(str(gtf_file))
 
     if hasattr(df, "to_pandas"):
         df = df.to_pandas()
@@ -354,18 +354,27 @@ def add_gene_features(
         avail = list_available_gene_features(verbose=False)
         organism_norm = str(organism).lower()
         if organism_norm in ("human", "hs", "hsa"):
-            # Prefer any human-named file present in the package data
-            human_cands = [
-                f
-                for f in avail
-                if "human" in f.lower() or "grch" in f.lower() or "hg38" in f.lower()
-            ]
-            pkg_filename = (
-                human_cands[0] if human_cands else "human_GRCh38_2024A_gene_features.parquet"
-            )
+            # Stable preferred default (10x GRCh38 2024A), then any other human table.
+            preferred_human = "human_GRCh38_2024A_gene_features.parquet"
+            if preferred_human in avail:
+                pkg_filename = preferred_human
+            else:
+                human_cands = [
+                    f
+                    for f in avail
+                    if "human" in f.lower() or "grch" in f.lower() or "hg38" in f.lower()
+                ]
+                pkg_filename = human_cands[0] if human_cands else preferred_human
         elif organism_norm in ("mouse", "mm", "mmu"):
-            mouse_cands = [f for f in avail if "mouse" in f.lower() or f.startswith("Mus")]
-            pkg_filename = mouse_cands[0] if mouse_cands else "mouse_2020A_gene_features.parquet"
+            # Prefer 10x mouse 2020A (common scRNA-seq symbols) over GRCm39 Ensembl
+            # tables — lexicographic first match used to pick Mus_musculus.GRCm39
+            # and silently tank mapping rates on 10x-aligned data.
+            preferred_mouse = "mouse_2020A_gene_features.parquet"
+            if preferred_mouse in avail:
+                pkg_filename = preferred_mouse
+            else:
+                mouse_cands = [f for f in avail if "mouse" in f.lower() or f.startswith("Mus")]
+                pkg_filename = mouse_cands[0] if mouse_cands else preferred_mouse
         else:
             raise ValueError(
                 f"Unsupported organism '{organism}' for add_gene_features. "

@@ -22,7 +22,7 @@ try:
 
     release = _pkg_version("scatrans")
 except Exception:
-    release = "0.9.9"
+    release = "0.10.1"
 version = release
 
 html_context = {

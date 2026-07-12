@@ -35,7 +35,6 @@ from contextlib import contextmanager, nullcontext, suppress
 from typing import Any, Optional, Union
 
 import matplotlib as mpl
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -847,8 +846,9 @@ def enrich_dotplot(
     Multi-group / compare support (new):
       - If the input df contains a "Cluster" column (or you pass `cluster_col="Cluster"`),
         terms are automatically prefixed with "[Cluster] " so groups are visually distinct.
-      - `show_terms="auto"` (and int) now collects top terms intelligently across clusters
-        when a Cluster column is present (union of interesting terms per cluster).
+      - `show_terms="auto"` (and int) collects top terms **per cluster**, then takes the
+        union so every cluster keeps representation (no global positional truncation that
+        could drop later clusters entirely).
       - `facet_by_cluster=True` will produce a grid of subplots (one per cluster) using
         the same rich dotplot logic. Excellent for publication multi-panel figures.
       - The returned df from `scat.compare_enrichment(...)` or `concat_compare_results(...)`
@@ -958,15 +958,12 @@ def enrich_dotplot(
         if show_terms is not None:
             if isinstance(show_terms, int):
                 if has_cluster:
-                    # Collect top N per cluster, then take union (preserves diversity across groups)
+                    # Per-cluster quota then union. Do not apply a global .head() that
+                    # can drop entire later clusters (concat order is groupby iteration).
                     parts = []
                     for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
                         parts.append(sub.head(show_terms))
-                    plot_df = (
-                        pd.concat(parts)
-                        .drop_duplicates()
-                        .head(show_terms * max(1, enrich_df[cluster_col].nunique() // 2 + 1))
-                    )
+                    plot_df = pd.concat(parts).drop_duplicates()
                 else:
                     plot_df = enrich_df.head(show_terms).copy()
             elif isinstance(show_terms, str) and show_terms.lower() == "auto":
@@ -1006,9 +1003,8 @@ def enrich_dotplot(
                             selected_idx.extend(sub_cand.head(top_n).index.tolist())
                         else:
                             selected_idx.extend(sub.head(top_n).index.tolist())
-                    plot_df = (
-                        enrich_df.loc[list(dict.fromkeys(selected_idx))].head(top_n * 2).copy()
-                    )  # union, cap later
+                    # Keep full per-cluster union (no global head that starves late clusters)
+                    plot_df = enrich_df.loc[list(dict.fromkeys(selected_idx))].copy()
                 else:
                     try:
                         padj = pd.to_numeric(enrich_df.get(padj_col, 1.0), errors="coerce").fillna(
@@ -1077,12 +1073,14 @@ def enrich_dotplot(
                     )
         else:
             if has_cluster:
-                # default: take a reasonable number across clusters
+                # Equal per-cluster quota so every group remains visible; no global
+                # positional head that can erase later clusters entirely.
+                n_cl = max(1, int(enrich_df[cluster_col].nunique()))
+                per_cl = max(1, int(np.ceil(top_n / n_cl)))
                 parts = []
-                per_cl = max(3, top_n // max(1, enrich_df[cluster_col].nunique()))
                 for _cl, sub in enrich_df.groupby(cluster_col, sort=False):
                     parts.append(sub.head(per_cl))
-                plot_df = pd.concat(parts).drop_duplicates().head(top_n * 2)
+                plot_df = pd.concat(parts).drop_duplicates()
             else:
                 plot_df = enrich_df.head(top_n).copy()
 
@@ -1346,11 +1344,12 @@ def enrich_dotplot(
                 eff_vmin = effective.min()
                 eff_vmax = effective.max()
 
-                # Choose representative values
+                # Choose representative values (always numeric for size legend)
+                reps: list[float]
                 if size_col == "Count":
                     # Prefer nice round numbers (multiples of 5/10) instead of raw min/median/max
-                    vmin_c = size_vals_raw.min()
-                    vmax_c = size_vals_raw.max()
+                    vmin_c = float(size_vals_raw.min())
+                    vmax_c = float(size_vals_raw.max())
                     span = vmax_c - vmin_c
                     if span <= 5:
                         step = 1
@@ -1360,30 +1359,29 @@ def enrich_dotplot(
                         step = 10
                     else:
                         step = 20
-                    low = max(step, int(np.ceil(vmin_c / step) * step))
-                    high = int(np.floor(vmax_c / step) * step)
-                    mid = int(round((low + high) / 2 / step) * step)
-                    reps = []
-                    for cand in [low, mid, high]:
-                        if vmin_c <= cand <= vmax_c:
-                            reps.append(cand)
+                    lo_f = vmin_c
+                    hi_f = vmax_c
+                    low_v = max(step, int(np.ceil(lo_f / step) * step))
+                    high_v = int(np.floor(hi_f / step) * step)
+                    mid_v = int(round((low_v + high_v) / 2 / step) * step)
+                    candidates = (float(low_v), float(mid_v), float(high_v))
+                    reps = [c for c in candidates if lo_f <= c <= hi_f]
                     if len(reps) < 3:
                         # fallback to a few nice values in range
-                        reps = sorted({low, mid, high})
-                        reps = [r for r in reps if vmin_c <= r <= vmax_c]
+                        reps = [c for c in sorted(set(candidates)) if lo_f <= c <= hi_f]
                     if not reps:
-                        reps = [int(round(vmin_c))]
+                        reps = [float(round(lo_f))]
                     reps = sorted(set(reps))[:3]  # at most 3
                 else:
                     # For GeneRatio etc. keep behavior similar but use actual values
-                    reps = [size_vals_raw.min()]
+                    reps = [float(size_vals_raw.min())]
                     if len(size_vals_raw) > 2:
-                        reps.append(size_vals_raw.median())
-                    reps.append(size_vals_raw.max())
+                        reps.append(float(size_vals_raw.median()))
+                    reps.append(float(size_vals_raw.max()))
                     reps = sorted(set(reps))
 
                 handles = []
-                labels = []
+                labels: list[str] = []
                 for rv in reps:
                     # Scale using the global effective vmin/vmax of the plotted data
                     # so that legend circle size is proportional and matches main plot dots
@@ -1551,7 +1549,7 @@ def enrich_upsetplot(
             # keep the most frequent across sets
             from collections import Counter
 
-            freq = Counter()
+            freq: Counter[str] = Counter()
             for s in term_sets.values():
                 for t in s:
                     freq[t] += 1
@@ -1629,7 +1627,9 @@ def enrich_upsetplot(
         ax_inter.set_xticks([])
         ax_inter.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=6)
         for xi, v in zip(x, inter_vals):
-            ax_inter.text(xi, v + 0.15, str(int(v)), ha="center", fontsize=fontsize - 2)
+            ax_inter.text(
+                float(xi), float(v) + 0.15, str(int(v)), ha="center", fontsize=fontsize - 2
+            )
         sns.despine(ax=ax_inter, top=True, right=True)
 
         # 3. Matrix (lower right)
@@ -1797,38 +1797,39 @@ def enrich_vennplot(
         default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
         cols = colors or default_colors[:n]
 
-        positions = {
-            1: [(0, 0, 0.9)],
+        position_map: dict[int, list[tuple[float, float, float]]] = {
+            1: [(0.0, 0.0, 0.9)],
             2: [(-0.35, 0.15, 0.75), (0.35, 0.15, 0.75)],
             3: [(-0.45, 0.25, 0.7), (0.45, 0.25, 0.7), (0.0, -0.45, 0.7)],
             4: [(-0.5, 0.4, 0.6), (0.5, 0.4, 0.6), (-0.5, -0.35, 0.6), (0.5, -0.35, 0.6)],
-        }[n]
+        }
+        pos_list = position_map[n]
 
         from matplotlib.patches import Circle
 
-        for (cx, cy, r), col, name in zip(positions, cols, clusters):
+        cluster_names = [str(c) for c in clusters]
+        for (cx, cy, r), col, name in zip(pos_list, cols, cluster_names):
             circ = Circle((cx, cy), r, facecolor=col, alpha=0.25, edgecolor=col, linewidth=2)
             ax.add_patch(circ)
             ax.text(cx, cy + r + 0.12, name, ha="center", fontsize=fontsize - 1, fontweight="bold")
 
-        # Labels for unique + pairwise counts (simple text placement)
+        # Region counts (exclusive set differences so unlabeled regions are not implied zero)
         if n >= 2:
-            # compute sizes for labels
             sets_list = [term_sets[c] for c in clusters]
-            # For 2-3 sets we place approximate numbers
-            ax.text(
-                0,
-                0.15,
-                str(len(sets_list[0] & sets_list[1])),
-                ha="center",
-                va="center",
-                fontsize=fontsize,
-            )
             if n == 2:
+                a, b = sets_list[0], sets_list[1]
+                ax.text(
+                    0,
+                    0.15,
+                    str(len(a & b)),
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                )
                 ax.text(
                     -0.7,
                     0.15,
-                    str(len(sets_list[0] - sets_list[1])),
+                    str(len(a - b)),
                     ha="center",
                     fontsize=fontsize - 1,
                     color="#333",
@@ -1836,34 +1837,106 @@ def enrich_vennplot(
                 ax.text(
                     0.7,
                     0.15,
-                    str(len(sets_list[1] - sets_list[0])),
+                    str(len(b - a)),
                     ha="center",
                     fontsize=fontsize - 1,
                     color="#333",
                 )
-            if n >= 3:
+            elif n == 3:
+                a, b, c = sets_list[0], sets_list[1], sets_list[2]
+                only_a = a - b - c
+                only_b = b - a - c
+                only_c = c - a - b
+                ab = (a & b) - c
+                ac = (a & c) - b
+                bc = (b & c) - a
+                abc = a & b & c
+                # Positions match the 3-circle layout above (approx.)
+                ax.text(-0.75, 0.4, str(len(only_a)), ha="center", fontsize=fontsize - 2)
+                ax.text(0.75, 0.4, str(len(only_b)), ha="center", fontsize=fontsize - 2)
+                ax.text(0.0, -0.85, str(len(only_c)), ha="center", fontsize=fontsize - 2)
+                ax.text(0.0, 0.45, str(len(ab)), ha="center", fontsize=fontsize - 2)
+                ax.text(-0.35, -0.1, str(len(ac)), ha="center", fontsize=fontsize - 2)
+                ax.text(0.35, -0.1, str(len(bc)), ha="center", fontsize=fontsize - 2)
                 ax.text(
-                    0,
-                    -0.1,
-                    str(len(set.intersection(*sets_list))),
+                    0.0,
+                    0.05,
+                    str(len(abc)),
                     ha="center",
                     va="center",
                     fontsize=fontsize,
                     fontweight="bold",
                 )
-                ax.text(
-                    -0.7,
-                    0.55,
-                    str(len(sets_list[0] - sets_list[1] - sets_list[2])),
-                    ha="center",
-                    fontsize=fontsize - 2,
-                )
-                # (full 3-set intersections left as exercise; the counts above are the main signal)
+            else:
+                # 4-set: label exclusive counts on circles + side legend for all
+                # non-empty regions (pairwise / triple / all-four) so shared
+                # terms are not invisible. Prefer enrich_upsetplot for dense overlap.
+                from itertools import combinations as _comb
 
+                region_lines: list[str] = []
+                names = [str(c) for c in clusters]
+                for rsize in range(1, n + 1):
+                    for idxs in _comb(range(n), rsize):
+                        inter = sets_list[idxs[0]].copy()
+                        for j in idxs[1:]:
+                            inter &= sets_list[j]
+                        for j in range(n):
+                            if j not in idxs:
+                                inter -= sets_list[j]
+                        if not inter:
+                            continue
+                        label = "∩".join(names[i] for i in idxs)
+                        if rsize == 1:
+                            label = f"only {names[idxs[0]]}"
+                        region_lines.append(f"{label}: {len(inter)}")
+
+                for i, s in enumerate(sets_list):
+                    others = set.union(*(sets_list[j] for j in range(n) if j != i))
+                    only = s - others
+                    cx, cy, r = pos_list[i]
+                    ax.text(
+                        cx,
+                        cy,
+                        str(len(only)),
+                        ha="center",
+                        va="center",
+                        fontsize=fontsize - 2,
+                        color="#333",
+                    )
+                if region_lines:
+                    legend_txt = "Regions (exclusive):\n" + "\n".join(region_lines[:16])
+                    if len(region_lines) > 16:
+                        legend_txt += f"\n… +{len(region_lines) - 16} more"
+                    ax.text(
+                        1.02,
+                        0.5,
+                        legend_txt,
+                        transform=ax.transAxes,
+                        va="center",
+                        ha="left",
+                        fontsize=max(7, fontsize - 3),
+                        family="monospace",
+                        bbox={
+                            "boxstyle": "round,pad=0.3",
+                            "facecolor": "white",
+                            "edgecolor": "#ccc",
+                        },
+                    )
+                logger.info(
+                    "enrich_vennplot: %d groups — exclusive counts on circles; "
+                    "full region sizes in side legend (%d non-empty). "
+                    "Prefer enrich_upsetplot for dense multi-group overlaps.",
+                    n,
+                    len(region_lines),
+                )
+
+        caption = f"Venn of significant enriched terms (padj < {pval_cutoff:.2g})"
+        if n >= 4:
+            caption += " — see side legend for intersections; prefer upset for dense overlaps"
         ax.text(
             0.5,
             -1.35,
-            f"Venn of significant enriched terms (padj < {pval_cutoff:.2g})",
+            caption,
             ha="center",
             transform=ax.transAxes,
             fontsize=fontsize - 2,
@@ -1894,6 +1967,11 @@ def gseaplot(
     Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
 
     Designed to work seamlessly with results from `scat.run_gsea`.
+
+    Prefer ``gsea_result`` from :func:`scatrans.run_gsea` so
+    ``.attrs['gsea_details']`` supplies the exact RES curve. Without that
+    payload the plot falls back to a signed weighted running-sum approximation
+    (can go negative for downregulated sets; **not** min-max scaled to [0, 1]).
 
     Parameters
     ----------
@@ -1992,22 +2070,26 @@ def gseaplot(
 
         # If still no RES, compute a basic RES (approximation; for exact use run_gsea + stored)
         if RES is None:
-            # Try to recover genes for the term
+            # Try to recover genes for the term (leading_edge / gene lists if present).
+            # Note: leading_edge is only a subset of the full set — the curve is approximate.
             gene_set = set()
-            if (
-                gsea_result is not None
-                and term is not None
-                and "leading_edge" in gsea_result.columns
-            ):
+            if gsea_result is not None and term is not None and "Term" in gsea_result.columns:
                 try:
-                    lead = gsea_result.loc[
-                        gsea_result["Term"].astype(str).str.lower() == str(term).lower(),
-                        "leading_edge",
+                    row = gsea_result.loc[
+                        gsea_result["Term"].astype(str).str.lower() == str(term).lower()
                     ].iloc[0]
-                    if isinstance(lead, str):
-                        gene_set = set(lead.split(";"))
-                    elif isinstance(lead, (list, tuple)):
-                        gene_set = set(lead)
+                    for col in ("leading_edge", "Lead_genes", "geneID", "Genes", "genes"):
+                        if col not in gsea_result.columns:
+                            continue
+                        raw = row.get(col)
+                        if isinstance(raw, str) and raw.strip():
+                            gene_set = {
+                                g.strip() for g in raw.replace(",", ";").split(";") if g.strip()
+                            }
+                            break
+                        if isinstance(raw, (list, tuple, set)):
+                            gene_set = {str(g) for g in raw}
+                            break
                 except Exception:
                     pass
             if not gene_set:
@@ -2018,17 +2100,31 @@ def gseaplot(
                 fig, ax = _empty_placeholder_fig(f"No data for term {term}")
                 return fig, ax
 
-            # very basic running sum (for demo; prefer precomputed)
+            # Weighted KS running enrichment score (classic GSEA-style).
+            # Prefer precomputed RES from run_gsea (.attrs["gsea_details"]); this path is
+            # only a fallback when that payload is missing. Keep the raw signed curve
+            # (can go negative for downregulated sets) — never min-max to [0, 1], which
+            # would destroy sign and contradict the NES annotation.
+            logger.warning(
+                "gseaplot: no precomputed RES for term %r; computing an approximate "
+                "running enrichment score. Prefer results from scat.run_gsea() so "
+                "gsea_details stores the exact curve.",
+                term,
+            )
+            # Classic prerank walks the list high→low by score; unsorted Series
+            # (e.g. all_results['logFC'] still ordered by active_score) yields a
+            # wrong running ES.
+            ranked = ranked.astype(float)
+            ranked = ranked.sort_values(ascending=False, kind="mergesort")
             N = len(ranked)
             k = len(gene_set & set(ranked.index))
             if k == 0:
                 RES = [0.0] * N
                 hits = []
             else:
-                weights = np.abs(ranked.values)
-                sum_hit = (
-                    weights[[i for i, g in enumerate(ranked.index) if g in gene_set]].sum() or 1.0
-                )
+                weights = np.abs(ranked.values.astype(float, copy=False))
+                hit_idx = [i for i, g in enumerate(ranked.index) if g in gene_set]
+                sum_hit = float(weights[hit_idx].sum()) or 1.0
                 miss = 1.0 / (N - k) if k < N else 0.0
                 running = 0.0
                 RES = []
@@ -2040,12 +2136,6 @@ def gseaplot(
                     else:
                         running -= miss
                     RES.append(running)
-                # normalize like classic (optional)
-                max_es = max(RES) if RES else 1
-                min_es = min(RES) if RES else 0
-                RES = [
-                    (r - min_es) / (max_es - min_es) if (max_es - min_es) > 0 else 0 for r in RES
-                ]
 
         # Now plot
         if ax is not None:
@@ -2595,26 +2685,13 @@ def volcano_plot(
         )
         ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.7)
 
-        # --- ggVolcano-like gene labeling: top_n + manually specified genes ---
-        genes_to_label = set()
-        if label_genes is not None:
-            genes_to_label.update(str(g).strip() for g in label_genes if str(g).strip())
-
-        # Always include the top_n (by active_score when available)
-        label_pool = plot_df
-        if min_label_score is not None and "active_score" in label_pool.columns:
-            label_pool = label_pool[label_pool["active_score"] >= float(min_label_score)]
-        if "active_score" in label_pool.columns:
-            top_df = label_pool.nlargest(top_n, "active_score")
-        else:
-            top_df = label_pool.nsmallest(top_n, "p_adj")
-        for g in top_df.index:
-            genes_to_label.add(str(g))
-
-        label_df = (
-            plot_df.loc[plot_df.index.astype(str).isin(genes_to_label)].copy()
-            if genes_to_label
-            else pd.DataFrame()
+        # --- gene labeling: top_n + manual genes; respects label_by ---
+        label_df = _volcano_collect_labels(
+            plot_df,
+            top_n=top_n,
+            label_genes=label_genes,
+            label_by=label_by,
+            min_label_score=min_label_score,
         )
 
         lbl_fs = float(label_fontsize) if label_fontsize is not None else max(8, fontsize - 2)
@@ -2690,6 +2767,14 @@ def bias_diagnostic_plot(
     Supports external `axes` (tuple of two Axes) for embedding in custom figures.
 
     `point_size`: size for the background gene cloud (default 10, was 15).
+
+    Note
+    ----
+    The left-panel trend line is a **1D** ``linregress`` of raw excess vs
+    ``log1p(gene_length)`` only. The actual bias correction (Huber) jointly fits
+    ``gene_length`` + ``intron_number``. A flat length trend therefore does **not**
+    imply that no correction was needed — inspect residuals and the full
+    diagnostics in ``adata.uns["scatrans"]`` for the multi-covariate fit.
     """
     logger.info("Generating bias correction diagnostic plot...")
     if use_style:
@@ -2760,6 +2845,17 @@ def bias_diagnostic_plot(
     ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize, fontweight="bold")
     ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize, fontweight="bold")
     ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+    # Clarify that the drawn trend is 1D length-only (actual fit uses length+intron)
+    ax1.text(
+        0.02,
+        0.02,
+        "Trend: length only\n(fit uses length+intron)",
+        transform=ax1.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=max(7, fontsize - 3),
+        color="#555555",
+    )
     ax1.legend(frameon=False)
     sns.despine(ax=ax1)
 
@@ -2788,18 +2884,177 @@ def bias_diagnostic_plot(
 # =============================================================================
 
 
-def enrich_barplot(enrich_df, top_n=15, title="Enrichment Barplot", save_path=None, **kwargs):
-    """Barplot wrapper around the dotplot implementation (for API compatibility).
+def enrich_barplot(
+    enrich_df,
+    top_n=15,
+    title="Enrichment Barplot",
+    save_path=None,
+    *,
+    x: str | None = None,
+    color_by: str | None = None,
+    figsize: tuple[float, float] = (7.5, 5.5),
+    dpi: int = 300,
+    fontsize: int = 11,
+    ax=None,
+    show: bool = True,
+    use_style: bool = False,
+    cmap: str = "viridis_r",
+    **kwargs,
+):
+    """Horizontal barplot of top enrichment terms (true bars, not a dotplot alias).
 
-    NOTE: this is currently a thin alias that calls enrich_dotplot (visual is a dotplot).
-    For a true bar implementation, call a custom bar or extend this function.
+    Bars are ordered by significance (ascending ``p.adjust`` when present).
+    Bar length defaults to ``-log10(p.adjust)`` (or ``Count`` / ``GeneRatio`` /
+    ``NES`` when those are the only sensible numeric columns). Color encodes
+    the same padj scale by default.
+
+    Parameters
+    ----------
+    enrich_df : DataFrame
+        Output of :func:`run_enrichment` / :func:`run_gsea` / :func:`compare_enrichment`.
+    top_n : int
+        Number of top terms to show.
+    x : str, optional
+        Numeric column for bar length. Auto: ``-log10(p.adjust)`` if padj exists,
+        else ``NES``, ``Count``, or ``GeneRatio``.
+    color_by : str, optional
+        Column for bar colors (default: same as length metric when padj-based).
     """
-    logger.warning(
-        "enrich_barplot is deprecated (it is an alias for enrich_dotplot and does not produce a barplot). "
-        "Use enrich_dotplot directly; this alias may be removed in a future version."
-    )
-    # pass through new standard kwargs if caller used them before they existed on the alias
-    return enrich_dotplot(enrich_df, top_n=top_n, title=title, save_path=save_path, **kwargs)
+    _ = kwargs  # absorb legacy kwargs from older call sites
+    with _style_context_if(use_style):
+        if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
+            logger.warning("Enrichment dataframe is empty. Nothing to plot.")
+            fig, ax0 = _empty_placeholder_fig("No enrichment terms to plot")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        df = enrich_df.copy()
+        # Term labels
+        if "Description" in df.columns and df["Description"].notna().any():
+            term_col = "Description"
+        elif "Term" in df.columns:
+            term_col = "Term"
+        else:
+            raise ValueError("enrich_barplot requires a 'Term' or 'Description' column.")
+
+        padj_col = None
+        for c in ("p.adjust", "padj", "Adjusted P-value", "FDR q-val"):
+            if c in df.columns:
+                padj_col = c
+                break
+
+        # Resolve bar length column / derived metric
+        use_neglog = False
+        if x is None:
+            if padj_col is not None:
+                use_neglog = True
+                x_label = r"$-\log_{10}$(p.adjust)"
+            elif "NES" in df.columns:
+                x = "NES"
+                x_label = "NES"
+            elif "Count" in df.columns:
+                x = "Count"
+                x_label = "Count"
+            elif "GeneRatio" in df.columns:
+                x = "GeneRatio"
+                x_label = "GeneRatio"
+            else:
+                raise ValueError(
+                    "enrich_barplot could not infer a numeric length column. "
+                    "Pass x= explicitly (e.g. 'Count', 'GeneRatio', 'NES')."
+                )
+        else:
+            x_label = str(x)
+            if str(x).replace(" ", "").lower() in {
+                "-log10(p.adjust)",
+                "-log10(padj)",
+                "neg_log10_padj",
+            }:
+                use_neglog = True
+                x_label = r"$-\log_{10}$(p.adjust)"
+
+        sort_key: str
+        ascending: bool
+        if use_neglog:
+            if padj_col is None:
+                raise ValueError("Cannot compute -log10(p.adjust): no p.adjust column found.")
+            df["_bar_x"] = -np.log10(
+                pd.to_numeric(df[padj_col], errors="coerce").clip(lower=1e-300)
+            )
+            sort_key = padj_col
+            ascending = True
+        else:
+            if x not in df.columns:
+                raise ValueError(f"x={x!r} not found in enrichment columns: {list(df.columns)}")
+            df["_bar_x"] = pd.to_numeric(df[x], errors="coerce")
+            # x is validated above (in columns); keep str for mypy/sort_values.
+            sort_key = x if isinstance(x, str) else "_bar_x"
+            ascending = False if str(x).upper() == "NES" or str(x) == "Count" else False
+            if padj_col is not None:
+                sort_key = padj_col
+                ascending = True
+
+        df = df.dropna(subset=["_bar_x"])
+        if df.empty:
+            fig, ax0 = _empty_placeholder_fig("No numeric enrichment values to plot")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        df = df.sort_values(sort_key, ascending=ascending).head(int(top_n))
+        # Horizontal bar: most significant at top
+        df = df.iloc[::-1]
+
+        color_vals = None
+        if color_by is None and padj_col is not None:
+            color_vals = pd.to_numeric(df[padj_col], errors="coerce")
+            cbar_label = padj_col
+        elif color_by is not None and color_by in df.columns:
+            color_vals = pd.to_numeric(df[color_by], errors="coerce")
+            cbar_label = color_by
+        else:
+            cbar_label = None
+
+        _created = ax is None
+        if ax is None:
+            fig, ax = plt.subplots(
+                figsize=(figsize[0], max(figsize[1], 0.35 * len(df) + 1.5)),
+                dpi=dpi,
+                constrained_layout=True,
+            )
+        else:
+            fig = ax.figure
+
+        y = np.arange(len(df))
+        labels = df[term_col].astype(str).tolist()
+        # Truncate very long labels
+        labels = [lab if len(lab) <= 60 else lab[:57] + "…" for lab in labels]
+        widths = df["_bar_x"].to_numpy(dtype=float)
+
+        if color_vals is not None and color_vals.notna().any():
+            norm = plt.Normalize(
+                vmin=float(np.nanmin(color_vals)), vmax=float(np.nanmax(color_vals))
+            )
+            cmap_obj = plt.get_cmap(cmap)
+            colors = cmap_obj(norm(color_vals.to_numpy(dtype=float)))
+            bars = ax.barh(y, widths, color=colors, edgecolor="none", height=0.75)
+            sm = plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm)
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+            cbar.set_label(cbar_label, fontsize=fontsize - 1)
+            cbar.ax.tick_params(labelsize=fontsize - 2)
+        else:
+            bars = ax.barh(y, widths, color="#4C72B0", edgecolor="none", height=0.75)
+
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels, fontsize=fontsize - 1)
+        ax.set_xlabel(x_label, fontsize=fontsize)
+        ax.set_title(title, fontsize=fontsize + 1, fontweight="bold")
+        ax.tick_params(axis="x", labelsize=fontsize - 1)
+        sns.despine(ax=ax)
+        _ = bars  # used for drawing; silence unused in some linters
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
+        return fig, ax
 
 
 def active_score_rankplot(
@@ -2861,7 +3116,9 @@ def active_score_rankplot(
     if vmin == vmax:
         vmax = vmin + 1e-9  # avoid singular Normalize when all scores identical
     norm = Normalize(vmin=vmin, vmax=vmax)
-    colors = [cm.viridis(v) for v in norm(plot_df["active_score"].values)]
+    # Prefer pyplot registry (avoids mypy/stub issues with matplotlib.cm.viridis)
+    _viridis = plt.get_cmap("viridis")
+    colors = [_viridis(float(v)) for v in norm(plot_df["active_score"].to_numpy(dtype=float))]
 
     bars = sns.barplot(
         data=plot_df,
@@ -3118,9 +3375,10 @@ def velocity_phase_portraits(
                 for i, g in enumerate(groups[: min(20, len(groups))])
             ]
             if handles:
+                legend_labels: list[str] = [str(h.get_label()) for h in handles]
                 fig.legend(
                     handles,
-                    [h.get_label() for h in handles],
+                    legend_labels,
                     loc="upper right",
                     frameon=False,
                     fontsize=8,
@@ -3174,10 +3432,12 @@ def gamma_shrinkage_plot(
         plot_df["gamma_shrinkage_weight"] = pd.to_numeric(
             plot_df["gamma_shrinkage_weight"], errors="coerce"
         )
+        plot_x_col: str | None
         if x_col in plot_df.columns:
             plot_df[x_col] = pd.to_numeric(plot_df[x_col], errors="coerce")
+            plot_x_col = x_col
         else:
-            x_col = None
+            plot_x_col = None
 
         plot_df = plot_df.dropna(subset=["gamma_shrinkage_weight"])
         if plot_df.empty:
@@ -3192,7 +3452,11 @@ def gamma_shrinkage_plot(
             fig = ax.figure
             _created = False
 
-        x_vals = np.log1p(plot_df[x_col].values) if x_col is not None else np.arange(len(plot_df))
+        x_vals = (
+            np.log1p(plot_df[plot_x_col].values)
+            if plot_x_col is not None
+            else np.arange(len(plot_df))
+        )
         y_vals = plot_df["gamma_shrinkage_weight"].values
 
         c_vals = None
@@ -3213,7 +3477,7 @@ def gamma_shrinkage_plot(
             cbar.set_label("effective_gamma", fontsize=9)
 
         ax.set_xlabel(
-            f"log1p({x_col})" if x_col is not None else "gene index",
+            f"log1p({plot_x_col})" if plot_x_col is not None else "gene index",
             fontsize=11,
             fontweight="bold",
         )
@@ -3225,3 +3489,35 @@ def gamma_shrinkage_plot(
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
         return fig, ax
+
+
+# Public plotting surface (keeps typing / matplotlib helpers out of casual dir())
+__all__ = [
+    "set_style",
+    "set_nature_style",
+    "style_context",
+    "figure_export_context",
+    "save_all_figures",
+    "comet_plot",
+    "volcano_plot",
+    "volcano_3d",
+    "bias_diagnostic_plot",
+    "enrich_dotplot",
+    "enrich_barplot",
+    "enrich_upsetplot",
+    "enrich_vennplot",
+    "gseaplot",
+    "active_score_rankplot",
+    "active_genes_heatmap",
+    "velocity_phase_portraits",
+    "gamma_shrinkage_plot",
+    # column name constants used by callers / docs
+    "UNSPLICED_EXCESS_DELTA_COL",
+    "UNSPLICED_EXCESS_RESIDUAL_COL",
+    "LEGACY_VELOCITY_DELTA_COL",
+    "LEGACY_VELOCITY_RESIDUAL_COL",
+]
+
+
+def __dir__():
+    return sorted(__all__)

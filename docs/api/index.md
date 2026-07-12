@@ -13,6 +13,10 @@ each group lists its key tunable parameters before the full autosummary
 table. See {doc}`../user_guide/index` for narrative usage and
 {doc}`../statistical_guidance` for what each result column means.
 
+**Stability:** which imports are guaranteed vs implementation detail is
+defined in {doc}`../api_stability` (read this before depending on
+`scatrans.tl.*` leaf modules in production code).
+
 ## Core: scoring, filtering, DE
 
 `active_score` is the main velocity-aware entry point; `differential_expression`
@@ -26,8 +30,8 @@ feed into the same `filter_active_genes` / enrichment / plotting tools.
 | `use_pseudobulk` + `sample_col` | both | `False` / `None` | aggregate to per-replicate pseudobulk before DE (needs `sample_col`) |
 | `pseudobulk_de_backend` | both | `"pydeseq2"` | `"pydeseq2"` (count-based DESeq2) or `"scanpy"` (rank_genes_groups on aggregated profiles) |
 | `de_method` | both | `"t-test_overestim_var"` | any `scanpy.tl.rank_genes_groups` method, e.g. `"wilcoxon"` |
-| `use_mixed_model` + `sample_col` | both | `False` | cell-level LMM with sample random intercept; needs ≥4 samples/group |
-| `use_memento_de` | `differential_expression` | `False` | method-of-moments cell-level DE (raw integer counts required) |
+| `use_mixed_model` + `sample_col` | both | `False` | cell-level LMM with sample random intercept; needs ≥4 samples/group; `logFC` = sample-mean-of-means (not LMM coef); **incompatible with** `use_memento_de` |
+| `use_memento_de` | both | `False` | method-of-moments cell-level DE (raw integer counts required); **incompatible with** `use_mixed_model` |
 | `use_permutation` + `n_perm` + `perm_de_backend` | `active_score` | `False` / `100` / `"same"` | permutation FDR on unspliced excess; `perm_de_backend="fast"` trades accuracy for speed |
 | `gamma_method` | `active_score` | `"heuristic_shrink"` | `"heuristic_shrink"`, `"robust_median"`, `"empirical_bayes"` (hierarchical, recommended for small reference groups), `"raw"` |
 | `bias_correction` | `active_score` | `"huber_length_intron"` | `"huber_length_intron"` or `"none"` |
@@ -74,8 +78,10 @@ by `active_score_simple` / `run_default_pipeline`. It is not autosummary'd
 here because it is data, not a callable.
 
 The `generate-gene-features` console script maps to
-`scat.generate_gene_features_main` (importable from the top-level package);
-programmatic use is via `generate_gene_features_from_gtf()` below.
+`scatrans.generate_gene_features:main` (not re-exported on the top-level
+`scatrans` package). Programmatic use is via `generate_gene_features_from_gtf()`
+below, or `from scatrans.generate_gene_features import main` for the CLI
+entrypoint function.
 
 | Parameter | Function | Notes |
 |-----------|----------|-------|

@@ -15,10 +15,16 @@ follow-up is the intended workflow, not a `p<0.05` gate on every run.
 
 ## `ValueError` from `use_mixed_model=True`
 
-The mixed-model path requires **≥4 biological samples per group** and **≥6
-total random-effect groups**. With fewer replicates (e.g. 3 vs. 3), use
-`use_pseudobulk=True` + `pseudobulk_de_backend="pydeseq2"` instead. See
-{doc}`user_guide/advanced`.
+Two common causes:
+
+1. **Sample-size gate:** the mixed-model path requires **≥4 biological
+   samples per group** and **≥6 total random-effect groups**. With fewer
+   replicates (e.g. 3 vs. 3), use `use_pseudobulk=True` +
+   `pseudobulk_de_backend="pydeseq2"` instead.
+2. **Backend clash:** `use_mixed_model=True` and `use_memento_de=True` are
+   mutually exclusive (both are cell-level DE backends). Choose one.
+
+See {doc}`user_guide/advanced`.
 
 ## `ImportError` for `pydeseq2` / `scvelo` / `gseapy` / `memento`
 
@@ -29,7 +35,7 @@ pip install "scatrans[pseudobulk]"        # PyDESeq2
 pip install "scatrans[advanced]"          # scVelo (mode="advanced")
 pip install "scatrans[gene_features]"     # gtfparse (custom gene-feature tables)
 pip install "scatrans[memento]"           # Memento (use_memento_de=True)
-pip install "scatrans[gsea]" gseapy       # GSEA (run_gsea)
+pip install "scatrans[gsea]"              # GSEA (run_gsea), pulls in gseapy
 ```
 
 See {doc}`installation`.

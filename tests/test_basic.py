@@ -121,9 +121,58 @@ def test_active_score_requires_explicit_groups(adata_basic):
         scat.differential_expression(adata_basic, groupby="condition")
 
 
+def test_normalize_group_label_stringified_floats():
+    """CSV/Excel often stores conditions as '1.0' strings; must match target_group=1."""
+    from scatrans._utils import _normalize_group_label
+
+    assert _normalize_group_label("1.0") == "1"
+    assert _normalize_group_label("2.00") == "2"
+    assert _normalize_group_label(1.0) == "1"
+    assert _normalize_group_label("Disease") == "Disease"
+    assert _normalize_group_label(None) is None
+
+
+def test_merge_scatrans_uns_clears_none_and_keeps_sticky():
+    from scatrans._utils import _merge_scatrans_uns
+
+    existing = {
+        "raw_gene_list": ["G1", "G2"],
+        "sample_col": "donor",
+        "use_mixed_model": True,
+        "history": [{"analysis": "old"}],
+    }
+    meta = {
+        "analysis": "active_score",
+        "sample_col": None,  # feature off — must not stick previous donor
+        "use_mixed_model": False,
+        "history": [{"analysis": "old"}, {"analysis": "prev"}],
+    }
+    out = _merge_scatrans_uns(existing, meta)
+    assert out["raw_gene_list"] == ["G1", "G2"]
+    assert "sample_col" not in out
+    assert out["use_mixed_model"] is False
+    assert out["analysis"] == "active_score"
+    assert len(out["history"]) == 2
+
+
 def test_active_score_numeric_group_label_coercion(adata_basic):
     ad = adata_basic.copy()
     ad.obs["condition"] = ad.obs["condition"].map({"Disease": 1.0, "Control": 2.0})
+    _, _, allr = scat.active_score(
+        ad,
+        groupby="condition",
+        target_group="1",
+        reference_group="2",
+        use_permutation=False,
+        show_plot=False,
+    )
+    assert "active_score" in allr.columns
+
+
+def test_active_score_stringified_float_group_labels(adata_basic):
+    """Obs labels like '1.0' from CSV must match target_group='1'."""
+    ad = adata_basic.copy()
+    ad.obs["condition"] = ad.obs["condition"].map({"Disease": "1.0", "Control": "2.0"})
     _, _, allr = scat.active_score(
         ad,
         groupby="condition",
@@ -196,6 +245,46 @@ def test_filter_active_genes_permissive_keeps_padj_one():
     assert len(out_default) == 5
     assert len(out_permissive) == 5
     assert set(out_default.index) == set(df.index)
+
+
+def test_filter_active_genes_non_numeric_cutoffs_raise():
+    """All numeric cutoffs should raise a clear ValueError, not a deep TypeError."""
+    df = pd.DataFrame(
+        {
+            "logFC": [1.0],
+            "p_adj": [0.01],
+            "active_score": [10.0],
+            "unspliced_excess_residual": [1.0],
+            "active_score_fdr": [0.01],
+            "unspliced_excess_fdr": [0.01],
+            "effective_gamma": [0.5],
+        },
+        index=["G1"],
+    )
+    bad = "not-a-number"
+    for kwargs in (
+        {"active_score_cutoff": bad},
+        {"pval_cutoff": bad},
+        {"logfc_cutoff": bad},
+        {"unspliced_excess_residual_cutoff": bad},
+        {"active_score_fdr_cutoff": bad},
+        {"unspliced_excess_fdr_cutoff": bad},
+        {"effective_gamma_min": bad},
+        {"effective_gamma_max": bad},
+        {"delta_variance_min": bad},
+    ):
+        with pytest.raises(ValueError, match="must be numeric"):
+            scat.filter_active_genes(df, **kwargs)
+    # None remains valid for optional FDR / optional bounds (skip filter)
+    out = scat.filter_active_genes(
+        df,
+        active_score_fdr_cutoff=None,
+        unspliced_excess_fdr_cutoff=None,
+        effective_gamma_max=None,
+        delta_variance_min=None,
+        pval_cutoff=1.0,
+    )
+    assert len(out) == 1
 
 
 def test_add_gene_features_and_list(adata_basic):
@@ -481,8 +570,13 @@ def test_active_score_default_copy_preserves_input(adata_basic):
     assert "active_score" not in ad.var.columns
 
 
-def test_copy_input_false_avoids_ann_data_copy(adata_basic):
-    """copy_input=False should not call AnnData.copy() when no obs filtering is needed."""
+def test_copy_input_false_isolates_caller_ann_data(adata_basic):
+    """copy_input=False still isolates a working copy so the caller is not mutated.
+
+    Historical behavior allowed zero AnnData.copy() calls and mutated labels/.X
+    in place; that was unsafe. We now always isolate before writes (one copy
+    when no obs subset is needed).
+    """
     import anndata as ad
 
     calls: list[int] = []
@@ -495,6 +589,7 @@ def test_copy_input_false_avoids_ann_data_copy(adata_basic):
     ad.AnnData.copy = traced_copy
     try:
         ad_zero = adata_basic.copy()
+        cond_before = ad_zero.obs["condition"].copy()
         calls.clear()
         scat.active_score(
             ad_zero,
@@ -505,9 +600,11 @@ def test_copy_input_false_avoids_ann_data_copy(adata_basic):
             show_plot=False,
             copy_input=False,
         )
-        assert len(calls) == 0
+        assert len(calls) == 1  # isolation copy
+        assert list(ad_zero.obs["condition"]) == list(cond_before)
 
         ad_de = adata_basic.copy()
+        cond_before = ad_de.obs["condition"].copy()
         calls.clear()
         scat.differential_expression(
             ad_de,
@@ -516,7 +613,8 @@ def test_copy_input_false_avoids_ann_data_copy(adata_basic):
             reference_group="Control",
             copy_input=False,
         )
-        assert len(calls) == 0
+        assert len(calls) == 1
+        assert list(ad_de.obs["condition"]) == list(cond_before)
 
         ad_one = adata_basic.copy()
         calls.clear()
@@ -529,7 +627,7 @@ def test_copy_input_false_avoids_ann_data_copy(adata_basic):
             show_plot=False,
             copy_input=True,
         )
-        assert len(calls) == 1
+        assert len(calls) == 1  # subset/copy path
     finally:
         ad.AnnData.copy = orig_copy
 

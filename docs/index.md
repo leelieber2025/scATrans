@@ -120,7 +120,9 @@ quickstart
 tutorials/index
 user_guide/index
 statistical_guidance
+api_stability
 api/index
+ROADMAP
 references
 faq
 changelog

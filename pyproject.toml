@@ -73,7 +73,7 @@ scatrans = [
 
 [tool.setuptools_scm]
 write_to = "src/scatrans/_version.py"
-fallback_version = "0.9.9"
+fallback_version = "0.10.1"
 version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
@@ -138,4 +138,13 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+# Local tip (matches CI coverage measurement):
+#   pip install "pydeseq2>=0.4.0" "memento-de>=0.1.0,<0.3.0" "gseapy>=1.1" "gtfparse>=1.3.0"
+#   pytest -m "not plot and not slow" --cov=scatrans --cov-report=xml:coverage-default.xml
+#   Including @pytest.mark.slow (GSEA integration, etc.):
+#     pytest -m "not plot" --cov=scatrans --cov-report=term-missing
+# CI enforces scatrans._de ≥70% *line-rate* on the default suite only.
+
+[tool.coverage.paths]
+source = ["src/scatrans", "*/site-packages/scatrans"]
 

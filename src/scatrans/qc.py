@@ -42,3 +42,10 @@ def unspliced_global(adata, spliced_key="spliced", unspliced_key="unspliced", wa
         )
 
     return float(unspliced_ratio)
+
+
+__all__ = ["unspliced_global"]
+
+
+def __dir__():
+    return sorted(__all__)

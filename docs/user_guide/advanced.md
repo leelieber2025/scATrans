@@ -43,8 +43,8 @@ the permutation null:
 
 | Value | Behavior | When to use |
 |-------|----------|-------------|
-| `"same"` (**default**) | Each permutation uses the **same** DE backend and `de_method` as the main analysis | **Recommended for manuscripts** — null and observed statistics match |
-| `"fast"` | Always uses scanpy `t-test_overestim_var` inside permutations (faster) | Large screens / exploration only; **may bias FDR** if main analysis uses Wilcoxon, Memento, or PyDESeq2 |
+| `"same"` (**default**) | Each permutation uses the **same** DE backend as the main analysis: scanpy `de_method` / pseudobulk backend, **and MixedLM** when `use_mixed_model=True` (same `sample_col`, `mixed_model_pval`, `paired_replicates`) | **Recommended for manuscripts** — null and observed statistics match |
+| `"fast"` | Always uses scanpy `t-test_overestim_var` inside permutations (faster) | Large screens / exploration only; **may bias FDR** if main analysis uses Wilcoxon, Memento, PyDESeq2, or **MixedLM**. With MixedLM, composite `active_score_pval`/`active_score_fdr` are **not valid** under `'fast'` (residual/`unspliced_excess_fdr` still are). Under `ranking_mode="nascent_excess"` the composite active_score FDR is residual-only and is **not** affected by DE-null mismatch |
 
 ```python
 adata_res, significant, all_results = scat.active_score(
@@ -150,13 +150,34 @@ final = scat.filter_active_genes(
 Requires `sample_col` (the column identifying biological replicates/individuals).
 
 - Replaces the simple DE statistics with LMM estimates (cell-level with
-  sample as random intercept).
+  sample as random intercept). Inference (`p_adj`, LRT, random effects)
+  comes from the MixedLM fit.
+- **`logFC` is not the LMM fixed-effect coefficient.** It is a
+  **sample-mean-of-means log2 fold-change** (mean of per-sample means in
+  target vs reference on the same scale as the fit). This avoids
+  cell-count-weighted logFC when samples have unequal n_cells.
 - Adds `delta_variance` (fraction of total modeled variance explained by
   condition) and `delta_var_pval` (LRT).
 - `delta_variance` is always available in `all_results` when the flag is
   on; you can use it post-hoc as an additional filter.
 - Use `use_delta_variance_pval=True` only if you want the LRT p-value to
   participate in the built-in `significant` mask.
+- Diagnostics under `adata.uns["scatrans"]["diagnostics"]["mixed_model"]`
+  include `logFC_method`, `n_genes_logFC_mixedlm_sign_discordant` (genes
+  where sample-mean logFC sign disagrees with the MixedLM coef), and
+  `failed_fit_rate`. Inspect these before publication.
+- **Incompatible with `use_memento_de=True`** — both are cell-level DE
+  backends; enabling both raises `ValueError` (choose one).
+- **With `use_permutation=True`:** default `perm_de_backend="same"` refits
+  MixedLM under each shuffle so `active_score_pval`/`active_score_fdr` match
+  the observed estimator. Labels are shuffled at the **sample /
+  random-effect cluster** level (not per cell): a biological sample is never
+  split across conditions under the null, which is required for
+  hierarchical exchangeability of `(1|sample)`. Paired designs shuffle
+  within subject. `perm_de_backend="fast"` deliberately uses a t-test null
+  and **invalidates** those active_score FDRs (a warning is logged);
+  `unspliced_excess_fdr` is unaffected. MixedLM×n_perm can be slow;
+  `auto_adjust_n_perm` caps `n_perm` by the sample-level permutation space.
 
 **Small-sample guidance:** The mixed-model path requires **≥4 biological
 samples per group** and **≥6 total random-effect groups**; otherwise
@@ -188,6 +209,22 @@ adata_res, significant, all_results = scat.active_score(
 
 The mixed-model settings and median `delta_variance` are recorded in
 diagnostics.
+
+## `ranking_mode="nascent_excess"`
+
+When ranking is residual-only, custom `weight_fc` / `weight_pval` /
+`weight_unspliced` are **ignored** and forced to `(0, 0, 1)` (with a
+warning). This keeps the mode name honest: composite DE weights cannot
+silently alter a residual-only ranking.
+
+**Impact on DE / permutation mismatches:** because `active_score` then
+depends only on `unspliced_excess_residual`, **DE-null mismatches do not
+affect** `active_score_pval` / `active_score_fdr` under this mode — including
+historical cell-level vs sample-level MixedLM shuffle issues, or
+`perm_de_backend="fast"` with MixedLM/Memento/PyDESeq2 observed DE. Those
+mismatches matter only under default `ranking_mode="composite"` (non-zero
+`weight_fc` / `weight_pval`). Residual-only columns
+(`unspliced_excess_pval` / `unspliced_excess_fdr`) never use the DE backend.
 
 ## `mode="advanced"`
 

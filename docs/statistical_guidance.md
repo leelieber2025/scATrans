@@ -8,7 +8,7 @@ claim.
 |--------|----------|------------------------|
 | `active_score` (0–100) | **Ranking** and visualization within one analysis | p-values, FDR, or "statistically significant activation" on its own |
 | `unspliced_excess_delta` / `unspliced_excess_residual` | Exploratory signal for **group-contrast** nascent excess (after reference γ) | Literal transcription rates, causal claims, or equivalence to dynamical RNA velocity |
-| `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats) | — |
+| `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats). Under **`use_mixed_model=True`**, `logFC` is **sample-mean-of-means log2FC**, not the LMM fixed-effect coefficient — see `diagnostics["mixed_model"]["logFC_method"]` | Treating MixedLM `logFC` as the LMM coef, or ignoring high `n_genes_logFC_mixedlm_sign_discordant` |
 | `unspliced_excess_fdr` (with `use_permutation=True`) | **Primary** active-gene significance filter (one-sided, conditional null) | Claims without inspecting diagnostics and replicate structure |
 
 ## Reporting checklist
@@ -45,7 +45,9 @@ permutation off by default so new users explore ranked tables first; enable
 - `explore` — ranking only, no permutation (fast)
 - `report` — `use_permutation=True`, `n_perm=500`, `perm_de_backend="same"`
 - `pseudobulk_report` — multi-replicate pseudobulk + permutation
-- `nascent_focus` — `ranking_mode="nascent_excess"` (residual-only ranking)
+- `nascent_focus` — `ranking_mode="nascent_excess"` (residual-only ranking;
+  DE-backend / DE-null mismatches cannot affect `active_score` FDR because
+  `weight_fc`/`weight_pval` are forced to 0 — only residual terms matter)
 
 **Paper checklist (minimal):**
 

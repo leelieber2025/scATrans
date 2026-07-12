@@ -93,6 +93,68 @@ def test_gseaplot_with_stored_curves():
     plt.close(fig)
 
 
+def test_gseaplot_fallback_res_preserves_sign():
+    """Fallback RES must stay signed (no min-max to [0,1]) so negative NES makes sense."""
+    # Genes ranked high→low; hits only at the bottom → negative running ES
+    ranking = pd.Series(
+        {f"G{i}": float(30 - i) for i in range(30)},
+        index=[f"G{i}" for i in range(30)],
+    ).sort_values(ascending=False)
+    bottom_hits = [f"G{i}" for i in range(25, 30)]
+    gsea_res = pd.DataFrame(
+        {
+            "Term": ["DOWN_SET"],
+            "NES": [-2.05],
+            "pvalue": [0.01],
+            "p.adjust": [0.05],
+            "leading_edge": [";".join(bottom_hits)],
+        }
+    )
+    # No gsea_details → approximate path
+    fig, ax = scat.pl.gseaplot(ranking, gsea_res, term="DOWN_SET", show=False)
+    y = np.asarray(fig.axes[0].lines[0].get_ydata(), dtype=float)
+    assert y.min() < 0, "fallback RES should go negative for bottom-enriched sets"
+    # Must not be forced into [0, 1]
+    assert not (y.min() >= -1e-9 and y.max() <= 1.0 + 1e-9 and y.min() >= 0)
+    assert y.max() - y.min() > 0
+    plt.close(fig)
+
+
+def test_enrich_dotplot_multi_cluster_keeps_all_clusters():
+    """Per-cluster top_n must not silently drop later clusters via global head()."""
+    rows = []
+    for cl in ["A", "B", "C", "D", "E", "F"]:
+        for i in range(5):
+            rows.append(
+                {
+                    "Term": f"{cl}_term{i}",
+                    "Description": f"{cl}_desc{i}",
+                    "GeneRatio": f"{5 - i}/100",
+                    "Count": 10 - i,
+                    "p.adjust": 0.01 * (i + 1),
+                    "Cluster": cl,
+                }
+            )
+    df = pd.DataFrame(rows)
+    # return_data path if available; otherwise inspect y tick labels
+    out = scat.pl.enrich_dotplot(df, show_terms=2, top_n=2, show=False, return_data=True)
+    if isinstance(out, tuple) and len(out) == 3:
+        fig, ax, plot_df = out
+    else:
+        fig, ax = out
+        # rebuild expected selection logic via Term_Clean prefixes
+        plot_df = None
+        labels = [t.get_text() for t in ax.get_yticklabels()]
+        clusters_seen = {lab.split("]")[0].lstrip("[") for lab in labels if lab.startswith("[")}
+        assert clusters_seen == {"A", "B", "C", "D", "E", "F"}
+        plt.close(fig)
+        return
+    assert set(plot_df["Cluster"].astype(str)) == {"A", "B", "C", "D", "E", "F"}
+    # 2 terms per cluster when available
+    assert plot_df.groupby("Cluster").size().min() >= 1
+    plt.close(fig)
+
+
 @pytest.mark.plot
 def test_active_genes_heatmap_default_show():
     import anndata as ad

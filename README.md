@@ -26,12 +26,16 @@ Read the Docs: https://scatrans.readthedocs.io**
 ```bash
 pip install scatrans
 
-# Optional extras: advanced (scVelo) mode, pseudobulk DE (PyDESeq2), Memento, GSEA
-pip install "scatrans[advanced,gene_features,pseudobulk]" gseapy
+# Optional extras: advanced (scVelo) mode, gene features, pseudobulk DE (PyDESeq2), Memento, GSEA
+pip install "scatrans[advanced,gene_features,pseudobulk,memento,gsea]"
 ```
 
 See [Installation](https://scatrans.readthedocs.io/en/latest/installation.html)
 for extras, source installs, and logging setup.
+
+When developing from a git checkout, install the **editable** tree you are
+editing (`pip install -e .` from that checkout). A stale editable install
+pointing at another path can make `import scatrans` load an older copy.
 
 ## Quickstart
 
@@ -66,6 +70,15 @@ its own. See
 [Statistical Guidance](https://scatrans.readthedocs.io/en/latest/statistical_guidance.html)
 for what each output column means, safe vs. unsafe uses, and a reporting
 checklist before you cite scATrans results in a manuscript or supplement.
+
+## API stability
+
+scATrans is **Beta (0.10.x)**. Prefer `import scatrans as scat` and the names
+in `scatrans.__all__` / `scat.pl` / `scat.qc`. Leaf modules such as
+`scatrans.tl.active` are **implementation detail** and may move. Full
+contract: [API stability](https://scatrans.readthedocs.io/en/latest/api_stability.html)
+(source: `docs/api_stability.md`).
+
 
 ## License
 

@@ -25,8 +25,14 @@ from statsmodels.stats.multitest import multipletests
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from ._utils import (
+    _as_contrast_categorical,
+    _dense_expression_matrix,
     _is_integer_counts_like,
+    _matrix_sum_axis0,
+    _normalize_label_array,
     _prepare_log_normalized_expression,
+    _require_matrix,
+    _resolve_aligned_raw_counts,
     _warn_if_low_counts_matrix,
 )
 
@@ -94,6 +100,129 @@ def _pydeseq2_uses_design_factors() -> bool:
         return True
 
 
+def _pydeseq2_preagg_count_like_verdict(
+    ad_temp: ad.AnnData,
+    *,
+    count_source_name: str,
+    X_for_deseq: Any,
+    is_pseudobulk: bool,
+) -> bool | None:
+    """Return pre-aggregation count-likeness from ``uns`` when applicable, else None.
+
+    Pseudobulk aggregation always rounds, so post-hoc ``_is_integer_counts_like``
+    on the matrix that will feed PyDESeq2 is not a reliable safety net. Prefer:
+
+    - ``pb_x_is_count_like`` when the matrix is ``.X``
+    - ``pb_counts_is_count_like`` when the matrix is the aggregated ``layers['counts']``
+      (including when passed as an already-resolved ``counts matrix`` that is the
+      same object as ``layers['counts']``)
+    """
+    if not is_pseudobulk:
+        return None
+
+    if count_source_name == "adata.X" and "pb_x_is_count_like" in ad_temp.uns:
+        return bool(ad_temp.uns["pb_x_is_count_like"])
+
+    # Aggregated counts layer: string path, or resolved matrix that still *is* the layer.
+    using_counts_layer = count_source_name == "layers['counts']"
+    if not using_counts_layer and "counts" in getattr(ad_temp, "layers", {}):
+        try:
+            using_counts_layer = X_for_deseq is ad_temp.layers["counts"]
+        except Exception:
+            using_counts_layer = False
+
+    if using_counts_layer:
+        if "pb_counts_is_count_like" in ad_temp.uns:
+            return bool(ad_temp.uns["pb_counts_is_count_like"])
+        layer_map = ad_temp.uns.get("pb_layer_is_count_like")
+        if isinstance(layer_map, dict) and "counts" in layer_map:
+            return bool(layer_map["counts"])
+
+    return None
+
+
+def _coerce_pydeseq2_counts_matrix(
+    counts: str | np.ndarray | sparse.spmatrix | pd.DataFrame | ad.AnnData,
+    ad_temp: ad.AnnData,
+) -> tuple[Any, str] | None:
+    """Resolve ``counts=`` to a matrix aligned with ``ad_temp`` (n_obs × n_vars).
+
+    Returns ``(matrix, source_name)`` or ``None`` if counts cannot be aligned safely.
+    """
+    if isinstance(counts, str):
+        if counts not in ad_temp.layers:
+            logger.warning(
+                "PyDESeq2 counts='%s' not found in adata.layers; falling back to .X.",
+                counts,
+            )
+            return None
+        mat = ad_temp.layers[counts]
+        source = f"layers['{counts}']"
+    elif isinstance(counts, ad.AnnData):
+        counts_ad: ad.AnnData = counts
+        # Always align by names when they differ (same shape ≠ same order).
+        if not np.array_equal(counts_ad.obs_names, ad_temp.obs_names):
+            missing = ad_temp.obs_names.difference(counts_ad.obs_names)
+            if len(missing):
+                logger.warning(
+                    "PyDESeq2 counts AnnData missing %d obs; falling back to .X.",
+                    len(missing),
+                )
+                return None
+            counts_ad = counts_ad[ad_temp.obs_names]
+        if not np.array_equal(counts_ad.var_names, ad_temp.var_names):
+            common = counts_ad.var_names.intersection(ad_temp.var_names)
+            if len(common) != ad_temp.n_vars:
+                logger.warning(
+                    "PyDESeq2 counts AnnData gene set does not match adata; falling back to .X."
+                )
+                return None
+            counts_ad = counts_ad[:, ad_temp.var_names]
+        mat = counts_ad.X
+        source = "counts AnnData"
+    elif isinstance(counts, pd.DataFrame):
+        if list(counts.index) != list(ad_temp.obs_names) or list(counts.columns) != list(
+            ad_temp.var_names
+        ):
+            try:
+                reindexed = counts.reindex(index=ad_temp.obs_names, columns=ad_temp.var_names)
+            except Exception:
+                logger.warning(
+                    "PyDESeq2 counts DataFrame could not be reindexed to adata; falling back to .X."
+                )
+                return None
+            if reindexed.shape != (ad_temp.n_obs, ad_temp.n_vars) or reindexed.isna().any().any():
+                logger.warning(
+                    "PyDESeq2 counts DataFrame reindex introduced missing values or wrong shape; "
+                    "falling back to .X."
+                )
+                return None
+            mat = reindexed.to_numpy()
+            source = "counts DataFrame (reindexed)"
+        else:
+            mat = counts.to_numpy()
+            source = "counts DataFrame"
+    else:
+        mat = counts
+        source = "counts matrix"
+
+    try:
+        n0, n1 = mat.shape[0], mat.shape[1]
+    except Exception:
+        logger.warning("PyDESeq2 counts object has no shape; falling back to .X.")
+        return None
+    if n0 != ad_temp.n_obs or n1 != ad_temp.n_vars:
+        logger.warning(
+            "PyDESeq2 counts shape (%s, %s) != adata (%s, %s); falling back to .X.",
+            n0,
+            n1,
+            ad_temp.n_obs,
+            ad_temp.n_vars,
+        )
+        return None
+    return mat, source
+
+
 def _run_de_wrapper(
     adata: ad.AnnData,
     groupby: str,
@@ -132,6 +261,12 @@ def _run_de_wrapper(
 
     Internal function: type hints strengthened for mypy/pyright.
     """
+    if use_mixed_model and use_memento_de:
+        raise ValueError(
+            "use_mixed_model=True and use_memento_de=True are incompatible. "
+            "Choose one cell-level DE backend (MixedLM with sample_col, or Memento)."
+        )
+
     if use_mixed_model:
         if sample_col is None:
             raise ValueError("sample_col must be provided when use_mixed_model=True")
@@ -181,8 +316,8 @@ def _run_de_wrapper(
         _prev_ann = _ann_log.level
         _ann_log.setLevel(logging.WARNING)
         try:
-            ad_temp.obs[use_groupby] = pd.Categorical(
-                np.asarray(labels).astype(str), categories=[reference_group, target_group]
+            ad_temp.obs[use_groupby] = _as_contrast_categorical(
+                labels, reference_group, target_group
             )
         finally:
             _ann_log.setLevel(_prev_ann)
@@ -207,60 +342,72 @@ def _run_de_wrapper(
                 f"PyDESeq2 requires >=2 replicates per group. Found {n_t} target, {n_r} ref."
             )
 
-        # For pseudobulk the X is an aggregation (sum) of counts; values may arrive as float64
-        # but are integer-valued. Use a tolerant check + pre-coercion so users don't have to set
-        # strict_pydeseq2_counts=False for normal aggregated data.
-        if is_pseudobulk:
-            if "pb_x_is_count_like" in ad_temp.uns:
-                # Authoritative verdict computed by _pseudobulk_with_layers on the
-                # pre-aggregation, pre-rounding source matrix. Summing+rounding after
-                # aggregation always yields integer-valued output, so checking ad_temp.X
-                # here (post-rounding) would always pass and defeat strict_pydeseq2_counts.
-                is_count_like = bool(ad_temp.uns["pb_x_is_count_like"])
+        # Prefer explicit counts= when aligned to current obs×var (layer / matrix /
+        # AnnData). Callers often keep log1p in .X and raw counts elsewhere.
+        count_source_name = "adata.X"
+        X_for_deseq: Any = ad_temp.X
+        if counts is not None:
+            resolved = _coerce_pydeseq2_counts_matrix(counts, ad_temp)
+            if resolved is not None:
+                X_for_deseq, count_source_name = resolved
+                logger.info("PyDESeq2: using %s for count matrix.", count_source_name)
             else:
-                # Fallback for pseudobulk AnnData not built via _pseudobulk_with_layers
-                # (e.g. user-supplied pseudobulk). No pre-aggregation matrix is available,
-                # so we check the (already rounded) X as a best effort.
-                try:
-                    if sparse.issparse(ad_temp.X):
-                        X_check_arr = np.asarray(ad_temp.X.todense())
-                    else:
-                        X_check_arr = np.asarray(ad_temp.X)
-                    X_check_arr = np.clip(np.nan_to_num(X_check_arr), 0, None)
-                    is_count_like = _is_integer_counts_like(X_check_arr)
-                except Exception as _e:
-                    logger.debug("Count-like check fallback: %s", _e)
-                    is_count_like = _is_integer_counts_like(ad_temp.X)
-        else:
-            is_count_like = _is_integer_counts_like(ad_temp.X)
+                logger.warning(
+                    "PyDESeq2: provided counts= could not be aligned to current "
+                    "adata shape %s; falling back to .X.",
+                    ad_temp.shape,
+                )
+
+        # Count-likeness of the matrix that will actually be used for DESeq2.
+        # After _pseudobulk_with_layers, every aggregated matrix is np.round()'d and
+        # therefore always looks integer — so prefer pre-aggregation verdicts in uns
+        # for both .X (pb_x_is_count_like) and layers['counts'] (pb_counts_is_count_like).
+        is_count_like = _pydeseq2_preagg_count_like_verdict(
+            ad_temp,
+            count_source_name=count_source_name,
+            X_for_deseq=X_for_deseq,
+            is_pseudobulk=is_pseudobulk,
+        )
+        if is_count_like is None:
+            try:
+                X_check_arr = _dense_expression_matrix(X_for_deseq)
+                X_check_arr = np.clip(np.nan_to_num(X_check_arr), 0, None)
+                is_count_like = _is_integer_counts_like(X_check_arr)
+            except Exception as _e:
+                logger.debug("Count-like check fallback: %s", _e)
+                is_count_like = _is_integer_counts_like(X_for_deseq)
 
         if not is_count_like:
             msg = (
-                "Data passed to PyDESeq2 does not look like raw non-negative integer counts. "
-                "PyDESeq2 requires unnormalized integer counts in adata.X. "
+                f"Data passed to PyDESeq2 ({count_source_name}) does not look like raw "
+                "non-negative integer counts. PyDESeq2 requires unnormalized integer counts. "
                 "For pseudobulk data we automatically round to integer counts; "
-                "set strict_pydeseq2_counts=False to allow the (rounded) data anyway."
+                "set strict_pydeseq2_counts=False to allow the (rounded) data anyway. "
+                "If raw counts live in layers['counts'], pass counts= or ensure "
+                "pseudobulk aggregates that layer into .X."
             )
             if strict_pydeseq2_counts:
                 raise ValueError(msg)
             logger.warning(msg)
         else:
-            _warn_if_low_counts_matrix(ad_temp.X)
+            _warn_if_low_counts_matrix(X_for_deseq)
 
-        if sparse.issparse(ad_temp.X):
-            gene_sums = np.asarray(ad_temp.X.sum(axis=0)).ravel()
+        # Narrow matrix type once, then densify / filter genes.
+        X_mat = _require_matrix(X_for_deseq, name=count_source_name)
+        if sparse.issparse(X_mat):
+            gene_sums = _matrix_sum_axis0(X_mat)
             gene_keep = gene_sums >= min_counts_per_gene
             if gene_keep.sum() == 0:
                 raise ValueError(
                     f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
                 )
-            X_filtered = ad_temp.X[:, gene_keep].toarray()
+            X_filtered = _dense_expression_matrix(X_mat[:, gene_keep])
             X_filtered = np.clip(np.round(np.nan_to_num(X_filtered)), 0, None).astype(int)
             counts_use = pd.DataFrame(
                 X_filtered, index=ad_temp.obs_names, columns=ad_temp.var_names[gene_keep]
             )
         else:
-            X = np.asarray(ad_temp.X)
+            X = _dense_expression_matrix(X_mat)
             X = np.clip(np.round(np.nan_to_num(X)), 0, None).astype(int)
             counts_df = pd.DataFrame(X, index=ad_temp.obs_names, columns=ad_temp.var_names)
             gene_keep = counts_df.sum(axis=0) >= min_counts_per_gene
@@ -271,7 +418,7 @@ def _run_de_wrapper(
                 f"No genes passed the DESeq2 count filter (sum(counts) >= {min_counts_per_gene})."
             )
 
-        condition = ad_temp.obs[use_groupby].astype(str).values
+        condition = _normalize_label_array(ad_temp.obs[use_groupby])
         metadata = pd.DataFrame(
             {use_groupby: pd.Categorical(condition, categories=[reference_group, target_group])},
             index=counts_use.index,
@@ -359,9 +506,9 @@ def _run_de_wrapper(
                 "regression scores and does not produce logFC, p-values, or adjusted p-values. "
                 "Use 'wilcoxon', 't-test', or 't-test_overestim_var' instead."
             )
-        labels = ad_temp.obs[use_groupby].astype(str)
-        n_target = int((labels == str(target_group)).sum())
-        n_reference = int((labels == str(reference_group)).sum())
+        labels = _normalize_label_array(ad_temp.obs[use_groupby])
+        n_target = int((labels == target_group).sum())
+        n_reference = int((labels == reference_group).sum())
         if n_target < 2 or n_reference < 2:
             raise ValueError(
                 f"scanpy DE (method='{de_method}') requires at least 2 cells per group. "
@@ -403,9 +550,14 @@ def _run_de_wrapper(
         de_df["p_val"] = de_raw["pvals"].reindex(ad_temp.var_names)
         de_df["p_adj"] = de_raw["pvals_adj"].reindex(ad_temp.var_names)
         _validate_de_result(de_df, backend=f"scanpy:{de_method}")
-        de_df["logFC"] = de_df["logFC"].fillna(0.0)
-        de_df["p_val"] = de_df["p_val"].fillna(1.0)
-        de_df["p_adj"] = de_df["p_adj"].fillna(1.0)
+        # Neutral-fill missing/non-finite values (scanpy can emit ±inf logFC when
+        # rank_genes_groups is run on raw counts and expm1 overflows).
+        logfc = pd.to_numeric(de_df["logFC"], errors="coerce")
+        de_df["logFC"] = logfc.where(np.isfinite(logfc), 0.0).fillna(0.0)
+        pval = pd.to_numeric(de_df["p_val"], errors="coerce")
+        de_df["p_val"] = pval.where(np.isfinite(pval), 1.0).fillna(1.0)
+        padj = pd.to_numeric(de_df["p_adj"], errors="coerce")
+        de_df["p_adj"] = padj.where(np.isfinite(padj), 1.0).fillna(1.0)
         return de_df
 
 
@@ -415,6 +567,7 @@ def _resolve_mixedlm_random_groups(
     sample_col: str,
     *,
     paired_replicates: bool = False,
+    quiet: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Build per-cell random-effect group IDs for MixedLM.
 
@@ -424,6 +577,12 @@ def _resolve_mixedlm_random_groups(
     ``{condition}::{sample}`` groups. Set ``paired_replicates=True`` when the same
     ID intentionally denotes the *same* biological replicate in every condition
     (paired / repeated-measures design).
+
+    Parameters
+    ----------
+    quiet
+        If True, suppress informational/warning logs (used inside tight loops
+        such as sample-level permutation shuffles).
     """
     cond = obs[groupby].astype(str)
     raw = obs[sample_col].astype(str)
@@ -437,27 +596,37 @@ def _resolve_mixedlm_random_groups(
     if overlapping and not paired_replicates:
         groups = (cond + "::" + raw).to_numpy()
         grouping = "condition_sample_composite"
-        logger.warning(
-            "sample_col=%r has %d label(s) reused across %r levels (e.g. %s). "
-            "MixedLM random effects use composite 'condition::sample' IDs so "
-            "distinct biological replicates are not pooled. For paired designs "
-            "where the same ID is the same individual in every condition, pass "
-            "paired_replicates=True.",
-            sample_col,
-            len(overlapping),
-            groupby,
-            overlapping[:5],
-        )
+        if not quiet:
+            logger.warning(
+                "sample_col=%r has %d label(s) reused across %r levels (e.g. %s). "
+                "MixedLM random effects use composite 'condition::sample' IDs so "
+                "distinct biological replicates are not pooled. For paired designs "
+                "where the same ID is the same individual in every condition, pass "
+                "paired_replicates=True.",
+                sample_col,
+                len(overlapping),
+                groupby,
+                overlapping[:5],
+            )
     else:
         groups = raw.to_numpy()
         grouping = "sample_col_raw"
-        if overlapping and paired_replicates:
-            logger.info(
-                "sample_col=%r labels overlap across %r levels; paired_replicates=True "
-                "so identical sample IDs share one random effect.",
-                sample_col,
-                groupby,
-            )
+        if not quiet:
+            if overlapping and paired_replicates:
+                logger.info(
+                    "sample_col=%r labels overlap across %r levels; paired_replicates=True "
+                    "so identical sample IDs share one random effect.",
+                    sample_col,
+                    groupby,
+                )
+            elif paired_replicates and not overlapping:
+                logger.warning(
+                    "paired_replicates=True but no sample_col labels are shared across %r "
+                    "levels — pairing has no effect (each sample ID appears in only one "
+                    "condition). Check that paired replicates use the same sample ID string "
+                    "in every condition.",
+                    groupby,
+                )
 
     meta = {
         "grouping": grouping,
@@ -467,6 +636,50 @@ def _resolve_mixedlm_random_groups(
         "n_random_groups_raw_sample_col": int(raw.nunique()),
     }
     return groups, meta
+
+
+def _mixedlm_sample_aware_logfc(
+    expr_mat: np.ndarray,
+    *,
+    condition: Any,
+    samples: Any,
+    target_group: str,
+    reference_group: str,
+    eps: float = 1e-9,
+) -> np.ndarray:
+    """Scanpy-style log2FC from **per-sample means**, then mean of sample means.
+
+    Gives each biological sample equal weight so a large-N sample cannot dominate
+    the effect size (aligned with the LMM's anti-pseudoreplication intent). Still
+    on the log1p → expm1 → log2 scale used by scanpy rank_genes_groups.
+    """
+    expr = np.asarray(expr_mat, dtype=float)
+    n_genes = expr.shape[1]
+    cond = np.asarray(condition)
+    samp = np.asarray(samples)
+
+    def _mean_of_sample_means(mask: np.ndarray) -> np.ndarray | None:
+        if not np.any(mask):
+            return None
+        sub_x = expr[mask]
+        sub_s = samp[mask]
+        # pd.unique preserves order; works for str/categorical codes
+        uniq = pd.unique(sub_s)
+        means: list[np.ndarray] = []
+        for s in uniq:
+            m = sub_s == s
+            if np.any(m):
+                means.append(sub_x[m].mean(axis=0))
+        if not means:
+            return None
+        return np.mean(np.stack(means, axis=0), axis=0)
+
+    mean_t = _mean_of_sample_means(cond == target_group)
+    mean_r = _mean_of_sample_means(cond == reference_group)
+    if mean_t is None or mean_r is None:
+        return np.zeros(n_genes, dtype=float)
+    logfc = np.log2((np.expm1(mean_t) + eps) / (np.expm1(mean_r) + eps))
+    return np.where(np.isfinite(logfc), logfc, 0.0)
 
 
 def _run_mixedlm_de(
@@ -484,8 +697,12 @@ def _run_mixedlm_de(
     Mixed linear model (LMM) DE + Delta Variance using statsmodels mixedlm.
 
     Models: y_log ~ C(condition) + (1 | sample)
-    - logFC: coefficient for the target condition (on log1p scale)
-    - p_val / p_adj: Wald p for the condition fixed effect (BH adj across genes)
+    - logFC: **sample-aware** scanpy-style log2 fold-change — mean of per-sample
+      means within each condition, then log2((expm1(mean_t)+eps)/(expm1(mean_r)+eps)).
+      Equal weight per biological sample (not dominated by high-cell samples);
+      magnitude stays comparable to wilcoxon / PyDESeq2 cutoffs.
+    - mixedlm_coef: fixed-effect coefficient on log1p-expression scale (natural log)
+    - p_val / p_adj: Wald (or LRT) p for the condition fixed effect (BH adj across genes)
     - delta_variance: fraction of total variance (var_fe + re_var + resid) attributable to the fixed condition effect.
     - delta_var_pval: LRT p-value for the contribution of condition (full vs reduced ~1 + (1|sample))
 
@@ -509,9 +726,7 @@ def _run_mixedlm_de(
     use_groupby = groupby
     if labels is not None:
         use_groupby = "_de_temp_group"
-        ad_temp.obs[use_groupby] = pd.Categorical(
-            np.asarray(labels).astype(str), categories=[reference_group, target_group]
-        )
+        ad_temp.obs[use_groupby] = _as_contrast_categorical(labels, reference_group, target_group)
 
     if sample_col not in ad_temp.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found in adata.obs")
@@ -520,7 +735,7 @@ def _run_mixedlm_de(
     _min_per_group = 4
     _min_total = 6
     obs = ad_temp.obs
-    cond_str = obs[use_groupby].astype(str)
+    cond_str = _normalize_label_array(obs[use_groupby])
     group_ids, group_meta = _resolve_mixedlm_random_groups(
         obs,
         use_groupby,
@@ -577,20 +792,29 @@ def _run_mixedlm_de(
                 md_null = smf.mixedlm("y ~ 1", df, groups=df["sample"])
                 m_null = md_null.fit(reml=False, maxiter=200, disp=False)
 
-            if not getattr(m_full, "converged", True) or not getattr(m_null, "converged", True):
-                return idx, 0.0, 1.0, 1.0, 0.0, True
-
-            # LRT statistic and p (chi2 df=1 for the added fixed effect term(s))
-            lrt_stat = -2.0 * (m_null.llf - m_full.llf)
-            lrt_p = float(chi2.sf(max(lrt_stat, 0.0), 1))
-
-            # Extract condition coef (target vs ref) — exact statsmodels name only
+            # Extract condition coef (target vs ref). Categories are
+            # [reference_group, target_group] so the name is always T.<target>.
             expected_coef = f"C(condition)[T.{target_group}]"
-            coef_name = expected_coef if expected_coef in m_full.params.index else None
-            if coef_name is None:
+            if expected_coef not in m_full.params.index:
                 return idx, 0.0, 1.0, 1.0, 0.0, True
-            logfc = float(m_full.params.get(coef_name, 0.0))
-            p_wald = float(m_full.pvalues.get(coef_name, 1.0))
+            logfc = float(m_full.params.get(expected_coef, np.nan))
+            p_wald = float(m_full.pvalues.get(expected_coef, np.nan))
+            # statsmodels often reports converged=False when RE variance is on the
+            # boundary (singular cov_re) even though fixed-effect coefs are usable.
+            # Only discard when the coefficient itself is missing/non-finite.
+            if not (np.isfinite(logfc) and np.isfinite(p_wald)):
+                return idx, 0.0, 1.0, 1.0, 0.0, True
+
+            # LRT: require finite llf on both models; else fall back to Wald p
+            llf_full = float(getattr(m_full, "llf", np.nan))
+            llf_null = float(getattr(m_null, "llf", np.nan))
+            if np.isfinite(llf_full) and np.isfinite(llf_null):
+                lrt_stat = -2.0 * (llf_null - llf_full)
+                lrt_p = float(chi2.sf(max(lrt_stat, 0.0), 1))
+                if not np.isfinite(lrt_p):
+                    lrt_p = p_wald
+            else:
+                lrt_p = p_wald
 
             # Delta variance: var attributable to fixed effects / total modeled var
             exog = m_full.model.exog
@@ -644,20 +868,31 @@ def _run_mixedlm_de(
             logger.warning("mixed_model_pval must be 'wald' or 'lrt'; falling back to 'wald'.")
         main_pvals = p_walds
 
-    with _de_warning_context():
-        p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
-
-    # statsmodels can return NaN p-values on degenerate fits; neutral-fill so downstream
-    # active_score / filter_active_genes always receive a valid DE table.
+    # Neutral-fill non-finite values BEFORE multipletests. statsmodels multipletests
+    # is not NaN-safe: a single NaN p-value makes the entire corrected vector NaN,
+    # which would then be filled to 1.0 for every gene (silent total loss of DE signal).
     logfcs = np.where(np.isfinite(logfcs), logfcs, 0.0)
     main_pvals = np.where(np.isfinite(main_pvals), main_pvals, 1.0)
-    p_adjs = np.where(np.isfinite(p_adjs), p_adjs, 1.0)
     dvars = np.where(np.isfinite(dvars), dvars, 0.0)
     p_lrts = np.where(np.isfinite(p_lrts), p_lrts, 1.0)
 
+    with _de_warning_context():
+        p_adjs = multipletests(main_pvals, method="fdr_bh")[1]
+    p_adjs = np.where(np.isfinite(p_adjs), p_adjs, 1.0)
+
     de_df = pd.DataFrame(index=var_names)
-    # mixedlm coefficient is on log1p scale (natural log). Convert to log2 for comparability.
-    de_df["logFC"] = pd.Series(logfcs, index=var_names) / np.log(2)
+    # LMM coefficient on log1p-expression scale (natural-log mean difference).
+    # Exposed as mixedlm_coef; logFC is a sample-aware scanpy-style log2FC so
+    # shared cutoffs (e.g. 0.35) remain usable while matching anti-pseudoreplication.
+    de_df["mixedlm_coef"] = pd.Series(logfcs, index=var_names)
+    logfc_means = _mixedlm_sample_aware_logfc(
+        expr_mat,
+        condition=condition,
+        samples=samples,
+        target_group=target_group,
+        reference_group=reference_group,
+    )
+    de_df["logFC"] = pd.Series(logfc_means, index=var_names)
     de_df["p_val"] = pd.Series(main_pvals, index=var_names)
     de_df["p_adj"] = pd.Series(p_adjs, index=var_names)
     de_df["delta_variance"] = pd.Series(dvars, index=var_names)
@@ -671,6 +906,7 @@ def _run_mixedlm_de(
     de_df.attrs["n_genes_failed_fit"] = n_failed
     de_df.attrs["failed_fit_rate"] = failed_rate
     de_df.attrs["mixedlm_grouping"] = group_meta
+    de_df.attrs["logFC_method"] = "sample_mean_of_means_log2"
     if n_failed > 0:
         logger.warning(
             "MixedLM: %d/%d genes (%.1f%%) had degenerate or non-convergent fits "
@@ -680,6 +916,20 @@ def _run_mixedlm_de(
             n_failed,
             n_total,
             100.0 * failed_rate,
+        )
+    # Sign discordance is rare after sample-aware logFC but still possible because
+    # p-values test the LMM fixed effect (mixedlm_coef), not the mean log2FC.
+    finite_both = np.isfinite(logfc_means) & np.isfinite(logfcs)
+    nonzero = finite_both & (np.abs(logfc_means) > 1e-12) & (np.abs(logfcs) > 1e-12)
+    n_sign_flip = int(np.sum(nonzero & (np.sign(logfc_means) != np.sign(logfcs))))
+    de_df.attrs["n_genes_logFC_mixedlm_sign_discordant"] = n_sign_flip
+    if n_sign_flip > 0:
+        logger.info(
+            "MixedLM: %d/%d genes have opposite signs for sample-aware logFC vs "
+            "mixedlm_coef (p_val tests the LMM coefficient). Prefer mixedlm_coef "
+            "when the model direction matters.",
+            n_sign_flip,
+            n_total,
         )
     return de_df
 
@@ -717,16 +967,18 @@ def _run_memento_de(
 
     if labels is not None:
         use_groupby = "_memento_temp_group"
-        ad_temp.obs[use_groupby] = pd.Categorical(
-            np.asarray(labels).astype(str), categories=[reference_group, target_group]
-        )
+        ad_temp.obs[use_groupby] = _as_contrast_categorical(labels, reference_group, target_group)
 
-    # Restrict to the two groups being compared
-    keep = ad_temp.obs[use_groupby].astype(str).isin([target_group, reference_group])
+    # Restrict to the two groups being compared (normalized labels)
+    keep = pd.Series(
+        _normalize_label_array(ad_temp.obs[use_groupby]), index=ad_temp.obs_names
+    ).isin([target_group, reference_group])
     ad_temp = ad_temp[keep].copy()
 
     # Binary treatment column expected by memento.binary_test_1d
-    ad_temp.obs["stim"] = (ad_temp.obs[use_groupby].astype(str) == target_group).astype(int)
+    ad_temp.obs["stim"] = (_normalize_label_array(ad_temp.obs[use_groupby]) == target_group).astype(
+        int
+    )
 
     # --- Resolve raw counts for Memento ---
     # Priority:
@@ -746,52 +998,36 @@ def _run_memento_de(
 
     if counts is not None:
         if isinstance(counts, str):
-            if counts in ad_temp.layers:
-                raw_counts = ad_temp.layers[counts]
-            else:
+            if counts not in ad_temp.layers:
                 raise ValueError(f"counts='{counts}' layer not found in adata.layers")
-        elif isinstance(counts, ad.AnnData):
-            if not np.array_equal(counts.obs_names, ad_temp.obs_names):
-                missing = ad_temp.obs_names.difference(counts.obs_names)
-                if len(missing):
-                    raise ValueError(
-                        f"counts AnnData is missing {len(missing)} cell(s) required by the "
-                        f"comparison subset (first missing: {missing[0]!r}). "
-                        "Pass counts aligned to adata.obs_names or use a matrix layer."
-                    )
-                counts = counts[ad_temp.obs_names]
-            raw_counts = counts.X
-            if counts.var_names.tolist() != ad_temp.var_names.tolist():
-                common = counts.var_names.intersection(ad_temp.var_names)
-                if len(common) == 0:
-                    raise ValueError(
-                        "No overlapping genes between provided counts AnnData and current adata"
-                    )
-                raw_counts = counts[:, common].X
-                ad_temp = ad_temp[:, common].copy()
+            raw_counts = ad_temp.layers[counts]
+            if not _is_integer_counts_like(raw_counts):
+                raise ValueError(
+                    f"Memento counts layer {counts!r} does not look like raw integer counts. "
+                    "Call store_raw_counts() before normalize/log1p, or pass a true count matrix."
+                )
+            logger.info("Memento: using explicitly provided counts layer %r.", counts)
         else:
-            raw_counts = counts
-
-        if raw_counts is not None:
-            raw_counts = _to_csr(raw_counts)
-            logger.info("Memento: using explicitly provided counts.")
-
-    if raw_counts is None and "counts" in getattr(ad_temp, "layers", {}):
-        raw_counts = ad_temp.layers["counts"]
-        logger.info("Memento: using 'counts' layer.")
+            # AnnData / ndarray / sparse / DataFrame — shape + name alignment
+            coerced = _coerce_pydeseq2_counts_matrix(counts, ad_temp)
+            if coerced is None:
+                raise ValueError(
+                    "Memento counts= is missing cells/genes or could not be aligned to the "
+                    f"comparison subset shape {ad_temp.shape}. Pass a matrix/AnnData/layer "
+                    "with matching obs×var order (or use counts='counts' after store_raw_counts)."
+                )
+            raw_counts, src = coerced
+            if not _is_integer_counts_like(raw_counts):
+                raise ValueError(f"Memento counts= ({src}) does not look like raw integer counts.")
+            logger.info("Memento: using %s.", src)
         raw_counts = _to_csr(raw_counts)
 
-    if (
-        raw_counts is None
-        and hasattr(ad_temp, "raw")
-        and ad_temp.raw is not None
-        and getattr(ad_temp.raw, "shape", (0, 0))[1] == ad_temp.n_vars
-        and hasattr(ad_temp.raw, "var_names")
-        and np.array_equal(ad_temp.raw.var_names, ad_temp.var_names)
-    ):
-        raw_counts = ad_temp.raw.X
-        logger.info("Memento: using counts from adata.raw (exact match).")
-        raw_counts = _to_csr(raw_counts)
+    # Prefer shared resolve path (same integer + alignment guards as PyDESeq2).
+    if raw_counts is None:
+        resolved = _resolve_aligned_raw_counts(ad_temp, layer="counts", require_integer=True)
+        if resolved is not None:
+            raw_counts = _to_csr(resolved)
+            logger.info("Memento: using aligned integer counts from layers['counts']/raw.")
 
     if raw_counts is None and _is_integer_counts_like(ad_temp.X):
         raw_counts = ad_temp.X
@@ -799,13 +1035,23 @@ def _run_memento_de(
         raw_counts = _to_csr(raw_counts)
 
     if raw_counts is None:
-        logger.warning(
-            "Could not obtain raw counts for Memento. "
-            "Memento works best with raw integer UMI counts. "
-            "Please call scat.store_raw_counts(adata) early (before HVG + log), "
-            "or provide via the `counts` parameter, or ensure adata.raw / layers['counts'] has raw counts."
+        raise ValueError(
+            "Could not obtain raw integer counts for Memento. "
+            "Call scat.store_raw_counts(adata) early (before HVG + log), "
+            "or provide counts= / layers['counts'] with unnormalized integer UMIs. "
+            "Refusing to run Memento on log-normalized or non-count matrices."
         )
-        raw_counts = _to_csr(ad_temp.X)
+
+    # Final shape guard (layers / .X paths)
+    try:
+        rc_shape = raw_counts.shape
+    except Exception:
+        rc_shape = None
+    if rc_shape is not None and (rc_shape[0] != ad_temp.n_obs or rc_shape[1] != ad_temp.n_vars):
+        raise ValueError(
+            f"Memento counts shape {rc_shape} does not match AnnData subset "
+            f"{ad_temp.shape}. Align genes/cells before calling."
+        )
 
     ad_temp.X = raw_counts
 
@@ -912,7 +1158,14 @@ def _run_memento_de(
             de_df[dst] = pd.to_numeric(result[src], errors="coerce").reindex(res_index)
 
     # Re-align to the var_names of the adata object that was passed into the wrapper
-    # (important for the labels= permutation case and any internal subsetting)
+    # (important for the labels= permutation case and any internal subsetting).
+    # DataFrame.attrs propagation across reindex/fillna is experimental in pandas
+    # and not guaranteed across versions — capture and restore explicitly so
+    # n_genes_not_returned_by_memento / n_genes_missing_pval cannot silently drop.
+    saved_attrs = dict(de_df.attrs)
     de_df = de_df.reindex(adata.var_names).fillna({"logFC": 0.0, "p_val": 1.0, "p_adj": 1.0})
+    de_df.attrs.update(saved_attrs)
+    de_df.attrs["n_genes_not_returned_by_memento"] = n_genes_not_returned
+    de_df.attrs["n_genes_missing_pval"] = int((~valid_pval_mask).sum())
 
     return de_df

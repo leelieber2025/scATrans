@@ -12,7 +12,7 @@ import uuid
 import warnings
 from collections.abc import Iterable
 from math import comb  # re-exported for permutation use
-from typing import Any
+from typing import Any, cast
 
 import anndata as ad
 import numpy as np
@@ -24,9 +24,106 @@ from sklearn.linear_model import HuberRegressor
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+# ---------------------------------------------------------------------------
+# Matrix helpers
+# ---------------------------------------------------------------------------
+# AnnData types ``.X`` / ``.layers[...]`` as a very wide union (ndarray | sparse |
+# dask | None | …). Calling ``.sum()`` / ``.toarray()`` / ``.copy()`` / ``.shape``
+# directly triggers dozens of mypy [union-attr] / incomplete-type errors.
+# Route all of that through these helpers so call sites stay readable.
+
+
+def _require_matrix(X: Any, *, name: str = "matrix") -> Any:
+    """Return *X* if non-None; raise :class:`ValueError` otherwise."""
+    if X is None:
+        raise ValueError(f"{name} is None")
+    return X
+
+
+def _dense_expression_matrix(X: Any) -> np.ndarray:
+    """Dense ``float`` ndarray from AnnData ``.X``, a layer, sparse, or dense array."""
+    X = _require_matrix(X, name="expression matrix")
+    if sparse.issparse(X):
+        return np.asarray(X.toarray(), dtype=float)
+    # Some backends expose densify via toarray/todense without being scipy sparse.
+    toarray = getattr(X, "toarray", None)
+    if callable(toarray):
+        try:
+            return np.asarray(toarray(), dtype=float)
+        except Exception:
+            pass
+    todense = getattr(X, "todense", None)
+    if callable(todense):
+        try:
+            return np.asarray(todense(), dtype=float)
+        except Exception:
+            pass
+    return np.asarray(X, dtype=float)
+
+
+def _matrix_copy(X: Any) -> Any:
+    """Copy a layer/X matrix without union-type attribute access at the call site."""
+    X = _require_matrix(X)
+    copy_fn = getattr(X, "copy", None)
+    if callable(copy_fn):
+        return copy_fn()
+    return np.array(X, copy=True)
+
+
+def _matrix_shape(X: Any) -> tuple[int, ...]:
+    """Return ``X.shape`` as a plain int tuple (narrows incomplete layer types)."""
+    X = _require_matrix(X)
+    shape = getattr(X, "shape", None)
+    if shape is None:
+        raise TypeError(f"object of type {type(X)!r} has no shape")
+    return tuple(int(s) for s in shape)
+
+
+def _matrix_sum_axis0(X: Any) -> np.ndarray:
+    """Column sums as a 1-d float array (works for sparse and dense)."""
+    X = _require_matrix(X)
+    if sparse.issparse(X):
+        return np.asarray(X.sum(axis=0)).ravel().astype(float, copy=False)
+    arr = np.asarray(X, dtype=float)
+    if arr.ndim == 1:
+        return arr
+    return arr.sum(axis=0).ravel()
+
+
+def _matrix_sum_axis1(X: Any) -> np.ndarray:
+    """Row sums as a 1-d float array (works for sparse and dense)."""
+    X = _require_matrix(X)
+    if sparse.issparse(X):
+        return np.asarray(X.sum(axis=1)).ravel().astype(float, copy=False)
+    arr = np.asarray(X, dtype=float)
+    if arr.ndim == 1:
+        return arr
+    return arr.sum(axis=1).ravel()
+
+
+def _matrix_row_subset_sum_axis0(X: Any, row_mask: Any) -> np.ndarray:
+    """Column sums over a boolean row mask (pseudobulk aggregation helper)."""
+    X = _require_matrix(X)
+    sub = X[row_mask]
+    return _matrix_sum_axis0(sub)
+
+
+def _as_var_dataframe(adata: ad.AnnData) -> pd.DataFrame:
+    """Narrow ``adata.var`` to :class:`~pandas.DataFrame` for ``.loc`` / sorting.
+
+    Some anndata type stubs type ``.var`` as a broad union (e.g. including
+    Dataset2D) that does not expose ``.loc``; runtime is always a DataFrame.
+    """
+    return cast(pd.DataFrame, adata.var)
+
 
 def _normalize_group_label(val: Any) -> str | None:
-    """Normalize a single group label for stable string matching (handles NaN, 1.0 vs '1')."""
+    """Normalize a single group label for stable string matching.
+
+    Handles NaN, bool, int/float (``1.0`` → ``"1"``), and **string** forms from
+    CSV/Excel (``"1.0"`` → ``"1"``, ``"2.0"`` → ``"2"``) so callers can pass
+    ``target_group=1`` or ``"1"`` against obs values stored as ``"1.0"``.
+    """
     if val is None:
         return None
     try:
@@ -48,7 +145,88 @@ def _normalize_group_label(val: Any) -> str | None:
     s = str(val).strip()
     if s.lower() in ("nan", "<na>", "none", ""):
         return None
+    # Stringified numerics from CSV/Excel (e.g. "1.0", "2.00")
+    try:
+        fv = float(s)
+        if np.isfinite(fv) and fv.is_integer():
+            return str(int(fv))
+    except (TypeError, ValueError):
+        pass
     return s
+
+
+def _normalize_label_array(labels: Any) -> np.ndarray:
+    """Map labels through :func:`_normalize_group_label` (vectorized via pandas)."""
+    ser = pd.Series(np.asarray(labels, dtype=object).ravel())
+    return ser.map(_normalize_group_label).to_numpy()
+
+
+def _as_contrast_categorical(
+    labels: Any,
+    reference_group: str,
+    target_group: str,
+) -> pd.Categorical:
+    """Build a two-level Categorical with normalized labels (safe for float ``1.0`` vs ``"1"``)."""
+    vals = _normalize_label_array(labels)
+    # categories are expected already normalized by callers (public API validates)
+    return pd.Categorical(vals, categories=[reference_group, target_group])
+
+
+def _subset_obs_mask(
+    obs_col: pd.Series,
+    subset_values: Any,
+) -> pd.Series:
+    """Boolean mask for ``subset_col`` matching with group-label normalization.
+
+    ``subset_values`` may be a single label or a sequence. Numeric / ``"1.0"``
+    forms match the same way as ``groupby`` contrasts.
+    """
+    if isinstance(subset_values, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+        raw_list = [subset_values]
+    else:
+        try:
+            raw_list = list(subset_values)
+        except TypeError as exc:
+            raise TypeError(
+                f"subset_values must be a label or sequence of labels, got {type(subset_values)!r}"
+            ) from exc
+    wanted = {_normalize_group_label(v) for v in raw_list}
+    wanted.discard(None)
+    if not wanted:
+        return pd.Series(False, index=obs_col.index)
+    normed = obs_col.map(_normalize_group_label)
+    return normed.isin(wanted)
+
+
+def _merge_scatrans_uns(
+    existing: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    sticky_keys: tuple[str, ...] = ("raw_gene_list", "raw_gene_list_full", "history"),
+) -> dict[str, Any]:
+    """Merge run metadata into ``adata.uns['scatrans']`` without sticky stale fields.
+
+    - Keys in ``sticky_keys`` are preserved from ``existing`` unless ``meta``
+      provides a non-None replacement (e.g. updated ``history``).
+    - All other keys from a previous run are **dropped**, then ``meta`` is applied.
+    - ``meta`` values that are ``None`` **remove** the key (explicit "feature off")
+      so a second analysis cannot inherit e.g. ``sample_col`` from a prior mixed-model run.
+    """
+    out: dict[str, Any] = {}
+    for k in sticky_keys:
+        if k in existing and k not in meta or k in existing and meta.get(k) is None:
+            out[k] = existing[k]
+    for k, v in meta.items():
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = v
+    # history: prefer meta if present (caller usually already merged)
+    if "history" in meta and meta["history"] is not None:
+        out["history"] = meta["history"]
+    elif "history" in existing:
+        out["history"] = existing["history"]
+    return out
 
 
 def _validate_group_contrast(
@@ -226,13 +404,7 @@ def _is_integer_counts_like(X: Any, max_check: int = 100000, atol: float = 1e-6)
 
     # Tolerant check: allows tiny floating point noise from summation / cast
     rounded = np.round(vals)
-    return np.all(vals >= 0) and np.allclose(vals, rounded, atol=atol, rtol=1e-5)
-
-
-def _dense_expression_matrix(X: Any) -> np.ndarray:
-    if sparse.issparse(X):
-        return np.asarray(X.toarray(), dtype=float)
-    return np.asarray(X, dtype=float)
+    return bool(np.all(vals >= 0) and np.allclose(vals, rounded, atol=atol, rtol=1e-5))
 
 
 def _x_looks_zscore_scaled(finite: np.ndarray) -> bool:
@@ -255,10 +427,7 @@ def _x_carries_library_size_signal(X: Any, *, min_cv: float = 0.12, max_cells: i
     normalize_total+log1p data does not. Used to avoid false 'already log-normalized'
     detection on small-magnitude decimal count matrices.
     """
-    if sparse.issparse(X):
-        lib = np.asarray(X.sum(axis=1)).ravel(dtype=float)
-    else:
-        lib = np.asarray(X, dtype=float).sum(axis=1)
+    lib = _matrix_sum_axis1(X)
     lib = lib[np.isfinite(lib)]
     if lib.size < 2:
         return False
@@ -329,8 +498,14 @@ def _x_looks_log_normalized(
     has_neg = bool(np.any(finite < 0))
     if has_neg:
         return True
-    if has_log1p_marker and mx <= 20.0:
-        return True
+    # Trust an explicit uns['log1p'] marker for non-integer data even when max>20
+    # (high-depth / bulk-like log matrices). Only reject when the matrix still
+    # looks like raw library-size-dominated counts (stale marker after restore).
+    if has_log1p_marker:
+        # Trust marker unless matrix still looks raw + library-size dominated (stale marker).
+        return not (
+            mx > 20.0 and _x_carries_library_size_signal(X) and _x_gene_dispersion_looks_raw(X)
+        )
     if mx > 20.0:
         return False
     # Per-cell library-size CV alone is unreliable: real biological heterogeneity (different
@@ -361,10 +536,7 @@ def _restore_log_from_scaled_x(adata: ad.AnnData) -> bool:
     if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)):
         return False
 
-    if sparse.issparse(adata.X):
-        X = np.asarray(adata.X.toarray(), dtype=float)
-    else:
-        X = np.asarray(adata.X, dtype=float)
+    X = _dense_expression_matrix(adata.X)
 
     adata.X = X * std + mean
     logger.warning(
@@ -427,7 +599,12 @@ def _apply_de_preprocess(
     *,
     skip_auto: bool = False,
 ) -> None:
-    """Apply normalize_total + log1p according to ``de_preprocess`` mode."""
+    """Apply normalize_total + log1p according to ``de_preprocess`` mode.
+
+    When ``skip_auto=True`` (count-based PyDESeq2 pseudobulk path), both
+    ``auto`` *and* explicit ``normalize_log1p`` are skipped so counts are not
+    log-transformed before DESeq2. ``normalize_log1p`` logs a warning in that case.
+    """
     if de_preprocess in ("auto", "normalize_log1p") and not skip_auto:
         arr = _dense_expression_matrix(adata.X)
         finite = arr[np.isfinite(arr)]
@@ -440,6 +617,13 @@ def _apply_de_preprocess(
             )
 
     if de_preprocess == "normalize_log1p":
+        if skip_auto:
+            logger.warning(
+                "de_preprocess='normalize_log1p' is ignored on the count-based PyDESeq2 "
+                "path (would log-transform integer counts). Leaving .X untransformed; "
+                "pass de_preprocess='none' or 'auto' to silence this message."
+            )
+            return
         logger.info("DE preprocessing: applying normalize_total + log1p (explicit).")
         sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
@@ -502,7 +686,22 @@ def _resolve_aligned_raw_counts(
                 adata.n_vars,
             )
             continue
-        if require_integer and not _is_integer_counts_like(mat):
+        # After pseudobulk aggregation, layers['counts'] is always rounded and
+        # looks integer. Prefer the pre-aggregation verdict when available.
+        if (
+            require_integer
+            and layer == "counts"
+            and source_name == f"layers['{layer}']"
+            and "pb_counts_is_count_like" in adata.uns
+        ):
+            if not bool(adata.uns["pb_counts_is_count_like"]):
+                logger.warning(
+                    "Counts from %s were aggregated from a non-count-like source "
+                    "(pb_counts_is_count_like=False); skipping for count-based DE.",
+                    source_name,
+                )
+                continue
+        elif require_integer and not _is_integer_counts_like(mat):
             logger.warning(
                 "Counts from %s do not look like raw integer counts; skipping for count-based DE.",
                 source_name,
@@ -612,16 +811,19 @@ def _normalize_velocity_layers_by_size_factor(
     uns_layer: Any, spl_layer: Any, target_sum: float | None = None
 ) -> tuple[Any, Any, np.ndarray, np.ndarray]:
     total_layer = _safe_add_matrices(uns_layer, spl_layer)
-    row_totals = np.asarray(total_layer.sum(axis=1)).ravel()
+    row_totals = np.asarray(total_layer.sum(axis=1)).ravel().astype(float)
     positive = row_totals > 0
 
     if positive.sum() == 0:
         return uns_layer, spl_layer, row_totals, np.ones_like(row_totals, dtype=float)
 
     if target_sum is None:
-        target_sum = np.median(row_totals[positive])
+        target_sum = float(np.median(row_totals[positive]))
 
-    factors = target_sum / np.maximum(row_totals, 1e-8)
+    # Zero-total rows keep factor=1 (stay zero). Do not use target/1e-8, which
+    # produces ~1e9 factors that amplify float noise if any near-zero totals appear.
+    factors = np.ones_like(row_totals, dtype=float)
+    factors[positive] = target_sum / row_totals[positive]
 
     if sparse.issparse(uns_layer) or sparse.issparse(spl_layer):
         uns_layer = sparse.csr_matrix(uns_layer)
@@ -702,7 +904,12 @@ def _pseudobulk_with_layers(
     # Check count-likeness on the pre-aggregation, pre-rounding source matrix.
     # Summing+rounding below always produces integer-valued output, so checking
     # after aggregation would always pass and defeat strict_pydeseq2_counts.
+    # Apply the same pre-agg check to every requested layer (esp. "counts"), not
+    # only to .X — PyDESeq2 often consumes layers['counts'] after aggregation.
     x_source_is_count_like = _is_integer_counts_like(X_source)
+    layer_is_count_like: dict[str, bool] = {
+        layer: bool(_is_integer_counts_like(adata.layers[layer])) for layer in layers
+    }
 
     valid_mask = adata.obs[sample_col].notna() & adata.obs[groupby].notna()
     if not valid_mask.any():
@@ -744,7 +951,7 @@ def _pseudobulk_with_layers(
         n_cells = int(mask.sum())
         if n_cells < min_cells:
             continue
-        x_sum = np.nan_to_num(np.asarray(X_source[mask].sum(axis=0)).ravel())
+        x_sum = np.nan_to_num(_matrix_row_subset_sum_axis0(X_source, mask))
         # Clean to integer-valued floats for count-like data (pseudobulk sums).
         # Using round keeps the numeric value exact while float dtype is fine for AnnData/sparse.
         x_sum = np.round(x_sum).astype(np.float64, copy=False)
@@ -764,7 +971,7 @@ def _pseudobulk_with_layers(
             }
         )
         for layer in layers:
-            l_sum = np.nan_to_num(np.asarray(adata.layers[layer][mask].sum(axis=0)).ravel())
+            l_sum = np.nan_to_num(_matrix_row_subset_sum_axis0(adata.layers[layer], mask))
             # Velocity layers (spliced/unspliced) can stay as summed float; only round for cleanliness
             l_sum = np.round(l_sum).astype(np.float64, copy=False)
             layer_rows[layer].append(sparse.csr_matrix(l_sum.reshape(1, -1)))
@@ -792,6 +999,12 @@ def _pseudobulk_with_layers(
         # (e.g. PyDESeq2 strict_pydeseq2_counts check) don't re-check the already-rounded X.
         adata_pb.uns["pb_x_is_count_like"] = bool(x_source_is_count_like)
         adata_pb.uns["pb_x_source_desc"] = x_source_name
+        # Same trap for layers: post-aggregation np.round makes every layer look
+        # integer-valued. Record pre-agg verdicts for each aggregated layer.
+        adata_pb.uns["pb_layer_is_count_like"] = dict(layer_is_count_like)
+        if "counts" in layer_is_count_like:
+            # Convenience alias used by PyDESeq2 counts= / layers['counts'] paths.
+            adata_pb.uns["pb_counts_is_count_like"] = bool(layer_is_count_like["counts"])
     return adata_pb
 
 
@@ -894,6 +1107,17 @@ def _fit_huber_bias_correction(
                 bias_info["coef_intron_number"] = float(model.coef_[1])
             if hasattr(model, "intercept_"):
                 bias_info["intercept"] = float(model.intercept_)
+            # Genes with expression but missing length/intron features cannot use
+            # the multi-covariate prediction. Use the same median-centering as the
+            # global fallback so they are not silently left at residual=0 (which
+            # looks like "no excess" rather than "not annotated").
+            missing_feat = valid_expr & ~valid_feat
+            n_missing_feat = int(missing_feat.sum())
+            bias_info["n_genes_residual_missing_features"] = n_missing_feat
+            if n_missing_feat > 0:
+                med = float(np.nanmedian(delta_velocity[valid_expr]))
+                residual[missing_feat] = delta_velocity[missing_feat] - med
+                bias_info["missing_features_residual"] = "median_centered_delta"
         except (ValueError, TypeError, np.linalg.LinAlgError, ArithmeticError) as e:
             logger.warning("Bias correction failed. Falling back to median. Reason: %s", e)
             bias_info["fallback_reason"] = (
@@ -905,6 +1129,7 @@ def _fit_huber_bias_correction(
         bias_info["fallback_to_median"] = True
         # Median centering is a safe fallback but is not length/intron Huber correction.
         bias_info["bias_corrected"] = False
+        bias_info["n_genes_residual_missing_features"] = int((valid_expr & ~valid_feat).sum())
 
     residual[~valid_expr] = 0.0
     return residual, bias_info

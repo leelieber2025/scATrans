@@ -14,20 +14,25 @@ from scatrans._de import _run_mixedlm_de
 
 @pytest.mark.slow
 def test_mixedlm_logfc_respects_target_reference_order():
-    """Target alphabetically before reference must still yield target-minus-reference logFC."""
-    np.random.seed(0)
-    n_cells, n_genes = 120, 5
-    X = np.zeros((n_cells, n_genes))
-    X[:60] = 100.0
-    X[60:] = 1.0
-    X += np.random.randn(n_cells, n_genes) * 5.0
-    X = np.maximum(X, 0.0)
-    # Paired design: same sample IDs (s1–s6) appear in both conditions.
-    sample_pattern = [f"s{i}" for i in range(1, 7) for _ in range(5)]
+    """Target alphabetically before reference must still yield target-minus-reference logFC.
+
+    Uses compositional DE (marker + stable background): homogeneous scaling of
+    all genes is cancelled by ``normalize_total``. Also exercises
+    ``paired_replicates=True`` (shared sample IDs across conditions).
+    """
+    rng = np.random.default_rng(0)
+    n_samples, cells_per, n_genes = 6, 8, 4
+    n_per = n_samples * cells_per
+    # Background genes similar in both groups; only G0 is DE (A high).
+    X = rng.poisson(30, size=(n_per * 2, n_genes)).astype(float)
+    X[:n_per, 0] = rng.poisson(120, size=n_per).astype(float)
+    X[n_per:, 0] = rng.poisson(8, size=n_per).astype(float)
+    # Paired design: same sample IDs in both conditions.
+    samples = [f"s{i}" for i in range(n_samples) for _ in range(cells_per)]
     obs = pd.DataFrame(
         {
-            "condition": ["A"] * 60 + ["Z"] * 60,
-            "sample": sample_pattern * 4,
+            "condition": ["A"] * n_per + ["Z"] * n_per,
+            "sample": samples + samples,
         }
     )
     adata = ad.AnnData(
@@ -56,14 +61,29 @@ def test_mixedlm_logfc_respects_target_reference_order():
         n_jobs=1,
         paired_replicates=True,
     )
-    # Exclude degenerate fits (logFC=0, p_val=1) — MixedLM can fail on ~constant genes.
-    fitted_a = a_vs_z["p_val"] < 1.0
-    fitted_z = z_vs_a["p_val"] < 1.0
-    both = fitted_a & fitted_z
-    assert both.sum() >= 3
-    assert np.all(a_vs_z.loc[both, "logFC"] > 0)
-    assert np.all(z_vs_a.loc[both, "logFC"] < 0)
-    assert np.allclose(a_vs_z.loc[both, "logFC"], -z_vs_a.loc[both, "logFC"])
+    # Primary gene must fit and flip sign with target/reference swap.
+    assert a_vs_z.loc["G0", "p_val"] < 1.0 and z_vs_a.loc["G0", "p_val"] < 1.0
+    assert a_vs_z.loc["G0", "logFC"] > 0
+    assert z_vs_a.loc["G0", "logFC"] < 0
+    assert np.isclose(
+        a_vs_z.loc["G0", "logFC"],
+        -z_vs_a.loc["G0", "logFC"],
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    # Any other gene with finite coefs both ways must also be antisymmetric.
+    both = (
+        (a_vs_z["p_val"] < 1.0)
+        & (z_vs_a["p_val"] < 1.0)
+        & np.isfinite(a_vs_z["logFC"])
+        & np.isfinite(z_vs_a["logFC"])
+    )
+    assert np.allclose(
+        a_vs_z.loc[both, "logFC"].to_numpy(dtype=float),
+        -z_vs_a.loc[both, "logFC"].to_numpy(dtype=float),
+        rtol=1e-4,
+        atol=1e-4,
+    )
 
 
 @pytest.mark.slow
@@ -82,8 +102,8 @@ def test_differential_expression_mixed_model(adata_mixed_small):
 
 @pytest.mark.slow
 def test_active_score_pb_x_layer_sentinel(adata_pb):
-    """pb_x_layer='X' must mean adata.X, matching differential_expression()."""
-    _, _, _ = scat.active_score(
+    """pb_x_layer='X' aggregates adata.X (not spliced/U+S), matching DE semantics."""
+    ad_x, _, _ = scat.active_score(
         adata_pb,
         groupby="condition",
         target_group="Disease",
@@ -96,7 +116,33 @@ def test_active_score_pb_x_layer_sentinel(adata_pb):
         pb_x_layer="X",
         use_permutation=False,
         show_plot=False,
+        min_cells=1,
+        min_counts=1,
     )
+    assert "pb_x_source" in ad_x.obs.columns
+    sources = set(ad_x.obs["pb_x_source"].astype(str).unique())
+    assert sources == {"adata.X"}, f"expected adata.X, got {sources}"
+    assert ad_x.uns.get("pb_x_source_desc") == "adata.X"
+
+    ad_s, _, _ = scat.active_score(
+        adata_pb,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        use_pseudobulk=True,
+        sample_col="sample",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        pb_use_total_for_x=False,
+        pb_x_layer="spliced",
+        use_permutation=False,
+        show_plot=False,
+        min_cells=1,
+        min_counts=1,
+    )
+    sources_s = set(ad_s.obs["pb_x_source"].astype(str).unique())
+    assert sources_s == {"layer 'spliced'"}, f"expected spliced layer, got {sources_s}"
+    assert ad_s.uns.get("pb_x_source_desc") == "layer 'spliced'"
 
 
 @pytest.mark.skipif(
@@ -214,9 +260,15 @@ def test_active_score_pseudobulk_pydeseq2(adata_pb):
 
 @pytest.mark.plot
 def test_active_score_show_plot_comet(adata_basic):
-    """Exercise show_plot=True path (Agg backend)."""
+    """Exercise show_plot=True path (Agg backend).
+
+    Must actually create a figure — a bare no-raise check misses wrong
+    relative imports after the tl package split (``from .. import pl``).
+    """
     import matplotlib.pyplot as plt
 
+    plt.close("all")
+    before = len(plt.get_fignums())
     _, _, _ = scat.active_score(
         adata_basic,
         groupby="condition",
@@ -225,6 +277,8 @@ def test_active_score_show_plot_comet(adata_basic):
         use_permutation=False,
         show_plot=True,
     )
+    after = len(plt.get_fignums())
+    assert after > before, "show_plot=True must create a comet figure via scatrans.pl"
     plt.close("all")
 
 

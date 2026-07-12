@@ -40,9 +40,12 @@ scat.pl.enrich_dotplot(enrich)
 
 `differential_expression` supports the same flexible backends as
 `active_score` (scanpy methods, PyDESeq2 pseudobulk, mixed models, and
-optionally Memento as a method-of-moments estimator). The returned table is
-directly compatible with `filter_active_genes`, enrichment functions, and
-all `scat.pl.*` plotting helpers.
+optionally Memento as a method-of-moments estimator). **Do not enable
+`use_mixed_model` and `use_memento_de` together** — they are mutually
+exclusive. With MixedLM, reported `logFC` is sample-mean-of-means log2FC
+(see {doc}`user_guide/advanced`). The returned table is directly compatible
+with `filter_active_genes`, enrichment functions, and all `scat.pl.*`
+plotting helpers.
 
 The package therefore supports both velocity-based active transcription
 analysis and conventional DE + enrichment workflows. See

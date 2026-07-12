@@ -69,8 +69,8 @@ more lenient default thresholds suitable after aggregation.
 | Exploratory / default | scanpy `wilcoxon` or `t-test` on normalized data | Fast; standard pseudoreplication limits |
 | ≥2 biological replicates per group, aggregated counts | `use_pseudobulk=True` + `pydeseq2` | Requires raw counts (`store_raw_counts`); DESeq2 assumptions |
 | Few pseudobulk samples, no DESeq2 | `use_pseudobulk=True` + `pseudobulk_de_backend="scanpy"` | Non-parametric on aggregated profiles |
-| Cell-level data + true sample replicates | `use_mixed_model=True` + `sample_col` | Lightweight LMM (log1p); check `diagnostics["mixed_model"]["failed_fit_rate"]` — not NB-GLMM/voom |
-| Method-of-moments cell-level DE | `use_memento_de=True` | Raw integer counts required; compare `memento_p_adj_native` vs package `p_adj` if auditing |
+| Cell-level data + true sample replicates | `use_mixed_model=True` + `sample_col` | Lightweight LMM (log1p); `logFC` = sample-mean-of-means (not LMM coef); check `diagnostics["mixed_model"]` (`failed_fit_rate`, sign-discordant count) — not NB-GLMM/voom. **Do not combine with** `use_memento_de` |
+| Method-of-moments cell-level DE | `use_memento_de=True` | Raw integer counts required; mutually exclusive with MixedLM; compare `memento_p_adj_native` vs package `p_adj` if auditing |
 
 Always run `recommend_workflow(...)` first; inspect
 `adata.uns["scatrans"]["diagnostics"]` (bias, gamma, permutation

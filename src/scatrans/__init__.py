@@ -29,7 +29,6 @@ from .enrich import (
     save_enrichment_report,
     simplify_enrichment,
 )
-from .generate_gene_features import main as generate_gene_features_main
 from .pp_bias import (
     add_gene_features,
     generate_gene_features_from_gtf,
@@ -37,6 +36,7 @@ from .pp_bias import (
 )
 from .tl import (
     WORKFLOW_PRESETS,
+    PipelineResult,
     active_score,
     active_score_simple,
     diagnose_design,
@@ -59,6 +59,7 @@ __all__ = [
     "recommend_workflow",
     "WORKFLOW_PRESETS",
     "run_default_pipeline",
+    "PipelineResult",
     "filter_active_genes",
     "ensure_raw_counts",
     "restore_raw_counts",
@@ -79,7 +80,6 @@ __all__ = [
     "concat_compare_results",
     "pl",
     "qc",
-    "generate_gene_features_main",
     "__version__",
 ]
 
@@ -87,7 +87,7 @@ __all__ = [
 try:
     from ._version import version as __version__
 except ImportError:
-    __version__ = "0.9.9"
+    __version__ = "0.10.1"
 
 # Optional: prevent some internal modules from appearing too prominently
 # in casual inspection while still allowing advanced users to do
