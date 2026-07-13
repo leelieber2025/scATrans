@@ -4,7 +4,10 @@ message: >-
   If you use this software, please cite it using the metadata below.
 type: software
 authors:
-  - name: "scATrans Developers"
+  # Display form used elsewhere: Zhao Li (李钊)
+  - family-names: "Li"
+    given-names: "Zhao (李钊)"
+    email: "leelieber@gmail.com"
 repository-code: "https://github.com/leelieber2025/scATrans"
 url: "https://github.com/leelieber2025/scATrans"
 license: Apache-2.0

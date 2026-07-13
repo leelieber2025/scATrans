@@ -12,7 +12,7 @@ sys.path.insert(0, str(HERE.parent / "src"))
 
 # -- Project information ------------------------------------------------------
 project = "scATrans"
-author = "scATrans Developers"
+author = "Zhao Li (李钊)"
 copyright = f"{datetime.now():%Y}, {author}"
 repository_url = "https://github.com/leelieber2025/scATrans"
 default_branch = "main"

@@ -50,7 +50,7 @@ Out of scope for **this** working tree (release repo is separate)
 |------|-----|--------|
 | **Wheel size / KEGG bundling** | ~9 MB wheel; KEGG commercial terms | Optional: KEGG not in default wheel; download or extra; GO compress / slim |
 | **Dual mouse gene-feature tables** | Confusing defaults | Doc default table + when to switch; or single default + `list_available_gene_features` |
-| **CITATION.cff / authors** | Academic citability | Real names/ORCID when ready to publish papers |
+| **CITATION.cff / authors** | Academic citability | Name + email set (Zhao Li / 李钊); add ORCID when available |
 | **Optional `plot` extra** | Slim core install | Move heavy viz deps if desired |
 | **Further module split** | `tl.active` / `pl` still large | Only if maintainability hurts; keep public imports stable |
 
