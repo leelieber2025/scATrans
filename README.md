@@ -81,3 +81,8 @@ Software (Python source) is licensed under [Apache License 2.0](LICENSE).
 Bundled gene-set data (GO, KEGG) carries its own licensing terms — see
 [License](https://scatrans.readthedocs.io/en/latest/license.html) before
 commercial use.
+
+## Author
+
+**Zhao Li (李钊)**  
+Email: [leelieber@gmail.com](mailto:leelieber@gmail.com)
