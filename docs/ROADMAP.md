@@ -1,82 +1,181 @@
-# Roadmap — done vs still open
+# Roadmap
 
-Working notes from the 0.9.x / 0.10.x post-release review / refactor track
-(2026-07). Use this when picking up work later. Not a commitment to
-ship dates.
+**Strategy (locked):** finish **testing** → finish the **paper** → then
+**1.0** + **preprint**. Stay on **0.10.x (Beta)** until the manuscript is
+done. Not a calendar commitment.
 
----
+**Positioning:** a focused method package for active-transcription scoring
+under spliced/unspliced (or nascent/mature) layers—not a multi-omics
+platform. Prefer depth, reportability, and reproducibility over feature
+breadth.
 
-## Already done (this track)
-
-Engineering / packaging
-
-- [x] `tl` / `enrich` first-level package split (`scatrans.tl.*`, `scatrans.enrich.*`)
-- [x] Public `__all__` / `__dir__` tightened (`pl`, `qc`, `tl`, `enrich`, top-level)
-- [x] `PipelineResult` (read-only dict subclass): `__getitem__`, `| =` / `__ior__`,
-      `copy` / `deepcopy`, pickle all protocols, `to_dict` / `copy()`
-- [x] `show_plot=True` after split (`from .. import pl`)
-- [x] Matrix helpers in `_utils` for AnnData `.X` / layers union types
-- [x] mypy clean on `src/scatrans --ignore-missing-imports`
-- [x] mypy **hard fail** in CI (3.11 core)
-- [x] Coverage split: default vs with-slow; `_de` ≥70% gate on default suite
-- [x] CI coverage installs optional stacks so reports are not skip-undercounted:
-      `pydeseq2`, `memento-de`, `gseapy`, `gtfparse` (same idea as extras
-      `pseudobulk` / `memento` / `gsea` / `gene_features`)
-- [x] `tests/test_de_core_coverage.py` (scanpy / PyDESeq2 / MixedLM / memento mocks)
-- [x] Docs: `docs/api_stability.md` + README / API index links
-- [x] Docs fix: `generate-gene-features` not top-level `generate_gene_features_main`
-- [x] Lazy-import comments in `tl/pipeline.py`
-
-Out of scope for **this** working tree (release repo is separate)
-
-- [x] Yank PyPI `*.dev*` — done on release side; not required in this dev tree
+**Non-goals (until well after 1.0):** LLM agents / MCP productization,
+vendoring a zoo of third-party methods, becoming a general DE replacement
+for scanpy.
 
 ---
 
-## Still open (prioritized)
+## Phase map
 
-### P1 — before calling the package “1.0-ready”
+```text
+  Phase T          Phase M           Phase R
+  Testing          Manuscript        Release
+  (0.10.x)         (0.10.x freeze)   (1.0.0 + preprint)
+      │                 │                    │
+      ▼                 ▼                    ▼
+  CI green +       Paper text,         SemVer stable,
+  paper-critical   figures, methods    PyPI 1.0,
+  paths covered    locked to a         CITATION + preprint
+  + real-data      pinable 0.10.x
+  smoke for paper
+```
 
-| Item | Why | Notes / acceptance |
-|------|-----|--------------------|
-| **Real-data smoke** | New abstractions + DE paths need field data | Run `run_default_pipeline` / `active_score` / DE + enrich on 1–2 real h5ad (user-owned data). Record version, backends, pass/fail, odd warnings. |
-| **`PipelineResult` “fermentation”** | Review found dunder gaps only under edge tests | Use in notebooks, `joblib`/`ProcessPool`, `copy.deepcopy`, `{**result}` / `|` in real scripts. Prefer keep 0.10.x until no surprises. |
-| **Coverage honesty for GSEA / plot** | Default suite hides `@pytest.mark.slow` / `plot` | **Partly done:** CI coverage job installs gseapy/gtfparse; with-slow XML is uploaded. Still optional: badges or docs that show **two** Codecov numbers (default vs with-slow). Confirm plot suite coverage separately if needed. |
-| **Raise non-DE “science-adjacent” coverage** | Still thin vs 1.0 narrative | Targets (suggest, not CI-hard yet): `_velocity` ≥65%, `pp_bias` / gene-features ≥60%, overall default suite ≥70–75%. |
+| Phase | Version | Exit criterion |
+|-------|---------|----------------|
+| **T — Testing** | 0.10.x | Paper-critical paths tested; real-data smoke for manuscript figures recorded; no open API churn planned |
+| **M — Manuscript** | **freeze** a 0.10.x pin | Full draft + figures/tables reproducible from that pin; Methods cite version + cutoffs |
+| **R — Release** | **1.0.0** | Paper complete → tag 1.0 → preprint (+ Zenodo/software cite as needed) |
 
-### P2 — product / packaging
+Do **not** label 1.0 during drafting. Do **not** expand the public API surface
+during Phases T–M unless the paper absolutely requires it.
 
-| Item | Why | Notes |
-|------|-----|--------|
-| **Wheel size / KEGG bundling** | ~9 MB wheel; KEGG commercial terms | Optional: KEGG not in default wheel; download or extra; GO compress / slim |
-| **Dual mouse gene-feature tables** | Confusing defaults | Doc default table + when to switch; or single default + `list_available_gene_features` |
-| **CITATION.cff / authors** | Academic citability | Name + email set (Zhao Li / 李钊); add ORCID when available |
-| **Optional `plot` extra** | Slim core install | Move heavy viz deps if desired |
-| **Further module split** | `tl.active` / `pl` still large | Only if maintainability hurts; keep public imports stable |
+---
 
-### P3 — 1.0 release checklist (do not rush)
+## Phase T — Testing (current priority)
 
-- [ ] Freeze public API list = `scatrans.__all__` + `pl.__all__` + `qc.__all__` (already documented in `api_stability.md`)
-- [ ] `pyproject.toml` classifier → `Development Status :: 5 - Production/Stable` **only with 1.0.0**
-- [ ] SemVer policy in docs (breaking = major after 1.0)
-- [ ] CHANGELOG entry for 1.0 with “stable surface” summary
-- [ ] Real-data smoke signed off; `_de` gate still green with pydeseq2 present
-- [ ] Optional: TestPyPI dry-run of release workflow
+Goal: enough automated + real-data evidence that **Methods and Results are
+defensible**, not maximal coverage for its own sake.
 
-**Recommended versioning until then:** stay on **0.10.x** (Beta; current
-**0.10.2**, single source in `src/scatrans/_version.py`). Do not label 1.0 until
-P1 real-data smoke + no open PipelineResult semantics changes.
+### T1 — Paper-critical automated tests (must)
 
-### P4 — nice-to-have / earlier review notes
+| Area | Why for the paper | Acceptance |
+|------|-------------------|------------|
+| **Active score core** | Central method | Synthetic / fixture paths for residual, composite score, key columns; regression on column names used in figures |
+| **DE backends used in paper** | Backend choice appears in Methods | Cover every backend the manuscript reports (e.g. scanpy, PyDESeq2, …) with mocks or small fixtures; CI `_de` gate stays green **with pydeseq2 installed** |
+| **Filter presets / cutoffs** | Numbers appear in text | Preset names + semantics stable; document that *numeric* defaults may change pre-1.0 but paper must report installed version + values used |
+| **Pipeline / `PipelineResult`** | One-liner workflow | Keys used in tutorials/paper (`candidates`, `enrichment`, `meta`, …) stable; pickle/deepcopy if you serialize results for figures |
+| **Enrichment paths in paper** | GO/KEGG/GSEA if shown | ORA (and GSEA if claimed) runnable under CI `slow` or documented offline protocol; universe handling consistent with docs |
 
-- Decision-tree doc: which DE backend when
-- Output column dictionary more prominent from README
-- Small downloadable demo h5ad (Zenodo) for tutorials
-- “How scATrans relates to scanpy / scVelo / gseapy / PyDESeq2”
-- `set_nature_style` → `set_publication_style` alias (trademark caution)
-- CONTRIBUTING.md / issue templates
-- `py.typed` if shipping type information to dependents
-- pre-commit mypy flags == CI mypy flags (already close)
+### T2 — Real-data smoke for the manuscript (must)
+
+- Run the **exact analysis recipe** planned for figures on 1–2 real h5ad sets
+  (user-owned or public with clear license).
+- Record: `scatrans.__version__`, extras/backends, command or notebook path,
+  pass/fail, unexpected warnings, seed if any.
+- Prefer freezing that recipe into a notebook or script checked into docs/
+  examples (even if data stay private).
+
+### T3 — Support tests (should, not blockers for starting to write)
+
+| Item | Notes |
+|------|--------|
+| Raise coverage on science-adjacent modules used in paper (`_velocity`, `pp_bias`, gene features) | Target only modules you **cite or rely on** in Methods |
+| Default suite ≥ ~70–75% overall | Nice for confidence; not a paper gate by itself |
+| Plot tests | Only if figures depend on `pl` helpers beyond “matplotlib on a DataFrame” |
+| GSEA / with-slow honesty | Keep CI with-slow job; dual Codecov badges optional |
+
+### T4 — Deliberately later (after paper, or only if paper needs it)
+
+- KEGG out of default wheel / slim GO (compliance; do before wide commercial use)
+- Optional `plot` extra, further `pl` / `tl.active` splits
+- `py.typed`, CONTRIBUTING polish, dual Codecov badges
+- Expanding public API
+
+### Phase T exit checklist
+
+- [ ] CI default suite green; `_de` gate green with pydeseq2
+- [ ] Every analysis step **named in the paper** has a test or a recorded real-data script
+- [ ] Real-data smoke log for manuscript figures
+- [ ] Decision: **pin version** for Methods (e.g. `scatrans==0.10.x`) and stop feature work
+
+---
+
+## Phase M — Manuscript (while still 0.10.x)
+
+Goal: a complete paper whose computational results are **reproducible from a
+pinned Beta**, not from a moving target.
+
+### Must align package ↔ paper
+
+| Doc / artifact | Role in paper |
+|----------------|---------------|
+| `docs/method.md` | Method description consistency |
+| `docs/statistical_guidance.md` | What scores may / may not claim |
+| `docs/domain_assumptions.md` | Explicit assumptions (reviewer defense) |
+| `docs/api_stability.md` | Import style recommended in code snippets |
+| Tutorials / figure notebooks | Supplement or Zenodo bundle |
+| `CITATION.cff` | Author: Zhao Li (李钊); ORCID when available |
+
+### Writing discipline
+
+1. **Pin** the package version in Methods (`scatrans` 0.10.x + key extras).
+2. Report **cutoffs and presets**, not only “default”.
+3. Prefer public API: `import scatrans as scat` / `scat.pl` / `scat.qc`.
+4. No public API renames during revision unless a reviewer forces it—and then
+   prefer aliases until 1.0.
+
+### Phase M exit checklist
+
+- [ ] Full draft (abstract → discussion) internally complete
+- [ ] All figures/tables reproducible from pinned 0.10.x + recorded recipe
+- [ ] Limitations match `statistical_guidance` / domain assumptions
+- [ ] Software availability statement ready (GitHub, PyPI, license Apache-2.0;
+      data licenses for GO/KEGG noted)
+
+---
+
+## Phase R — 1.0 + preprint (only after Phase M)
+
+Order after the manuscript is **done** (ready to post):
+
+1. **Freeze API** — `scatrans.__all__` + `pl.__all__` + `qc.__all__` =
+   `api_stability.md`; no surprise renames.
+2. **Release 1.0.0**
+   - Bump `src/scatrans/_version.py` → `1.0.0`
+   - Classifier → `Development Status :: 5 - Production/Stable`
+   - CHANGELOG “stable surface” summary
+   - SemVer note in docs (breaking = major after 1.0)
+   - Optional: TestPyPI dry-run, then PyPI
+3. **Preprint** — post with software version **1.0.0** (or “results produced
+   with 0.10.x; software released as 1.0.0 with the same public API” if you
+   must distinguish analysis pin vs marketing version—prefer **one clear
+   story**: analysis redone or confirmed on 1.0 if time allows).
+4. **Cite** — update `CITATION.cff` / README with preprint DOI when available.
+
+### 1.0 packaging hygiene (same window, not science scope)
+
+- [ ] KEGG bundling / commercial notice resolved or documented as opt-in
+- [ ] Mouse gene-feature default unambiguous in docs
+- [ ] ORCID on `CITATION.cff` if available
+- [ ] Small public demo h5ad (Zenodo) if not already released with the paper
+
+---
+
+## After 1.0 (backlog only)
+
+Science-led, not platform-led:
+
+- Stronger design diagnostics / backend recommendation narrative
+- Multi-sample / multi-condition reporting patterns
+- Systematic comparison notebooks (active score vs DE-only / velocity context)
+- Species / custom gene-set ergonomics as users demand
+
+Still non-goals unless strategy changes: agent stack, method zoo, GPU-first
+rewrite.
+
+---
+
+## Engineering already done (0.9.x / 0.10.x track)
+
+Reference only—do not re-open unless paper-blocking.
+
+- [x] `tl` / `enrich` package split; public `__all__` / `__dir__`
+- [x] `PipelineResult` (read-only dict subclass, copy/pickle/`to_dict`)
+- [x] Matrix helpers; mypy clean + CI hard-fail (3.11 core)
+- [x] Coverage split; `_de` ≥70% gate; optional stacks on coverage job
+- [x] `tests/test_de_core_coverage.py`; `docs/api_stability.md`
+- [x] Authors in metadata / README: Zhao Li (李钊), leelieber@gmail.com
+- [x] Yank PyPI `*.dev*` (release side)
 
 ---
 
@@ -86,32 +185,32 @@ P1 real-data smoke + no open PipelineResult semantics changes.
 # Types
 mypy src/scatrans --ignore-missing-imports
 
-# Default suite (matches daily CI tests)
+# Default suite (daily CI)
 pytest -m "not plot and not slow" -q
 
-# _de coverage gate (needs pydeseq2 for fair measure)
+# _de coverage gate (install pydeseq2 for a fair measure)
 pip install "pydeseq2>=0.4.0"
 pytest -m "not plot and not slow" --cov=scatrans --cov-report=xml:coverage-default.xml -q
-# parse line-rate for *_de.py ≥ 70%
 
 # With slow (GSEA etc.)
 pytest -m "not plot" -q
 ```
 
-GitHub review zip (dev tree):
-
 ```bash
 python scripts/make_release_zips.py
-# or single: scatrans-github-upload-YYYY-MM-DD.zip
 ```
 
 ---
 
-## Context for “continue later”
+## Working rules
 
-1. User may bring **real h5ad** for smoke — treat as P1 acceptance, not more refactor.
-2. Prefer **not** expanding public API surface before 1.0.
-3. If CI `_de` gate fails again, first check **pydeseq2 is installed** on the coverage job (see `.github/workflows/ci.yml`).
-4. Release / PyPI publish lives in a **separate** repo from this workspace unless explicitly merged.
+1. **Paper first:** if a change does not help testing confidence or the
+   manuscript, it waits until after 1.0.
+2. **No API growth** in Phases T–M unless the paper needs a name that already
+   exists conceptually—prefer private helpers over new `__all__` entries.
+3. **Real h5ad smoke** is manuscript acceptance, not an excuse for more
+   refactor.
+4. If CI `_de` gate fails, check **pydeseq2 is installed** on the coverage job
+   first (`.github/workflows/ci.yml`).
 
-Last updated: 2026-07-08 (after P0/P1 + coverage-gate fix).
+Last updated: 2026-07-12 — strategy: test → paper → 1.0 + preprint.
