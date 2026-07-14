@@ -10,6 +10,12 @@ authors:
     email: "leelieber@gmail.com"
 repository-code: "https://github.com/leelieber2025/scATrans"
 url: "https://github.com/leelieber2025/scATrans"
+doi: 10.5281/zenodo.21365873
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21365873
+    description: >-
+      Concept DOI representing all versions; always resolves to the latest release.
 license: Apache-2.0
 version: 0.10.3
 keywords:

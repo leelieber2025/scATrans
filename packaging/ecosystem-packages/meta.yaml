@@ -17,7 +17,7 @@ tags:
   - unspliced RNA
   - gene set enrichment
   - active transcription
-version: 0.11.0
+version: 0.10.3
 contact:
   - leelieber2025
 test_command: |
