@@ -1,5 +1,21 @@
 # Installation
 
+## From Bioconda
+
+The core package is available on [Bioconda](https://anaconda.org/bioconda/scatrans)
+(noarch):
+
+```bash
+conda install -c conda-forge -c bioconda scatrans
+```
+
+This installs the core dependencies only. The optional extras below (advanced
+mode, pseudobulk, Memento, GSEA) are packaged as PyPI extras — install them
+with `pip` as shown, or add the corresponding packages to your conda
+environment manually.
+
+## From PyPI
+
 ```bash
 # Basic installation
 pip install scatrans

@@ -1,6 +1,7 @@
 # scATrans
 
 [![PyPI version](https://img.shields.io/pypi/v/scatrans.svg)](https://pypi.org/project/scatrans/)
+[![Bioconda](https://img.shields.io/conda/vn/bioconda/scatrans.svg)](https://anaconda.org/bioconda/scatrans)
 [![Python versions](https://img.shields.io/pypi/pyversions/scatrans.svg)](https://pypi.org/project/scatrans/)
 [![Documentation Status](https://readthedocs.org/projects/scatrans/badge/?version=latest)](https://scatrans.readthedocs.io/en/latest/?badge=latest)
 [![CI](https://github.com/leelieber2025/scATrans/actions/workflows/ci.yml/badge.svg)](https://github.com/leelieber2025/scATrans/actions/workflows/ci.yml)
@@ -24,9 +25,13 @@ visualization functions is provided.
 ## Installation
 
 ```bash
+# From PyPI
 pip install scatrans
 
-# Optional extras: advanced (scVelo) mode, gene features, pseudobulk DE (PyDESeq2), Memento, GSEA
+# Or from Bioconda
+conda install -c conda-forge -c bioconda scatrans
+
+# Optional extras (PyPI): advanced (scVelo) mode, gene features, pseudobulk DE (PyDESeq2), Memento, GSEA
 pip install "scatrans[advanced,gene_features,pseudobulk,memento,gsea]"
 ```
 
