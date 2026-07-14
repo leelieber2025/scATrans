@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.11.0] - 2026-07-14
+
+### Added
+- **Gene-level UpSet (`scat.pl`)**: three new functions for comparing gene
+  overlap across multiple DE results / gene lists — the gene-level companion to
+  the term-level `enrich_upsetplot`.
+  - `build_gene_membership(de_results, ...)` — tidies a `{name: de_df}` mapping
+    (or ready-made `{name: [gene, ...]}` lists) into a gene × set 0/1 membership
+    matrix. `direction="separate"` (default) splits each DE result into
+    `name::up` / `name::down` sets so common-up and common-down genes are both
+    visible; `"up"`/`"down"`/`"both"` give one set per result. DataFrame inputs
+    are filtered via `filter_active_genes` (`pval_cutoff` / `padj_cutoff` /
+    `logfc_cutoff`); per-set gene lists are stored in `membership.attrs["gene_sets"]`.
+  - `gene_upsetplot(...)` — draws the UpSet (pure matplotlib, no external
+    `upsetplot` dependency) from either a `{name: de_df}` mapping or a pre-built
+    membership matrix. Fully recolorable (`set_color`, `intersection_color`,
+    `dot_color`, `inactive_color`, `line_color`; `intersection_color`/`dot_color`
+    also accept a per-column list to highlight specific intersections).
+  - `common_genes(membership, direction="up"|"down", ...)` — pulls the
+    intersection genes (strict, or relaxed via `min_sets=`, or an explicit
+    `sets=` subset) back out as a list ready for `run_enrichment`.
+
+### Changed
+- **Plotting color customization**: `enrich_upsetplot` gained the same color
+  parameters as `gene_upsetplot`; `bias_diagnostic_plot` gained
+  `raw_color`/`corrected_color`/`trend_color`; `gamma_shrinkage_plot` gained
+  `cmap`/`color`. All previously hardcoded their colors. Defaults are unchanged,
+  so existing figures look identical.
+
+### Fixed
+- **Package layout / CI**: GitHub trees must not ship pre-split flat modules
+  `src/scatrans/tl.py` or `src/scatrans/enrich.py` beside the `tl/` and
+  `enrich/` packages (Python imports the package; the flat files are dead
+  code and trip `tests/test_package_layout.py`). Release packaging refuses
+  to include them and fails if they reappear in the source tree.
+
 ### Changed
 - **Versioning (single source of truth)**: package version lives only in
   `src/scatrans/_version.py` (`__version__`). `pyproject.toml` reads it via

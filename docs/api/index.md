@@ -163,6 +163,21 @@ grid (groups on the x-axis, terms on the y-axis). Use it on the long table from
 `compare_enrichment` / `concat_compare_results`. Prefer `enrich_dotplot` for a
 single contrast or when faceting with `facet_by_cluster=True`.
 
+`gene_upsetplot` is the **gene-level** UpSet (companion to the term-level
+`enrich_upsetplot`): it shows how genes overlap across several DE results or
+gene lists. Feed it either a `{name: de_df}` mapping (filtered internally) or a
+pre-built membership matrix from `build_gene_membership`; in the default
+`direction="separate"` mode each DE result contributes a `name::up` and
+`name::down` set, so common-up and common-down genes appear as their own
+intersection columns. `common_genes(membership, direction="up"|"down")` pulls
+those intersection genes back out as a list ready for `run_enrichment`. Colors
+are fully customizable (`set_color`, `intersection_color`, `dot_color`,
+`inactive_color`, `line_color`; the intersection/dot colors also accept a
+per-column list to highlight specific intersections). The same color parameters
+were added to `enrich_upsetplot`; `bias_diagnostic_plot`
+(`raw_color`/`corrected_color`/`trend_color`) and `gamma_shrinkage_plot`
+(`cmap`/`color`) are now recolorable too.
+
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/
@@ -176,6 +191,9 @@ single contrast or when faceting with `facet_by_cluster=True`.
    pl.compare_dotplot
    pl.enrich_barplot
    pl.enrich_upsetplot
+   pl.gene_upsetplot
+   pl.build_gene_membership
+   pl.common_genes
    pl.enrich_vennplot
    pl.gseaplot
    pl.active_score_rankplot

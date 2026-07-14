@@ -131,8 +131,36 @@ so multipanel layouts do not clip an exterior legend.
     panels rather than a single compare grid.
 
 - `scat.pl.enrich_upsetplot(enrich_df, ...)` / `scat.pl.enrich_vennplot(enrich_df, ...)`
-  Set-overlap views across clusters/contrasts (significant terms by
+  Set-overlap views across clusters/contrasts (significant **terms** by
   `pval_cutoff` / `min_count`). Prefer UpSet for more than three groups.
+
+- `scat.pl.gene_upsetplot(...)` — the **gene-level** UpSet: how genes overlap
+  across several DE results or gene lists (companion to the term-level
+  `enrich_upsetplot`). Pure matplotlib, no external `upsetplot` dependency. The
+  workflow is three small pieces:
+
+  ```python
+  # 1) tidy multiple DE results into a gene x set membership matrix
+  mem = scat.pl.build_gene_membership(
+      {"wilcoxon": de_wilcox, "ttest": de_ttest, "pseudobulk": de_pb},
+      direction="separate",          # each DE -> name::up and name::down
+      pval_cutoff=0.05, logfc_cutoff=0.5,
+  )
+  # 2) draw it (common-up and common-down show up as their own columns)
+  scat.pl.gene_upsetplot(membership=mem, save_path="gene_upset.png")
+  # 3) pull the intersection genes back out for enrichment
+  up   = scat.pl.common_genes(mem, direction="up")      # up in *every* method
+  down = scat.pl.common_genes(mem, direction="down")
+  enr  = scat.run_enrichment(up, adata=adata)           # straight into ORA
+  ```
+
+  `build_gene_membership` also accepts ready-made `{name: [gene, ...]}` lists
+  (no thresholds applied). `common_genes(..., min_sets=2)` relaxes the strict
+  intersection to a "recovered by at least *k* sets" signature, and `sets=[...]`
+  intersects an explicit subset of columns. Every visual element is recolorable
+  (`set_color`, `intersection_color`, `dot_color`, `inactive_color`,
+  `line_color`); pass a per-column list to `intersection_color` / `dot_color` to
+  highlight specific intersections.
 
 - `scat.pl.active_score_rankplot(results_df, top_n=15, context=None, ...)` —
   horizontal bar plot of top active scores (gradient fill by magnitude).
@@ -147,7 +175,9 @@ so multipanel layouts do not clip an exterior legend.
 
 - `scat.pl.gamma_shrinkage_plot(results_df, ...)` — empirical-Bayes gamma
   shrinkage weight vs expression depth. Requires a
-  `gamma_shrinkage_weight` column (`gamma_method="empirical_bayes"`).
+  `gamma_shrinkage_weight` column (`gamma_method="empirical_bayes"`). Recolor
+  with `cmap=` (when `effective_gamma` is present) or `color=` (single-color
+  fallback).
 
 - `scat.pl.set_style()` and `scat.pl.style_context()` — control global
   publication-style settings (vector fonts, minimal ink, etc.).

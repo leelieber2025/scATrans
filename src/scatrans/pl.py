@@ -35,6 +35,7 @@ and shared environments.
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from typing import Any
@@ -1863,6 +1864,11 @@ def enrich_upsetplot(
     min_count: int = 1,
     max_terms: int = 40,
     title: str = "Enriched Term Overlap (UpSet-style)",
+    set_color: str = "#4477AA",
+    intersection_color: str = "#44AA77",
+    dot_color: str = "#CC3311",
+    inactive_color: str = "#DDDDDD",
+    line_color: str = "#555555",
     figsize: tuple[float, float] = (8.5, 4.8),
     dpi: int = _DEFAULT_DPI,
     fontsize: int = _DEFAULT_FONTSIZE,
@@ -2018,7 +2024,7 @@ def enrich_upsetplot(
         ax_set.barh(
             y_pos,
             [set_sizes[c] for c in clusters_sorted],
-            color="#4477AA",
+            color=set_color,
             edgecolor="black",
             height=0.6,
         )
@@ -2040,7 +2046,7 @@ def enrich_upsetplot(
             inter_labels.append("\n".join(names) if names else "∅")
             inter_vals.append(size)
         x = np.arange(len(inter_vals))
-        ax_inter.bar(x, inter_vals, color="#44AA77", edgecolor="black")
+        ax_inter.bar(x, inter_vals, color=intersection_color, edgecolor="black")
         ax_inter.set_ylabel("Intersection size", fontsize=fontsize)
         ax_inter.set_xticks([])
         ax_inter.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=6)
@@ -2068,7 +2074,7 @@ def enrich_upsetplot(
                 ax_mat.plot(
                     [col_idx, col_idx],
                     [min(active), max(active)],
-                    color="#555555",
+                    color=line_color,
                     lw=1.5,
                     zorder=1,
                 )
@@ -2078,7 +2084,7 @@ def enrich_upsetplot(
                         col_idx,
                         row_idx,
                         s=140,
-                        c="#CC3311",
+                        c=dot_color,
                         zorder=2,
                         edgecolors="black",
                         linewidths=0.5,
@@ -2088,7 +2094,7 @@ def enrich_upsetplot(
                         col_idx,
                         row_idx,
                         s=40,
-                        c="#DDDDDD",
+                        c=inactive_color,
                         zorder=1,
                         edgecolors="#AAAAAA",
                         linewidths=0.3,
@@ -2101,6 +2107,452 @@ def enrich_upsetplot(
 
         plt.tight_layout()
 
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, ax_mat
+
+
+# ---------------------------------------------------------------------------
+# Gene-level UpSet (multiple DE results / gene lists)
+# ---------------------------------------------------------------------------
+def _dir_gene_set(
+    de_df: pd.DataFrame,
+    direction: str,
+    *,
+    pval_cutoff: float,
+    padj_cutoff: float | None,
+    logfc_cutoff: float,
+) -> set[str]:
+    """Filter one DE table to a directional gene set via :func:`filter_active_genes`.
+
+    Lazily imported to avoid any pl<->tl import cycle. ``direction`` is one of
+    ``"up"`` / ``"down"`` / ``"both"`` (mapped to ``logfc_direction``).
+    """
+    from .tl.filter import filter_active_genes  # lazy: no circular import
+
+    kwargs: dict[str, Any] = {
+        "logfc_direction": direction,
+        "logfc_cutoff": logfc_cutoff,
+    }
+    # Prefer explicit padj_cutoff; else fall back to the legacy pval_cutoff name
+    # (filter_active_genes filters p_adj when present, else p_val).
+    if padj_cutoff is not None:
+        kwargs["padj_cutoff"] = padj_cutoff
+    else:
+        kwargs["pval_cutoff"] = pval_cutoff
+    sub = filter_active_genes(de_df, **kwargs)
+    return set(sub.index.astype(str))
+
+
+def build_gene_membership(
+    de_results: Mapping[str, Any],
+    *,
+    direction: str = "separate",
+    pval_cutoff: float = 0.05,
+    padj_cutoff: float | None = None,
+    logfc_cutoff: float = 0.0,
+    up_suffix: str = "::up",
+    down_suffix: str = "::down",
+) -> pd.DataFrame:
+    """Turn several DE results (or ready-made gene lists) into a gene x set membership matrix.
+
+    This is the data-wrangling front end for :func:`gene_upsetplot`: multiple DE
+    tables cannot be fed to an UpSet plot directly, they must first be reduced to
+    directional gene *sets* and stacked into a 0/1 membership matrix.
+
+    Parameters
+    ----------
+    de_results : Mapping[str, DataFrame | Iterable[str]]
+        ``{name: de_df}`` (primary use) or ``{name: [gene, ...]}``. DE tables are
+        the output of :func:`scatrans.differential_expression` / ``active_score``
+        (index = gene, columns include ``logFC`` and ``p_val`` / ``p_adj``).
+        A plain gene list/set is taken as-is (already filtered; ``direction`` is
+        ignored for that entry and it becomes a single set under ``name``).
+    direction : {"separate", "up", "down", "both"}
+        - ``"separate"`` (default): each DE table becomes **two** sets,
+          ``name{up_suffix}`` and ``name{down_suffix}`` -- so common-up and
+          common-down genes are both visible in one UpSet plot.
+        - ``"up"`` / ``"down"``: one set per table (upregulated / downregulated only).
+        - ``"both"``: one set per table, differentially expressed either way (|logFC|).
+    pval_cutoff, padj_cutoff, logfc_cutoff : float
+        Thresholds forwarded to :func:`filter_active_genes` (only applied to
+        DataFrame inputs). ``padj_cutoff`` wins when both p-value cutoffs are given.
+    up_suffix, down_suffix : str
+        Column-name suffixes used in ``"separate"`` mode (also what
+        :func:`common_genes` looks for when ``direction=`` is passed there).
+
+    Returns
+    -------
+    pd.DataFrame
+        Membership matrix, index = gene, columns = sets, values in {0, 1}. The
+        per-set gene lists are also stored under ``membership.attrs["gene_sets"]``.
+
+    See Also
+    --------
+    gene_upsetplot : plot the matrix as an UpSet figure.
+    common_genes : pull the common-up / common-down intersection genes for enrichment.
+
+    Examples
+    --------
+    >>> mem = build_gene_membership(
+    ...     {"modelA": deA, "modelB": deB},
+    ...     direction="separate", pval_cutoff=0.05, logfc_cutoff=0.3,
+    ... )
+    >>> gene_upsetplot(membership=mem, save_path="gene_upset.png")
+    >>> up = common_genes(mem, direction="up")     # genes up in *every* model
+    >>> enr = run_enrichment(up, adata=adata)       # feed straight into enrichment
+    """
+    if not isinstance(de_results, Mapping):
+        raise ValueError(
+            "de_results must be a dict mapping name -> DE DataFrame or gene list, "
+            f"got {type(de_results).__name__}."
+        )
+    direction = str(direction).lower()
+    if direction not in {"separate", "up", "down", "both"}:
+        raise ValueError(
+            f"direction must be one of 'separate'/'up'/'down'/'both', got {direction!r}."
+        )
+
+    gene_sets: dict[str, set[str]] = {}
+    for raw_name, val in de_results.items():
+        name = str(raw_name)
+        if isinstance(val, pd.DataFrame):
+            if direction == "separate":
+                gene_sets[f"{name}{up_suffix}"] = _dir_gene_set(
+                    val,
+                    "up",
+                    pval_cutoff=pval_cutoff,
+                    padj_cutoff=padj_cutoff,
+                    logfc_cutoff=logfc_cutoff,
+                )
+                gene_sets[f"{name}{down_suffix}"] = _dir_gene_set(
+                    val,
+                    "down",
+                    pval_cutoff=pval_cutoff,
+                    padj_cutoff=padj_cutoff,
+                    logfc_cutoff=logfc_cutoff,
+                )
+            else:
+                gene_sets[name] = _dir_gene_set(
+                    val,
+                    direction,
+                    pval_cutoff=pval_cutoff,
+                    padj_cutoff=padj_cutoff,
+                    logfc_cutoff=logfc_cutoff,
+                )
+        elif isinstance(val, pd.Series):
+            gene_sets[name] = set(val.astype(str).tolist())
+        elif isinstance(val, Iterable) and not isinstance(val, (str, bytes)):
+            gene_sets[name] = {str(g) for g in val}
+        else:
+            raise ValueError(
+                f"de_results[{name!r}] must be a DataFrame or an iterable of gene "
+                f"names, got {type(val).__name__}."
+            )
+
+    all_genes = sorted(set().union(*gene_sets.values())) if gene_sets else []
+    cols = list(gene_sets.keys())
+    membership = pd.DataFrame(0, index=all_genes, columns=cols, dtype=int)
+    for col, genes in gene_sets.items():
+        if genes:
+            membership.loc[sorted(genes), col] = 1
+    membership.attrs["gene_sets"] = {c: sorted(g) for c, g in gene_sets.items()}
+    return membership
+
+
+def common_genes(
+    membership: pd.DataFrame,
+    *,
+    direction: str | None = None,
+    sets: list[str] | None = None,
+    min_sets: int | None = None,
+    up_suffix: str = "::up",
+    down_suffix: str = "::down",
+) -> list[str]:
+    """Genes shared across the selected sets of a :func:`build_gene_membership` matrix.
+
+    The bridge from the UpSet view to enrichment: pull the common-up (or
+    common-down) genes and feed them straight into :func:`scatrans.run_enrichment`.
+
+    Parameters
+    ----------
+    membership : pd.DataFrame
+        Gene x set 0/1 matrix from :func:`build_gene_membership`.
+    direction : {"up", "down", None}
+        Convenience selector for ``"separate"`` matrices: ``"up"`` uses every
+        column ending in ``up_suffix``, ``"down"`` every ``down_suffix`` column.
+        Ignored when ``sets`` is given. ``None`` uses all columns.
+    sets : list[str] or None
+        Explicit list of columns to intersect (overrides ``direction``).
+    min_sets : int or None
+        If None (default) a gene must be present in **all** selected sets (strict
+        intersection = "common"). Otherwise keep genes present in >= ``min_sets``
+        of them (relaxed / core signature).
+
+    Returns
+    -------
+    list[str]
+        Gene names, in the matrix's index order.
+    """
+    if not isinstance(membership, pd.DataFrame):
+        raise ValueError("membership must be the DataFrame from build_gene_membership().")
+    cols = [str(c) for c in membership.columns]
+    if sets is not None:
+        chosen = [c for c in sets if c in membership.columns]
+        missing = [c for c in sets if c not in membership.columns]
+        if missing:
+            logger.warning("common_genes: ignoring unknown set(s): %s", missing)
+    elif direction in ("up", "down"):
+        suffix = up_suffix if direction == "up" else down_suffix
+        chosen = [c for c in cols if c.endswith(suffix)]
+        if not chosen:
+            logger.warning(
+                "common_genes: no columns end with %r; is this a 'separate' matrix?",
+                suffix,
+            )
+    elif direction is None:
+        chosen = cols
+    else:
+        raise ValueError(f"direction must be 'up', 'down', or None, got {direction!r}.")
+
+    if not chosen:
+        return []
+    block = membership[chosen]
+    if min_sets is None:
+        mask = block.astype(bool).all(axis=1)
+    else:
+        mask = block.astype(bool).sum(axis=1) >= int(min_sets)
+    return membership.index[mask.values].astype(str).tolist()
+
+
+def gene_upsetplot(
+    de_results: Mapping[str, Any] | None = None,
+    *,
+    membership: pd.DataFrame | None = None,
+    direction: str = "separate",
+    pval_cutoff: float = 0.05,
+    padj_cutoff: float | None = None,
+    logfc_cutoff: float = 0.0,
+    min_subset_size: int = 1,
+    max_intersections: int = 20,
+    sort_by: str = "size",
+    title: str = "Gene Overlap (UpSet)",
+    set_color: str = "#4477AA",
+    intersection_color: str = "#44AA77",
+    dot_color: str = "#CC3311",
+    inactive_color: str = "#DDDDDD",
+    line_color: str = "#555555",
+    figsize: tuple[float, float] = (8.5, 4.8),
+    dpi: int = _DEFAULT_DPI,
+    fontsize: int = _DEFAULT_FONTSIZE,
+    save_path: str | None = None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """UpSet plot of gene overlap across multiple DE results / gene lists.
+
+    Gene-level companion to :func:`enrich_upsetplot` (which is term-level). Pure
+    matplotlib, no external ``upsetplot`` dependency.
+
+    Provide **either** ``de_results`` (a ``{name: de_df}`` mapping, filtered and
+    stacked internally via :func:`build_gene_membership`) **or** a pre-built
+    ``membership`` matrix. In ``direction="separate"`` mode each DE result yields a
+    ``name::up`` and ``name::down`` set, so common-up and common-down genes appear
+    as their own intersection columns in one figure.
+
+    Parameters
+    ----------
+    de_results, direction, pval_cutoff, padj_cutoff, logfc_cutoff
+        Forwarded to :func:`build_gene_membership` when ``membership`` is None.
+    membership : pd.DataFrame or None
+        Pre-built gene x set matrix; bypasses the internal build step.
+    min_subset_size : int
+        Hide intersections smaller than this (keeps the plot readable).
+    max_intersections : int
+        Cap on the number of intersection columns drawn.
+    sort_by : {"size", "degree"}
+        Order intersection columns by size (default) or by number of sets involved.
+    set_color : str
+        Color of the left-hand set-size bars. Any matplotlib color.
+    intersection_color : str or list[str]
+        Color of the top intersection bars. A single color applies to all; a list
+        is used per column (cycled) so you can highlight specific intersections
+        (e.g. the common-up / common-down columns).
+    dot_color : str or list[str]
+        Color of the *active* (filled) matrix dots. Single color or per-column list
+        (cycled), matching ``intersection_color`` semantics.
+    inactive_color : str
+        Color of the empty matrix dots.
+    line_color : str
+        Color of the vertical connector lines in the dot matrix.
+
+    Returns
+    -------
+    (fig, ax_mat)
+        To also retrieve the gene lists, call :func:`build_gene_membership` /
+        :func:`common_genes` (see their examples).
+
+    Examples
+    --------
+    >>> # custom palette + highlight the first two intersection columns in orange
+    >>> gene_upsetplot(
+    ...     membership=mem, set_color="#8888CC", dot_color="#333333",
+    ...     intersection_color=["#EE7733", "#EE7733"] + ["#999999"] * 18,
+    ... )
+    """
+
+    def _color_at(spec, idx, n):
+        """Resolve a single color from a str or per-column list (cycled).
+
+        A string, or an RGB(A) tuple of numbers, is a *single* matplotlib color
+        and is returned as-is; only a sequence of colors is indexed per column.
+        """
+        if isinstance(spec, (str, bytes)) or not isinstance(spec, Iterable):
+            return spec
+        seq = list(spec)
+        if not seq:
+            return dot_color if isinstance(dot_color, (str, bytes)) else "#CC3311"
+        # An RGB/RGBA tuple (all numbers) is one color, not a per-column list.
+        if all(isinstance(v, (int, float)) for v in seq):
+            return spec
+        return seq[idx % len(seq)]
+
+    with _style_context_if(use_style):
+        if membership is None:
+            if de_results is None:
+                raise ValueError("Pass either de_results or membership.")
+            membership = build_gene_membership(
+                de_results,
+                direction=direction,
+                pval_cutoff=pval_cutoff,
+                padj_cutoff=padj_cutoff,
+                logfc_cutoff=logfc_cutoff,
+            )
+
+        if membership is None or membership.empty or membership.shape[1] == 0:
+            fig, ax = _empty_placeholder_fig("No genes for UpSet at current cutoffs")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        mem = membership.astype(bool)
+        # Drop genes that belong to no set (can occur with an external membership).
+        mem = mem[mem.any(axis=1)]
+        if mem.empty:
+            fig, ax = _empty_placeholder_fig("No genes fall into any set")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+
+        sets_sorted = sorted(mem.columns.astype(str))
+        mem = mem[sets_sorted]
+        set_sizes = {c: int(mem[c].sum()) for c in sets_sorted}
+
+        # Intersection sizes: group genes by their exact 0/1 membership pattern.
+        combo = mem.apply(lambda r: tuple(int(v) for v in r.values), axis=1)
+        inter_sizes = combo.value_counts()
+        inter_sizes = inter_sizes[inter_sizes >= max(1, min_subset_size)]
+        if inter_sizes.empty:
+            fig, ax = _empty_placeholder_fig("No intersections >= min_subset_size")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
+        if str(sort_by).lower() == "degree":
+            inter_sizes = inter_sizes.sort_index(key=lambda idx: [sum(p) for p in idx])
+        else:
+            inter_sizes = inter_sizes.sort_values(ascending=False)
+        inter_sizes = inter_sizes.head(max_intersections)
+
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        gs = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.6, 3.5],
+            height_ratios=[1.2, 3.5],
+            hspace=0.25,
+            wspace=0.08,
+        )
+        ax_set = fig.add_subplot(gs[1, 0])
+        ax_inter = fig.add_subplot(gs[0, 1])
+        ax_mat = fig.add_subplot(gs[1, 1])
+
+        # 1. Set sizes (left horizontal bars)
+        y_pos = np.arange(len(sets_sorted))
+        ax_set.barh(
+            y_pos,
+            [set_sizes[c] for c in sets_sorted],
+            color=set_color,
+            edgecolor="black",
+            height=0.6,
+        )
+        ax_set.set_yticks(y_pos)
+        ax_set.set_yticklabels(sets_sorted, fontsize=fontsize - 1)
+        ax_set.invert_yaxis()
+        ax_set.set_xlabel("Genes per set", fontsize=fontsize)
+        ax_set.set_title("Set size", fontsize=fontsize + 1, fontweight="bold", pad=4)
+        for i, v in enumerate([set_sizes[c] for c in sets_sorted]):
+            ax_set.text(v + 0.3, i, str(v), va="center", fontsize=fontsize - 2)
+        sns.despine(ax=ax_set, top=True, right=True, left=False)
+
+        # 2. Intersection size bars (top)
+        inter_vals = [int(v) for v in inter_sizes.values]
+        x = np.arange(len(inter_vals))
+        bar_colors = [_color_at(intersection_color, i, len(inter_vals)) for i in x]
+        ax_inter.bar(x, inter_vals, color=bar_colors, edgecolor="black")
+        ax_inter.set_ylabel("Intersection", fontsize=fontsize)
+        ax_inter.set_xticks([])
+        ax_inter.set_xlim(-0.5, len(inter_vals) - 0.5)
+        ax_inter.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=6)
+        for xi, v in zip(x, inter_vals):
+            ax_inter.text(
+                float(xi), float(v), str(int(v)), ha="center", va="bottom", fontsize=fontsize - 2
+            )
+        sns.despine(ax=ax_inter, top=True, right=True)
+
+        # 3. Matrix (lower right)
+        ax_mat.set_xlim(-0.5, len(inter_sizes) - 0.5)
+        ax_mat.set_ylim(-0.5, len(sets_sorted) - 0.5)
+        ax_mat.set_yticks(y_pos)
+        ax_mat.set_yticklabels([])  # row identity shown on the aligned "Set size" panel
+        ax_mat.set_xticks([])
+        for col_idx, pattern in enumerate(inter_sizes.index):
+            active = [i for i, v in enumerate(pattern) if v == 1]
+            if active:
+                ax_mat.plot(
+                    [col_idx, col_idx],
+                    [min(active), max(active)],
+                    color=line_color,
+                    lw=1.5,
+                    zorder=1,
+                )
+            active_c = _color_at(dot_color, col_idx, len(inter_sizes))
+            for row_idx in range(len(sets_sorted)):
+                if pattern[row_idx] == 1:
+                    ax_mat.scatter(
+                        col_idx,
+                        row_idx,
+                        s=140,
+                        c=active_c,
+                        zorder=2,
+                        edgecolors="black",
+                        linewidths=0.5,
+                    )
+                else:
+                    ax_mat.scatter(
+                        col_idx,
+                        row_idx,
+                        s=40,
+                        c=inactive_color,
+                        zorder=1,
+                        edgecolors="#AAAAAA",
+                        linewidths=0.3,
+                    )
+        ax_mat.set_xlabel("Intersections (sorted by size)", fontsize=fontsize)
+        ax_mat.invert_yaxis()
+        sns.despine(ax=ax_mat, top=True, right=True, bottom=True, left=True)
+        ax_mat.tick_params(left=False, bottom=False)
+
+        # gridspec + manual axes trip tight_layout's compatibility warning; the
+        # layout itself is fine, so quiet just that message.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plt.tight_layout()
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
         return fig, ax_mat
 
@@ -3204,6 +3656,9 @@ def bias_diagnostic_plot(
     fontsize=_DEFAULT_FONTSIZE,
     show_regression=True,
     point_size=10,
+    raw_color="#1f77b4",
+    corrected_color="#2ca02c",
+    trend_color="#d62728",
     axes=None,
     show: bool = True,
     use_style: bool = False,
@@ -3273,7 +3728,7 @@ def bias_diagnostic_plot(
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
     y_raw = plot_df[delta_col]
-    ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c="#1f77b4", edgecolors="none")
+    ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c=raw_color, edgecolors="none")
     if show_regression:
         from scipy.stats import linregress
 
@@ -3284,7 +3739,7 @@ def bias_diagnostic_plot(
                 x_line,
                 slope * x_line + intercept,
                 "--",
-                color="#d62728",
+                color=trend_color,
                 lw=1.5,
                 label="Trend (raw)",
             )
@@ -3309,8 +3764,8 @@ def bias_diagnostic_plot(
 
     # Right: After correction
     y_res = plot_df[residual_col]
-    ax2.scatter(x, y_res, s=point_size, alpha=0.5, c="#2ca02c", edgecolors="none")
-    ax2.axhline(0, color="#d62728", linestyle="--", lw=1.2, alpha=0.8)
+    ax2.scatter(x, y_res, s=point_size, alpha=0.5, c=corrected_color, edgecolors="none")
+    ax2.axhline(0, color=trend_color, linestyle="--", lw=1.2, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
     ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize)
     ax2.set_title("After Bias Correction", fontsize=fontsize + 1)
@@ -3863,6 +4318,8 @@ def gamma_shrinkage_plot(
     x_col: str = "total_us_counts",
     save_path=None,
     title: str = "Empirical Bayes gamma shrinkage",
+    cmap: str = "viridis",
+    color: str = "#4477AA",
     figsize=_DEFAULT_FIGSIZE,
     dpi: int = _DEFAULT_DPI,
     ax=None,
@@ -3928,8 +4385,8 @@ def gamma_shrinkage_plot(
         scatter = ax.scatter(
             x_vals,
             y_vals,
-            c=c_vals,
-            cmap="viridis" if c_vals is not None else None,
+            c=c_vals if c_vals is not None else color,
+            cmap=cmap if c_vals is not None else None,
             s=12,
             alpha=0.65,
             edgecolors="none",
@@ -3968,6 +4425,9 @@ __all__ = [
     "compare_dotplot",
     "enrich_barplot",
     "enrich_upsetplot",
+    "gene_upsetplot",
+    "build_gene_membership",
+    "common_genes",
     "enrich_vennplot",
     "gseaplot",
     "active_score_rankplot",

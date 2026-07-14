@@ -53,6 +53,19 @@ plotting gallery.
 `EC.h5ad` · no layers required · ORA / GSEA
 :::
 
+:::{grid-item-card} 🔗 Gene overlap across DE methods (UpSet)
+:link: t_ec_gene_upset
+:link-type: doc
+:class-card: scat-meta
+
+Which genes are called by *several* DE backends, and what do the robust ones do?
+The gene-level UpSet trio — `build_gene_membership` → `gene_upsetplot` →
+`common_genes` — stacks Wilcoxon / *t*-test / pseudobulk into one figure, then
+feeds the common-up / common-down genes into enrichment.
++++
+`EC.h5ad` · multi-method DE · UpSet / ORA
+:::
+
 :::{grid-item-card} 🎨 Visualization gallery
 :link: t_synthetic_visualization
 :link-type: doc
@@ -88,6 +101,7 @@ only.
 t_ec_active_transcription
 t_ga_active_transcription
 t_ec_standalone_de_enrichment
+t_ec_gene_upset
 t_synthetic_visualization
 ```
 
@@ -106,6 +120,9 @@ jupyter lab docs/tutorials/t_ga_active_transcription.ipynb
 
 # Standalone DE + enrichment (EC.h5ad, no velocity layers used):
 jupyter lab docs/tutorials/t_ec_standalone_de_enrichment.ipynb
+
+# Gene-level UpSet across DE methods (EC.h5ad):
+jupyter lab docs/tutorials/t_ec_gene_upset.ipynb
 
 # Plotting gallery (synthetic only — no h5ad required):
 jupyter lab docs/tutorials/t_synthetic_visualization.ipynb

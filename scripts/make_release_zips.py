@@ -34,6 +34,9 @@ RELEASE_EXCLUDES = [
     "**/.ipynb_checkpoints/**",
     "docs/_build/**",
     "docs/api/generated/**",
+    # Pre-split monorepo modules — never ship beside package dirs (CI layout guard).
+    "src/scatrans/tl.py",
+    "src/scatrans/enrich.py",
     ".coverage",
     "coverage.xml",
     "coverage-*.xml",
@@ -42,6 +45,12 @@ RELEASE_EXCLUDES = [
     ".git/**",
     "**/*.h5ad",
     "**/*.zip",
+]
+
+# Hard fail if these exist in the source tree (would break tests/test_package_layout.py on CI).
+FORBIDDEN_SHADOW_MODULES = [
+    "src/scatrans/tl.py",
+    "src/scatrans/enrich.py",
 ]
 
 RELEASE_INCLUDES = [
@@ -141,9 +150,20 @@ def _write_zip(paths: list[Path], out_path: Path, *, arc_root: str) -> None:
     print(f"Wrote {out_path.name}: {len(paths)} files, {size_mb:.2f} MiB")
 
 
+def _assert_no_shadow_modules() -> None:
+    """Fail loud if pre-split flat modules reappear beside package dirs."""
+    bad = [rel for rel in FORBIDDEN_SHADOW_MODULES if (ROOT / rel).is_file()]
+    if bad:
+        raise SystemExit(
+            "Refusing to package: dead shadow modules exist beside packages "
+            f"(CI test_package_layout fails if these ship): {bad}. Delete them."
+        )
+
+
 def main() -> None:
     version = _read_version()
     _sync_metadata(version)
+    _assert_no_shadow_modules()
 
     files = _collect_files(RELEASE_INCLUDES, RELEASE_EXCLUDES)
     required = {
@@ -165,6 +185,11 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Release zip missing required files: {missing}")
 
+    # Belt-and-suspenders: never put forbidden paths into the archive.
+    shadow_in_zip = sorted(n for n in names if n in FORBIDDEN_SHADOW_MODULES)
+    if shadow_in_zip:
+        raise SystemExit(f"Release zip would include forbidden shadow modules: {shadow_in_zip}")
+
     arc_root = f"scatrans-{version}"
     out_zip = ROOT / f"scatrans-{version}-github-release-{STAMP}.zip"
     _write_zip(files, out_zip, arc_root=arc_root)
@@ -172,6 +197,7 @@ def main() -> None:
     print(f"Version: {version} (from src/scatrans/_version.py)")
     print(f"Single clean release package ready: {out_zip.name}")
     print("Upload to: https://github.com/leelieber2025/scATrans/releases")
+    print("IMPORTANT: GitHub main must NOT contain src/scatrans/tl.py or enrich.py")
 
 
 if __name__ == "__main__":
