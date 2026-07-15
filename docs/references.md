@@ -133,5 +133,10 @@ If you use scATrans in your research, please cite it using the metadata in
 [`CITATION.cff`](https://github.com/leelieber2025/scATrans/blob/main/CITATION.cff)
 (also exposed as GitHub's "Cite this repository" button).
 
+Archived releases have a Zenodo DOI:
+[10.5281/zenodo.21365873](https://doi.org/10.5281/zenodo.21365873). This is the
+**concept DOI** — it always resolves to the latest version; each release also
+has its own version-specific DOI on the Zenodo record.
+
 Also cite the **backends and databases you actually used** (e.g. PyDESeq2 +
 DESeq2; GSEApy + GSEA + Enrichr; GO/KEGG) from the tables above.
