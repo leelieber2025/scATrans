@@ -647,9 +647,25 @@ def test_ensure_raw_counts_recovers_from_raw():
     sc.pp.normalize_total(ad, target_sum=1e4)
     sc.pp.log1p(ad)
 
-    scat.ensure_raw_counts(ad)
+    with pytest.warns(DeprecationWarning):
+        scat.ensure_raw_counts(ad)
     assert "counts" in ad.layers
     assert ad.layers["counts"].shape[1] == ad.n_vars
+    assert "raw_gene_list" in ad.uns.get("scatrans", {})
+
+
+def test_store_raw_counts_auto_mode_recovers_from_raw():
+    """store_raw_counts(mode='auto') replaces ensure_raw_counts without deprecation."""
+    np.random.seed(7)
+    X_raw = np.random.negative_binomial(4, 0.45, size=(40, 60)).astype(float)
+    ad = sc.AnnData(X_raw.copy())
+    ad.raw = ad.copy()
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+
+    scat.store_raw_counts(ad, mode="auto")
+    assert "counts" in ad.layers
+    assert np.allclose(np.asarray(ad.layers["counts"]), X_raw)
     assert "raw_gene_list" in ad.uns.get("scatrans", {})
 
 

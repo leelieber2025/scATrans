@@ -95,7 +95,8 @@ See {doc}`installation`.
 Count-based backends need **raw integer counts**. A common mistake is
 running HVG selection + `normalize_total` + `log1p` first, which leaves
 `.X` log-transformed. Call `scat.store_raw_counts(adata, layer="counts")`
-(or `ensure_raw_counts`) **before** any preprocessing. See
+(or `store_raw_counts(adata, mode="auto")` to also recover counts from
+`adata.raw` when `.X` is already normalized) **before** any preprocessing. See
 {doc}`user_guide/standalone_de`.
 
 ## After `anndata.concat()`, I get double-log1p / preprocessing warnings

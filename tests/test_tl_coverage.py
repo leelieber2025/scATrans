@@ -90,15 +90,31 @@ def test_store_and_restore_raw_counts(adata_de_only):
     assert "log1p" not in restored.uns
 
 
-def test_restore_raw_counts_rejects_permuted_gene_order(adata_de_only):
+def test_restore_raw_counts_realigns_permuted_gene_order_via_snapshot(adata_de_only):
+    ad = adata_de_only.copy()
+    X_raw = np.asarray(ad.X, dtype=float).copy()
+    scat.store_raw_counts(ad, layer="counts", save_raw=False)
+    perm = list(range(ad.n_vars))
+    perm.reverse()
+    ad_perm = ad[:, perm].copy()
+    sc.pp.normalize_total(ad_perm, target_sum=1e4)
+    # The label-indexed uns snapshot realigns by gene name, so restoring into a
+    # permuted object now yields the correctly reordered raw counts (no error).
+    restored = scat.restore_raw_counts(ad_perm, layer="counts", inplace=False)
+    assert np.allclose(np.asarray(restored.X, dtype=float), X_raw[:, perm])
+
+
+def test_restore_raw_counts_legacy_path_rejects_permuted_gene_order(adata_de_only):
     ad = adata_de_only.copy()
     scat.store_raw_counts(ad, layer="counts", save_raw=False)
     perm = list(range(ad.n_vars))
     perm.reverse()
     ad_perm = ad[:, perm].copy()
     sc.pp.normalize_total(ad_perm, target_sum=1e4)
+    # Without the snapshot (prefer_snapshot=False) the position-based layer path
+    # cannot realign and must refuse rather than silently misalign.
     with pytest.raises(ValueError, match="raw_gene_list order differs"):
-        scat.restore_raw_counts(ad_perm, layer="counts", inplace=False)
+        scat.restore_raw_counts(ad_perm, layer="counts", inplace=False, prefer_snapshot=False)
 
 
 def test_reconcile_log1p_marker_detects_stale_metadata(adata_de_only):
@@ -192,12 +208,45 @@ def test_de_preprocess_auto_strips_stale_log1p_marker_inplace(adata_de_only):
     assert "log1p" in ad.uns
 
 
+def test_restore_raw_counts_snapshot_rejects_duplicate_cell_names():
+    import anndata as anndata_mod
+    import scipy.sparse as sp
+
+    X = sp.csr_matrix(np.random.poisson(0.5, size=(6, 5)).astype("f4"))
+    ad = anndata_mod.AnnData(X=X)
+    ad.obs_names = ["c1", "c1", "c2", "c3", "c3", "c4"]  # duplicate barcodes
+    ad.var_names = [f"g{i}" for i in range(5)]
+    scat.store_raw_counts(ad)
+    with pytest.raises(ValueError, match="unique cell names"):
+        scat.restore_raw_counts(ad)
+
+
+def test_store_raw_counts_save_raw_is_deprecated(adata_de_only):
+    ad = adata_de_only.copy()
+    with pytest.warns(DeprecationWarning, match="save_raw=True is deprecated"):
+        scat.store_raw_counts(ad, save_raw=True)
+
+
+def test_restore_raw_counts_refuses_log_normalized_raw(adata_de_only):
+    ad = adata_de_only.copy()
+    # adata.raw holds log-normalized data (common scanpy convention), and there is
+    # no counts layer / snapshot. restore must refuse rather than treat log as counts.
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    ad.raw = ad.copy()
+    ad.layers.pop("counts", None)
+    ad.uns.get("scatrans", {}).pop("raw_snapshot", None)
+    with pytest.raises(ValueError, match="log-normalized"):
+        scat.restore_raw_counts(ad, layer="counts")
+
+
 def test_ensure_raw_counts_from_raw_attr(adata_de_only):
     ad = adata_de_only.copy()
     ad.raw = ad.copy()
     sc.pp.normalize_total(ad, target_sum=1e4)
     sc.pp.log1p(ad)
-    scat.ensure_raw_counts(ad)
+    with pytest.warns(DeprecationWarning):
+        scat.ensure_raw_counts(ad)
     assert "counts" in ad.layers
 
 

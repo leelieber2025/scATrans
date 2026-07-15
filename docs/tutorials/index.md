@@ -61,9 +61,10 @@ plotting gallery.
 Which genes are called by *several* DE backends, and what do the robust ones do?
 The gene-level UpSet trio — `build_gene_membership` → `gene_upsetplot` →
 `common_genes` — stacks Wilcoxon / *t*-test / pseudobulk into one figure, then
-feeds the common-up / common-down genes into enrichment.
+feeds the common-up / common-down genes into enrichment. Works equally well on
+your own external DE tables (Seurat / DESeq2 / CSV).
 +++
-`EC.h5ad` · multi-method DE · UpSet / ORA
+`EC.h5ad` · multi-method DE · bring-your-own tables · UpSet / ORA
 :::
 
 :::{grid-item-card} 🎨 Visualization gallery

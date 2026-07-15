@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.10.4] - 2026-07-15
+
+### Added
+- **Raw-count sidecar snapshot (survives HVG / cell subsetting)**:
+  `store_raw_counts(..., sidecar=True)` (the new default) now also writes a
+  label-indexed snapshot of the full obs × var count matrix to
+  `adata.uns['scatrans']['raw_snapshot']`. Because `uns` is not tied to the
+  obs/var axes, the snapshot survives HVG gene subsetting, cell subsetting,
+  `copy()`, and `write_h5ad()` — unlike `layers['counts']` (trimmed on both
+  axes) and `adata.raw` (trimmed on cells). It is aligned by cell/gene **name**,
+  so it also tolerates reordering.
+  - `restore_raw_counts(..., full_genes=True)` reconstructs the complete
+    pre-HVG gene universe as a new AnnData (for DE / enrichment on all genes),
+    even when called on an HVG-subsetted or cell-subsetted object.
+  - `restore_raw_counts(..., prefer_snapshot=True)` (default) restores counts
+    aligned to the current cells/genes, absorbing cell subsetting and gene
+    reordering.
+  - `store_raw_counts(sidecar='ondisk', snapshot_path=...)` writes the full
+    matrix to a standalone `.h5ad` and keeps only a lightweight pointer in
+    `uns`, avoiding a doubled count matrix in memory / in the main file for
+    large datasets.
+  - **Velocity layers preserved too**: `spliced`/`unspliced` (or
+    `mature`/`nascent`) are captured into the snapshot and restored alongside
+    the counts, so active-transcription analysis can run on the full gene set
+    after HVG subsetting via `restore_raw_counts(full_genes=True)`.
+
+### Changed
+- **`store_raw_counts` gained `mode="force"|"auto"`**: `"auto"` is idempotent
+  and recovery-aware (reuse an existing integer counts layer, or recover from
+  `adata.raw` when `.X` is already normalized/log-transformed). This folds the
+  former `ensure_raw_counts` logic into one function.
+- **Density preserved through store → restore**: restoring no longer forces a
+  dense matrix to sparse (or vice versa); the original matrix format round-trips.
+
+### Fixed
+- **`restore_raw_counts` no longer misreads a log-normalized `adata.raw` as
+  counts**: the `adata.raw` fallback is used only when it actually looks like
+  integer counts. Following the common scanpy convention where `adata.raw`
+  holds log-normalized data, restoring it into `.X` as raw counts would have
+  been a silent correctness bug; it now raises a clear error pointing to the
+  sidecar snapshot instead.
+- **Snapshot restore with duplicate cell/gene names**: label-aligned restore now
+  fails with an actionable message (call `obs_names_make_unique()` /
+  `var_names_make_unique()`) instead of pandas' cryptic `InvalidIndexError` when
+  barcodes are duplicated (e.g. multiple batches before de-duplication).
+- **Dead velocity `raw_*` layers removed**: `store_raw_counts` no longer writes
+  `raw_spliced`/`raw_unspliced`/`raw_mature`/`raw_nascent` layers. They were
+  position-aligned (so trimmed by HVG/cell subsetting) and never read back —
+  the sidecar snapshot now preserves velocity correctly instead.
+
+### Deprecated
+- **`ensure_raw_counts()`** — use `store_raw_counts(..., mode="auto")`. The old
+  name remains as a thin alias and emits a `DeprecationWarning`.
+- **`store_raw_counts(save_raw=True)`** — `adata.raw` is commonly reserved for
+  log-normalized data, so writing raw integer counts there is ambiguous. The
+  sidecar snapshot supersedes it; `save_raw=True` now emits a
+  `DeprecationWarning`.
+
 ## [0.10.3] - 2026-07-14
 
 ### Added

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 __all__ = ["__version__", "version", "version_tuple"]
 
-__version__ = "0.10.3"
+__version__ = "0.10.4"
 version = __version__
 
 # Parsed once for callers that need a comparable tuple (major, minor, patch, …).

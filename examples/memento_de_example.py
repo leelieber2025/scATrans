@@ -68,8 +68,11 @@ print(f"Groups: {adata.obs['condition'].value_counts().to_dict()}")
 
 # Store raw counts + original spliced/unspliced layers early
 # (before any HVG/normalize/log). This is the recommended early step for scATrans.
+# The sidecar snapshot preserves the full-gene counts AND velocity layers so they
+# survive later HVG/cell subsetting; recover them with
+# scat.restore_raw_counts(adata, full_genes=True).
 scat.store_raw_counts(adata, layer="counts", save_raw=False)
-print("Called store_raw_counts early (raw counts + raw_spliced/raw_unspliced preserved)")
+print("Called store_raw_counts early (full-gene counts + velocity preserved in snapshot)")
 
 # --- Standard run with traditional DE (t-test) ---
 print("\n--- Standard active_score with default / t-test DE backend ---")

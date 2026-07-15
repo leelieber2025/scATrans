@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from typing import Any
 
@@ -14,9 +15,11 @@ import scipy.sparse as sparse
 
 from .._de import _run_de_wrapper
 from .._utils import (
+    _align_snapshot_bundle,
     _apply_de_preprocess,
     _as_contrast_categorical,
     _clear_log_preprocess_metadata,
+    _get_raw_snapshot,
     _is_integer_counts_like,
     _pseudobulk_with_layers,
     _resolve_aligned_raw_counts,
@@ -40,7 +43,7 @@ logger.addHandler(logging.NullHandler())
 def _record_raw_counts_metadata(
     adata: Any, *, save_raw: bool = False, overwrite: bool = False
 ) -> None:
-    """Write scatrans metadata, optional adata.raw, and raw_* velocity layers."""
+    """Write scatrans metadata (raw_gene_list) and, optionally, adata.raw."""
     if "scatrans" not in adata.uns:
         adata.uns["scatrans"] = {}
     prev_list = adata.uns["scatrans"].get("raw_gene_list")
@@ -49,8 +52,9 @@ def _record_raw_counts_metadata(
         logger.warning(
             "Updating raw_gene_list (%d → %d genes). If you subsetted after an earlier "
             "store_raw_counts(), enrichment universe will reflect the current gene set only. "
-            "For the full pre-HVG universe, keep a separate full-gene AnnData or use save_raw=True "
-            "on the original object before subsetting.",
+            "For the full pre-HVG universe, call store_raw_counts(sidecar=True) on the "
+            "original object before subsetting and recover it with "
+            "restore_raw_counts(full_genes=True).",
             len(prev_list),
             n_genes,
         )
@@ -81,70 +85,167 @@ def _record_raw_counts_metadata(
             adata.raw = adata.copy()
             logger.info("Set adata.raw to preserve full data.")
 
-    for vel_name in ("spliced", "unspliced", "mature", "nascent"):
-        if vel_name in adata.layers:
-            raw_vel_name = f"raw_{vel_name}"
-            if raw_vel_name not in adata.layers or overwrite:
-                adata.layers[raw_vel_name] = adata.layers[vel_name].copy()
-                logger.info(f"Saved original {vel_name} to adata.layers['{raw_vel_name}'].")
+
+def _store_raw_snapshot(
+    adata: Any,
+    mat: Any,
+    *,
+    overwrite: bool = False,
+    ondisk: bool = False,
+    snapshot_path: str | None = None,
+) -> None:
+    """Write a label-indexed raw count snapshot into ``uns['scatrans']``.
+
+    The snapshot stores the full obs x var count matrix together with the complete
+    ``obs_names`` and ``var_names``. Because it lives in ``uns`` (not an axis-aligned
+    slot) it survives gene subsetting (HVG), cell subsetting, ``copy()`` and
+    ``write_h5ad()``. Restoration re-aligns it by label, so the full-gene universe
+    and the correct cells can be recovered even after subsetting or reordering.
+
+    Any velocity layers present (``spliced``/``unspliced`` or ``mature``/``nascent``)
+    are captured into the snapshot too, so :func:`restore_raw_counts` can recover the
+    full-gene velocity matrices for active-transcription analysis after HVG subsetting.
+
+    When ``ondisk`` is True the full matrix is written to ``snapshot_path`` (a
+    standalone ``.h5ad``) and only a lightweight pointer (path + names) is kept in
+    ``uns`` — useful to avoid doubling the in-memory / in-file count matrix for large
+    datasets. The referenced file must remain reachable for later restoration.
+    """
+    if "scatrans" not in adata.uns:
+        adata.uns["scatrans"] = {}
+    if adata.uns["scatrans"].get("raw_snapshot") is not None and not overwrite:
+        logger.debug("raw_snapshot already exists; skipping (pass overwrite=True to replace).")
+        return
+    if mat.shape[0] != adata.n_obs or mat.shape[1] != adata.n_vars:
+        raise ValueError(
+            f"Cannot store raw_snapshot: matrix shape {mat.shape} does not match "
+            f"adata shape ({adata.n_obs}, {adata.n_vars})."
+        )
+    # Preserve the original matrix format (dense stays dense, sparse stays sparse)
+    # so restoration returns the same type the caller started with.
+    stored = mat.copy()
+    obs_names = adata.obs_names.to_numpy().astype(str)
+    var_names = adata.var_names.to_numpy().astype(str)
+    is_integer = bool(_is_integer_counts_like(stored))
+
+    # Capture velocity layers so they survive HVG/cell subsetting like the counts.
+    vel_layers = {
+        name: adata.layers[name].copy()
+        for name in ("spliced", "unspliced", "mature", "nascent")
+        if name in adata.layers
+    }
+
+    if ondisk:
+        if not snapshot_path:
+            raise ValueError(
+                "sidecar='ondisk' requires snapshot_path=<file.h5ad> to write the full "
+                "count matrix to."
+            )
+        path = os.path.abspath(snapshot_path)
+        if os.path.exists(path) and not overwrite:
+            logger.debug("On-disk snapshot %s already exists; reusing (pass overwrite=True).", path)
+        else:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            snap_ad = ad.AnnData(
+                X=stored,
+                obs=pd.DataFrame(index=pd.Index(obs_names)),
+                var=pd.DataFrame(index=pd.Index(var_names)),
+            )
+            for name, layer_mat in vel_layers.items():
+                snap_ad.layers[name] = layer_mat
+            snap_ad.write_h5ad(path)
+            logger.info("Wrote on-disk raw snapshot to %s.", path)
+        adata.uns["scatrans"]["raw_snapshot"] = {
+            "backend": "ondisk",
+            "path": path,
+            "obs_names": obs_names,
+            "var_names": var_names,
+            "is_integer": is_integer,
+            "velocity_layers": list(vel_layers),
+            "version": VERSION,
+        }
+        logger.info(
+            "Recorded on-disk raw snapshot pointer (%d cells x %d genes%s) in "
+            "adata.uns['scatrans']['raw_snapshot']; keep %s reachable to restore.",
+            adata.n_obs,
+            adata.n_vars,
+            f", velocity layers: {list(vel_layers)}" if vel_layers else "",
+            path,
+        )
+        return
+
+    adata.uns["scatrans"]["raw_snapshot"] = {
+        "backend": "inline",
+        "X": stored,
+        "obs_names": obs_names,
+        "var_names": var_names,
+        "is_integer": is_integer,
+        "layers": vel_layers,
+        "version": VERSION,
+    }
+    logger.info(
+        "Stored label-indexed raw snapshot (%d cells x %d genes%s) in "
+        "adata.uns['scatrans']['raw_snapshot']; it survives HVG/cell subsetting.",
+        adata.n_obs,
+        adata.n_vars,
+        f", velocity layers: {list(vel_layers)}" if vel_layers else "",
+    )
+
+
+def _sidecar_mode(sidecar: bool | str) -> tuple[bool, bool]:
+    """Normalize the ``sidecar`` argument into ``(enabled, ondisk)``.
+
+    Accepts ``True``/``False`` (in-memory snapshot in ``uns``) or the string
+    ``"ondisk"`` (write the full matrix to a standalone ``.h5ad`` and keep only a
+    pointer in ``uns``).
+    """
+    if isinstance(sidecar, str):
+        if sidecar == "ondisk":
+            return True, True
+        raise ValueError(f"Unknown sidecar mode {sidecar!r}; use True, False, or 'ondisk'.")
+    return bool(sidecar), False
 
 
 def ensure_raw_counts(
-    adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
+    adata: Any,
+    layer: str = "counts",
+    save_raw: bool = False,
+    overwrite: bool = False,
+    sidecar: bool | str = True,
+    snapshot_path: str | None = None,
 ) -> None:
     """
-    Ensure raw integer counts are available in ``adata.layers[layer]``.
+    Deprecated alias for :func:`store_raw_counts` with ``mode="auto"``.
 
-    Convenience wrapper around :func:`store_raw_counts` that also tries to recover
-    counts from ``adata.raw`` when ``adata.X`` is already normalized or log-transformed
-    (common after HVG + ``sc.pp.log1p``).
-
-    Resolution order:
-    1. Existing ``layers[layer]`` if it already looks like integer counts
-    2. Current ``adata.X`` if integer counts-like
-    3. ``adata.raw.X`` when gene names/order match ``adata.var_names``
-
-    Always updates ``adata.uns['scatrans']['raw_gene_list']`` and velocity ``raw_*`` layers
-    via the same metadata path as :func:`store_raw_counts`.
+    ``store_raw_counts(mode="auto")`` performs the same idempotent recovery this
+    function used to: it reuses an existing integer counts layer, stores the current
+    ``.X`` when it looks like counts, or recovers counts from ``adata.raw`` when
+    ``.X`` is already normalized/log-transformed. Prefer calling that directly.
     """
-    if (
-        layer in adata.layers
-        and not overwrite
-        and _is_integer_counts_like(adata.layers[layer])
-        and adata.layers[layer].shape[1] == adata.n_vars
-    ):
-        _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
-        logger.debug("Layer '%s' already holds aligned integer counts.", layer)
-        return
-
-    if _is_integer_counts_like(adata.X):
-        store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
-        return
-
-    raw = getattr(adata, "raw", None)
-    if raw is not None and _is_integer_counts_like(raw.X) and raw.shape[1] == adata.n_vars:
-        if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
-            adata.layers[layer] = raw.X.copy()
-            logger.info(
-                "ensure_raw_counts: recovered raw counts from adata.raw into layers['%s'].",
-                layer,
-            )
-            _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
-            return
-        logger.warning(
-            "adata.raw exists but gene names/order do not match current adata.var_names. "
-            "Cannot recover counts automatically."
-        )
-
-    logger.warning(
-        "ensure_raw_counts: adata.X does not look like raw counts and adata.raw could not be used. "
-        "Falling back to store_raw_counts (may warn again)."
+    warnings.warn(
+        "ensure_raw_counts() is deprecated; call store_raw_counts(..., mode='auto') instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    store_raw_counts(adata, layer=layer, save_raw=save_raw, overwrite=overwrite)
+    store_raw_counts(
+        adata,
+        layer=layer,
+        save_raw=save_raw,
+        overwrite=overwrite,
+        sidecar=sidecar,
+        snapshot_path=snapshot_path,
+        mode="auto",
+    )
 
 
 def store_raw_counts(
-    adata: Any, layer: str = "counts", save_raw: bool = False, overwrite: bool = False
+    adata: Any,
+    layer: str = "counts",
+    save_raw: bool = False,
+    overwrite: bool = False,
+    sidecar: bool | str = True,
+    snapshot_path: str | None = None,
+    mode: str = "force",
 ) -> None:
     """
     Store raw counts and the original spliced/unspliced (or mature/nascent) layers
@@ -159,21 +260,112 @@ def store_raw_counts(
     By default we only save to the given layer (save_raw defaults to False so we do
     not automatically touch adata.raw unless you explicitly ask for it).
 
-    We automatically save any existing velocity layers under "raw_spliced",
-    "raw_unspliced" (or "raw_mature", "raw_nascent"). These raw_* layers are
-    subject to the normal AnnData behavior: if you later gene-subset the object
-    (e.g. to HVGs), the layers are subsetted as well. They do **not** magically
-    retain the original full-gene matrices after subsetting.
+    Any existing velocity layers (``spliced``/``unspliced`` or ``mature``/``nascent``)
+    are captured into the sidecar snapshot (see below), so they survive HVG/cell
+    subsetting and can be recovered by :func:`restore_raw_counts`. (Earlier versions
+    instead wrote position-aligned ``raw_spliced``/``raw_unspliced`` layers, which were
+    trimmed by subsetting and never read back; those are no longer created.)
+
+    Sidecar snapshot (``sidecar=True``, default)
+    --------------------------------------------
+    In addition to the axis-aligned ``layer``, a label-indexed snapshot of the full
+    obs x var count matrix is written to ``adata.uns['scatrans']['raw_snapshot']``.
+    Because ``uns`` is not tied to the obs/var axes, this snapshot survives HVG gene
+    subsetting, cell subsetting, ``copy()`` and ``write_h5ad()``. Use
+    :func:`restore_raw_counts` (optionally with ``full_genes=True``) to recover the
+    full-gene universe and the correct cells afterwards, aligned by name. This is the
+    recommended way to keep raw counts available for DE / enrichment after HVG or
+    after extracting a subset. Pass ``sidecar=False`` to skip it (e.g. to save memory
+    when you keep the full object around yourself).
+
+    For large datasets, pass ``sidecar='ondisk'`` together with
+    ``snapshot_path='raw_snapshot.h5ad'`` to write the full count matrix to a
+    standalone file and keep only a lightweight pointer in ``uns`` (avoids doubling
+    the count matrix in memory and inside the main ``.h5ad``). The referenced file
+    must stay reachable for :func:`restore_raw_counts` to work.
 
     If you need the full-gene raw velocity data after HVG-based visualization,
     either:
+      - rely on the sidecar snapshot and restore_raw_counts(full_genes=True)
+        (recommended), or
       - call store_raw_counts() on the full object and keep the full object for
-        DE / active_score / enrichment while using a copy for visualization, or
-      - use save_raw=True (which sets adata.raw).
+        DE / active_score / enrichment while using a copy for visualization.
+
+    ``save_raw`` is deprecated: adata.raw is commonly reserved for log-normalized
+    data, and the sidecar snapshot already preserves full-gene raw counts.
+
+    mode : {"force", "auto"}, default "force"
+        "force" stores the current ``adata.X`` into the counts layer (the classic
+        behavior). "auto" is idempotent and recovery-aware: it reuses an existing
+        aligned integer counts layer, or recovers counts from ``adata.raw`` when
+        ``adata.X`` is already normalized/log-transformed, before falling back to
+        storing the current ``.X``. (This is what the deprecated
+        :func:`ensure_raw_counts` did.)
 
     Recommended early call:
         scat.store_raw_counts(adata, layer="counts", save_raw=False)
     """
+    if mode not in ("force", "auto"):
+        raise ValueError(f"Unknown mode {mode!r}; use 'force' or 'auto'.")
+
+    if save_raw:
+        warnings.warn(
+            "save_raw=True is deprecated. adata.raw is commonly reserved for "
+            "log-normalized data (scanpy convention), so writing raw integer counts "
+            "there is ambiguous. The sidecar snapshot (sidecar=True, the default) "
+            "already preserves full-gene raw counts across HVG/cell subsetting; use "
+            "restore_raw_counts(..., full_genes=True) to recover them.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    enabled, ondisk = _sidecar_mode(sidecar)
+
+    def _finalize() -> None:
+        if enabled and layer in adata.layers:
+            _store_raw_snapshot(
+                adata,
+                adata.layers[layer],
+                overwrite=overwrite,
+                ondisk=ondisk,
+                snapshot_path=snapshot_path,
+            )
+        _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+
+    if mode == "auto":
+        # 1. Existing layer already holds aligned integer counts -> just refresh sidecar/metadata.
+        if (
+            layer in adata.layers
+            and not overwrite
+            and _is_integer_counts_like(adata.layers[layer])
+            and adata.layers[layer].shape[1] == adata.n_vars
+        ):
+            _finalize()
+            logger.debug("Layer '%s' already holds aligned integer counts.", layer)
+            return
+        # 2. .X is not counts -> try to recover from adata.raw before the force store.
+        if not _is_integer_counts_like(adata.X):
+            raw = getattr(adata, "raw", None)
+            if raw is not None and _is_integer_counts_like(raw.X) and raw.shape[1] == adata.n_vars:
+                if hasattr(raw, "var_names") and np.array_equal(raw.var_names, adata.var_names):
+                    adata.layers[layer] = raw.X.copy()
+                    logger.info(
+                        "store_raw_counts(mode='auto'): recovered raw counts from "
+                        "adata.raw into layers['%s'].",
+                        layer,
+                    )
+                    _finalize()
+                    return
+                logger.warning(
+                    "adata.raw exists but gene names/order do not match current adata.var_names. "
+                    "Cannot recover counts automatically."
+                )
+            logger.warning(
+                "store_raw_counts(mode='auto'): adata.X does not look like raw counts and "
+                "adata.raw could not be used. Storing current .X (may warn again)."
+            )
+        # 3. .X looks like counts -> fall through to the force store below.
+
     if layer in adata.layers and not overwrite:
         if _is_integer_counts_like(adata.layers[layer]):
             logger.debug(f"Layer '{layer}' already exists with integer counts; not overwriting.")
@@ -203,16 +395,64 @@ def store_raw_counts(
             f"{adata.n_vars} genes. Pass overwrite=True after fixing alignment."
         )
 
-    _record_raw_counts_metadata(adata, save_raw=save_raw, overwrite=overwrite)
+    _finalize()
 
 
-def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False) -> Any | None:
+def _restore_full_genes_from_snapshot(adata: Any) -> Any:
+    """Build a new AnnData with the full pre-HVG gene universe from the uns snapshot.
+
+    Rows are the current (possibly subsetted) cells, aligned by ``obs_names``; columns
+    are the complete stored gene set. Obs-aligned annotations (``obs``, ``obsm``) are
+    carried over; var-aligned annotations are dropped because the dropped genes have no
+    current metadata. ``uns`` is shallow-copied and ``raw_gene_list`` is updated to the
+    full gene set so downstream enrichment uses the correct universe.
     """
-    Restore raw counts from the stored layer (preferred) or adata.raw back into .X.
+    aligned = _align_snapshot_bundle(adata, full_genes=True)
+    if aligned is None:
+        raise ValueError(
+            "full_genes=True requires a raw snapshot in adata.uns['scatrans']['raw_snapshot']. "
+            "Call scat.store_raw_counts(adata, sidecar=True) before HVG subsetting."
+        )
+    X_full, var_names, vel_layers = aligned
+    var_df = pd.DataFrame(index=pd.Index(var_names, name=adata.var_names.name))
+    new = ad.AnnData(X=X_full, obs=adata.obs.copy(), var=var_df)
+    for name, layer_mat in vel_layers.items():
+        new.layers[name] = layer_mat
+    for key in adata.obsm:
+        new.obsm[key] = adata.obsm[key].copy()
+
+    new_uns = dict(adata.uns)
+    scat = new_uns.get("scatrans")
+    if isinstance(scat, dict):
+        scat = dict(scat)
+        scat["raw_gene_list"] = list(var_names)
+        scat["store_raw_counts_n_genes"] = int(len(var_names))
+        new_uns["scatrans"] = scat
+    new.uns = new_uns
+
+    _clear_log_preprocess_metadata(new)
+    logger.info(
+        "Restored full-gene raw counts from snapshot into a new AnnData (%d cells x %d genes).",
+        new.n_obs,
+        new.n_vars,
+    )
+    return new
+
+
+def restore_raw_counts(
+    adata: Any,
+    layer: str = "counts",
+    inplace: bool = False,
+    full_genes: bool = False,
+    prefer_snapshot: bool = True,
+) -> Any | None:
+    """
+    Restore raw counts from the uns snapshot (preferred), the stored layer, or
+    adata.raw back into .X.
 
     This is useful when you have done HVG + log1p on .X for visualization,
     but want to work with (or pass to other tools) the raw counts for the
-    genes currently in the adata (or the preserved set).
+    genes currently in the adata (or the full pre-HVG universe).
 
     It only uses explicitly stored raw data (from store_raw_counts), never
     attempts to recover from log-transformed data.
@@ -226,22 +466,67 @@ def restore_raw_counts(adata: Any, layer: str = "counts", inplace: bool = False)
     inplace : bool
         If True, modify adata in place and return None.
         If False (default), return a new AnnData with .X set to raw counts.
+        Ignored (forced False) when ``full_genes=True``, since the gene axis changes.
+    full_genes : bool
+        If True, recover the complete pre-HVG gene set from the uns snapshot and
+        return a new AnnData with all genes (for DE / enrichment on the full
+        universe). Requires ``store_raw_counts(sidecar=True)`` to have been called
+        before subsetting. Cannot be combined with ``inplace=True``.
+    prefer_snapshot : bool
+        If True (default), use the label-indexed uns snapshot when present. The
+        snapshot aligns by cell/gene name, so it also recovers counts correctly after
+        cell subsetting or gene reordering. Set to False to force the legacy
+        layer/adata.raw path. Note that adata.raw is only used as a fallback when it
+        looks like integer counts; a log-normalized adata.raw is never restored as .X.
 
     Returns
     -------
     AnnData or None
-        If not inplace, a copy of adata with raw counts in .X.
+        If not inplace (or full_genes=True), a new AnnData with raw counts in .X.
     """
+    if full_genes:
+        if inplace:
+            raise ValueError(
+                "full_genes=True changes the gene axis and cannot be done inplace; "
+                "use inplace=False (the default) to get a new full-gene AnnData."
+            )
+        return _restore_full_genes_from_snapshot(adata)
+
+    if prefer_snapshot and _get_raw_snapshot(adata) is not None:
+        aligned = _align_snapshot_bundle(adata, full_genes=False)
+        if aligned is not None:
+            snap_mat, _, vel_layers = aligned
+            target = adata if inplace else adata.copy()
+            target.X = snap_mat.copy() if hasattr(snap_mat, "copy") else snap_mat
+            for name, layer_mat in vel_layers.items():
+                target.layers[name] = layer_mat
+            _clear_log_preprocess_metadata(target)
+            if inplace:
+                logger.info("Restored raw counts from uns raw_snapshot into adata.X (inplace).")
+                return None
+            logger.info("Created copy with raw counts from uns raw_snapshot in .X.")
+            return target
+
+    raw_attr = getattr(adata, "raw", None)
     if layer in adata.layers:
         raw = adata.layers[layer].copy()
         source = f"layers['{layer}']"
-    elif getattr(adata, "raw", None) is not None:
-        raw = adata.raw.X.copy()
+    elif raw_attr is not None and _is_integer_counts_like(raw_attr.X):
+        # Only trust adata.raw as a counts source when it actually looks like integer
+        # counts. By the common scanpy convention adata.raw holds log-normalized data,
+        # which must not be restored into .X as if it were raw counts.
+        raw = raw_attr.X.copy()
         source = "adata.raw"
     else:
+        detail = ""
+        if raw_attr is not None:
+            detail = (
+                " adata.raw is present but does not look like integer counts (it is "
+                "assumed to hold log-normalized data) and was not used."
+            )
         raise ValueError(
-            f"No raw counts found in layer '{layer}' or adata.raw. "
-            "Call scat.store_raw_counts(adata) early to preserve them."
+            f"No usable raw counts found in layer '{layer}' or the uns snapshot.{detail} "
+            "Call scat.store_raw_counts(adata) early (sidecar=True) to preserve them."
         )
 
     if raw.shape[1] != adata.n_vars:
