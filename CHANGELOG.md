@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+- **Bias correction and adaptive weighting are now first-class
+  `run_default_pipeline` options** (previously additive wrappers you had to call
+  separately on `all_results`). `run_default_pipeline(..., bias_method=...,
+  adaptive_weighting=..., adaptive_anchor=...)`:
+  - `bias_method="abundance"` / `"abundance_length"` adds the
+    `unspliced_excess_residual_abnorm` column (demotes abundance/length
+    artifacts such as *MALAT1* / long genes); diagnostics in `meta["bias"]`.
+  - `adaptive_weighting=True` adds `adaptive_score` / `adaptive_score_pct`
+    columns (reliability-weighted nascent leg); `adaptive_anchor` selects the
+    reliability anchor (`"de"` default or `labeling_anchor()` / callable / array);
+    diagnostics in `meta["adaptive"]`.
+  Both default off (existing behavior unchanged), operate additively on
+  `all_results` (core `active_score` untouched), and **fail soft** — if an add-on
+  cannot be computed the core result is still returned and the reason recorded
+  under the matching `meta` key. An invalid `bias_method` value raises upfront.
+- **Configurable reliability anchor for adaptive weighting** (`scatrans.tl.adaptive`).
+  `add_adaptive_score` / `adaptive_active_score` now accept `anchor=` — `"de"`
+  (default, unchanged behavior) or a callable / array / Series naming the induced
+  gene set the proxy's reliability is scored against. New helper
+  `scat.labeling_anchor(column="new_log2fc", threshold=1.0)` anchors reliability on
+  metabolic-labeling truth. Validated on scNT-seq (GSE141851, KCl time course):
+  the DE anchor under-estimates reliability there (it is dominated by fast IEGs
+  whose unspliced-excess is depleted) and disables the proxy at every timepoint
+  (`w_proxy=0`), whereas the labeling anchor recovers the correct graded
+  down-weighting `w=0.79→0.60→0.10→0.00` for 15/30/60/120 min post-stimulus —
+  matching the proxy's measured reliability (labeling-truth AUC 0.70→0.48).
+  Diagnostics gain `anchor` and `n_anchor_induced` (with `n_anchor_de_induced`
+  kept as a back-compat alias).
+
 ## [0.10.5] - 2026-07-18
 
 ### Added

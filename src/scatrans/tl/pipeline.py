@@ -18,6 +18,8 @@ from ._common import (
     VERSION,
 )
 from .active import active_score
+from .adaptive import add_adaptive_score
+from .bias import add_abundance_normalized_residual
 from .de import differential_expression
 from .filter import filter_active_genes
 
@@ -446,6 +448,9 @@ def run_default_pipeline(
     gene_sets: str = "GO_Biological_Process",
     filter_preset: str | None = None,
     show_plot: bool = False,
+    bias_method: str | None = None,
+    adaptive_weighting: bool = False,
+    adaptive_anchor: Any = "de",
 ) -> PipelineResult:
     """
     End-to-end recommended workflow for first-time users.
@@ -460,6 +465,27 @@ def run_default_pipeline(
     consistent with the actual scale of active_score / unspliced_excess_residual
     (see WORKFLOW_PRESETS["pseudobulk_report"]).
 
+    Optional additive post-processing (core ``active_score`` is untouched; both
+    default off so existing behavior is unchanged):
+
+    - ``bias_method``: ``"abundance"`` or ``"abundance_length"`` runs
+      :func:`~scatrans.tl.bias.add_abundance_normalized_residual`, adding an
+      ``unspliced_excess_residual_abnorm`` column to ``all_results`` that demotes
+      abundance/length artifacts (e.g. *MALAT1*, long genes) from the top of the
+      residual ranking. Diagnostics land in ``meta["bias"]``.
+    - ``adaptive_weighting``: ``True`` runs
+      :func:`~scatrans.tl.adaptive.add_adaptive_score`, adding
+      ``adaptive_score`` / ``adaptive_score_pct`` columns whose nascent leg is
+      weighted by the proxy's estimated reliability (shrunk to 0 when
+      uninformative / anti-correlated). ``adaptive_anchor`` selects the
+      reliability anchor (``"de"`` default, or a :func:`labeling_anchor` /
+      callable / array for metabolic-labeling data). Diagnostics land in
+      ``meta["adaptive"]``.
+
+    Both fail soft: if an add-on cannot be computed (e.g. missing feature
+    columns) the core result is still returned and the reason is logged and
+    recorded under the corresponding ``meta`` key.
+
     Returns a :class:`PipelineResult` (mapping-compatible) with fields:
       - ``adata``, ``significant``, ``all_results``, ``candidates``
       - ``enrichment`` (DataFrame or None)
@@ -471,6 +497,10 @@ def run_default_pipeline(
         ``unspliced_global_fraction``, …). Full run metadata remains on
         ``result.adata.uns["scatrans"]``.
     """
+    _BIAS_METHODS = ("abundance", "abundance_length")
+    if bias_method is not None and bias_method not in _BIAS_METHODS:
+        raise ValueError(f"bias_method must be None or one of {_BIAS_METHODS}, got {bias_method!r}")
+
     # Resolve once so we can pick a matching filter_preset (addresses mismatch
     # between auto-pseudobulk in active_score_simple and hardcoded "heuristic").
     backend = _resolve_simple_backend_kwargs(
@@ -552,6 +582,26 @@ def run_default_pipeline(
     ):
         if key in scatrans_uns:
             result_meta[key] = scatrans_uns[key]
+
+    # Optional additive post-processing on all_results (adds columns in place;
+    # core active_score untouched). Fail soft: the core result must survive an
+    # add-on that cannot run (e.g. missing feature columns).
+    if bias_method is not None:
+        try:
+            _, bias_diag = add_abundance_normalized_residual(
+                all_results, method=bias_method, inplace=True
+            )
+            result_meta["bias"] = bias_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("bias_method=%r skipped: %s", bias_method, exc)
+            result_meta["bias"] = {"error": str(exc), "method": bias_method}
+    if adaptive_weighting:
+        try:
+            _, adaptive_diag = add_adaptive_score(all_results, anchor=adaptive_anchor, inplace=True)
+            result_meta["adaptive"] = adaptive_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("adaptive_weighting skipped: %s", exc)
+            result_meta["adaptive"] = {"error": str(exc)}
 
     # We already resolved backend above (avoids calling the resolver a second time
     # just to "guess" what active_score_simple decided internally).

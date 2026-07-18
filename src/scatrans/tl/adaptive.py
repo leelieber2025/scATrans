@@ -30,7 +30,8 @@ DE-induced genes (``logFC >= 1`` and ``p_adj < 0.05``).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Union
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,11 @@ logger.addHandler(logging.NullHandler())
 K_DEFAULT = 4.0
 W_MAX_DEFAULT = 2.0
 _REQUIRED_COLS = ("active_score", "unspliced_excess_residual", "logFC", "p_adj", "valid_expr")
+
+# An anchor is the "truth-ish" induced-gene set the proxy's reliability is scored
+# against. Either the string "de" (the built-in DE anchor), a callable
+# ``expr -> array/Series of 0/1``, or a precomputed boolean/int array/Series.
+AnchorSpec = Union[str, Callable[[pd.DataFrame], Any], "pd.Series", np.ndarray, list]
 
 
 def _auc(score: np.ndarray, label: np.ndarray) -> float:
@@ -63,6 +69,58 @@ def _de_induced_anchor(expr: pd.DataFrame) -> np.ndarray:
     return ((expr["logFC"] >= 1.0) & (expr["p_adj"] < 0.05)).to_numpy(dtype=int)
 
 
+def labeling_anchor(
+    column: str = "new_log2fc", threshold: float = 1.0
+) -> Callable[[pd.DataFrame], np.ndarray]:
+    """Build a labeling-truth anchor callable ``expr -> {0,1}`` from a column.
+
+    Use with metabolic-labeling data (e.g. scNT-seq / sci-fate) where a per-gene
+    newly-transcribed-RNA log2FC is available (default column ``new_log2fc``):
+    ``add_adaptive_score(df, anchor=labeling_anchor())``. Unlike the DE anchor,
+    this credits the proxy for tracking genuinely newly-transcribed genes that
+    plain DE misses — the empirically correct reliability signal on labeling data
+    (see the scNT-seq gating result). The named column must be present on the
+    ``valid_expr`` rows; missing/NaN values count as not-induced.
+    """
+
+    def _anchor(expr: pd.DataFrame) -> np.ndarray:
+        if column not in expr.columns:
+            raise KeyError(
+                f"labeling_anchor: column {column!r} not in results; "
+                "supply the labeling truth (e.g. merge new-RNA log2FC) first."
+            )
+        vals = pd.to_numeric(expr[column], errors="coerce").to_numpy()
+        return (np.nan_to_num(vals, nan=-np.inf) >= threshold).astype(int)
+
+    _anchor.__name__ = f"labeling_anchor[{column}>={threshold}]"
+    return _anchor
+
+
+def _resolve_anchor(anchor: AnchorSpec, expr: pd.DataFrame) -> tuple[np.ndarray, str]:
+    """Resolve an anchor spec to a 0/1 array aligned to ``expr`` rows + a label."""
+    if isinstance(anchor, str):
+        if anchor != "de":
+            raise ValueError(f"unknown string anchor {anchor!r}; use 'de' or pass a callable/array")
+        return _de_induced_anchor(expr), "de"
+    if callable(anchor):
+        vec = anchor(expr)
+        if isinstance(vec, pd.Series):
+            vec = vec.reindex(expr.index).to_numpy()
+        vec = np.nan_to_num(np.asarray(vec, dtype=float), nan=0.0).astype(int)
+        if len(vec) != len(expr):
+            raise ValueError(f"anchor callable returned {len(vec)} values, expected {len(expr)}")
+        return vec, getattr(anchor, "__name__", "callable")
+    # array-like / Series aligned to the valid_expr rows
+    if isinstance(anchor, pd.Series):
+        vec = anchor.reindex(expr.index).to_numpy()
+    else:
+        vec = np.asarray(anchor)
+        if len(vec) != len(expr):
+            raise ValueError(f"anchor array has {len(vec)} values, expected {len(expr)}")
+    vec = np.nan_to_num(np.asarray(vec, dtype=float), nan=0.0).astype(int)
+    return vec, "array"
+
+
 def adaptive_weight(
     reliability: float, k: float = K_DEFAULT, w_max: float = W_MAX_DEFAULT
 ) -> float:
@@ -81,6 +139,7 @@ def add_adaptive_score(
     *,
     k: float = K_DEFAULT,
     w_max: float = W_MAX_DEFAULT,
+    anchor: AnchorSpec = "de",
     inplace: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Add ``adaptive_score`` (+ ``adaptive_score_pct``) to an ``active_score`` table.
@@ -93,14 +152,23 @@ def add_adaptive_score(
         ``unspliced_excess_residual``, ``logFC``, ``p_adj``, ``valid_expr``).
     k, w_max
         Slope and cap of the reliability→weight map (see :func:`adaptive_weight`).
+    anchor
+        The induced-gene set the proxy's reliability is scored against.
+        ``"de"`` (default) uses the built-in DE anchor (``logFC>=1 & p_adj<0.05``);
+        pass :func:`labeling_anchor` (or any callable ``expr -> 0/1`` / array /
+        Series aligned to the ``valid_expr`` rows) to anchor on metabolic-labeling
+        truth instead. On labeling data the DE anchor under-estimates reliability
+        (it is dominated by fast IEGs with depleted unspliced signal); a labeling
+        anchor is the empirically correct choice there.
     inplace
         Modify and return the input frame instead of a copy.
 
     Returns
     -------
     (all_results, diagnostics)
-        ``diagnostics`` has ``reliability_auc``, ``w_proxy``,
-        ``n_anchor_de_induced``, ``n_expressed``, ``k``, ``w_max``, ``verdict``.
+        ``diagnostics`` has ``reliability_auc``, ``w_proxy``, ``anchor``,
+        ``n_anchor_induced``, ``n_anchor_de_induced`` (back-compat alias),
+        ``n_expressed``, ``k``, ``w_max``, ``verdict``.
     """
     missing = [c for c in _REQUIRED_COLS if c not in all_results.columns]
     if missing:
@@ -108,8 +176,8 @@ def add_adaptive_score(
 
     ar = all_results if inplace else all_results.copy()
     expr = ar[ar["valid_expr"] == True]  # noqa: E712
-    anchor = _de_induced_anchor(expr)
-    reliability = _auc(expr["unspliced_excess_residual"].to_numpy(), anchor)
+    anchor_vec, anchor_label = _resolve_anchor(anchor, expr)
+    reliability = _auc(expr["unspliced_excess_residual"].to_numpy(), anchor_vec)
     w_proxy = adaptive_weight(reliability, k=k, w_max=w_max)
 
     r_fc = rankdata(expr["logFC"].to_numpy())
@@ -129,19 +197,23 @@ def add_adaptive_score(
         verdict = f"nascent leg down-weighted (w={w_proxy:.2f})"
     else:
         verdict = f"nascent leg up-weighted / leading (w={w_proxy:.2f})"
+    n_anchor = int(anchor_vec.sum())
     diagnostics = {
         "reliability_auc": reliability,
         "w_proxy": w_proxy,
-        "n_anchor_de_induced": int(anchor.sum()),
+        "anchor": anchor_label,
+        "n_anchor_induced": n_anchor,
+        "n_anchor_de_induced": n_anchor,  # back-compat alias
         "n_expressed": int(len(expr)),
         "k": k,
         "w_max": w_max,
         "verdict": verdict,
     }
     logger.info(
-        "adaptive_score: reliability AUC=%.3f (anchor=%d) -> w_proxy=%.2f | %s",
+        "adaptive_score: reliability AUC=%.3f (anchor=%s, n=%d) -> w_proxy=%.2f | %s",
         reliability if reliability == reliability else float("nan"),
-        diagnostics["n_anchor_de_induced"],
+        anchor_label,
+        n_anchor,
         w_proxy,
         verdict,
     )
@@ -158,6 +230,7 @@ def adaptive_active_score(
     organism: str = "mouse",
     k: float = K_DEFAULT,
     w_max: float = W_MAX_DEFAULT,
+    anchor: AnchorSpec = "de",
     add_gene_features: bool = False,
     **pipeline_kwargs: Any,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -188,4 +261,4 @@ def adaptive_active_score(
         )
         all_results = result.all_results.copy()
 
-    return add_adaptive_score(all_results, k=k, w_max=w_max, inplace=True)
+    return add_adaptive_score(all_results, k=k, w_max=w_max, anchor=anchor, inplace=True)

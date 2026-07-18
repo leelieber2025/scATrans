@@ -19,7 +19,12 @@ from ._common import (
     PSEUDOBULK_FILTER_DEFAULTS,
 )
 from .active import active_score
-from .adaptive import adaptive_active_score, adaptive_weight, add_adaptive_score
+from .adaptive import (
+    adaptive_active_score,
+    adaptive_weight,
+    add_adaptive_score,
+    labeling_anchor,
+)
 from .bias import add_abundance_normalized_residual
 from .de import (
     differential_expression,
@@ -44,6 +49,7 @@ __all__ = [
     "adaptive_active_score",
     "add_adaptive_score",
     "adaptive_weight",
+    "labeling_anchor",
     "add_abundance_normalized_residual",
     "active_score_simple",
     "differential_expression",

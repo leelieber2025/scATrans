@@ -8,7 +8,12 @@ import pytest
 from scipy.stats import spearmanr
 
 import scatrans as scat
-from scatrans.tl.adaptive import _auc, adaptive_weight, add_adaptive_score
+from scatrans.tl.adaptive import (
+    _auc,
+    adaptive_weight,
+    add_adaptive_score,
+    labeling_anchor,
+)
 
 
 def _make_results(reliable: bool, n_induced: int = 40, n_bg: int = 160, seed: int = 0):
@@ -79,6 +84,79 @@ def test_no_anchor_does_not_crash():
     out, diag = add_adaptive_score(df)
     assert diag["w_proxy"] == 0.0
     assert out["adaptive_score"].notna().all()
+
+
+def _make_anchor_mismatch(seed: int = 1):
+    """A frame where the proxy tracks the LABELING truth but NOT the DE anchor.
+
+    Mirrors the scNT-seq finding: DE-induced genes (fast IEGs) have depleted
+    unspliced signal, so the DE anchor mis-scores reliability, while a broader
+    labeling-induced set the proxy actually follows says the proxy is reliable.
+    """
+    rng = np.random.default_rng(seed)
+    n_de, n_lab_only, n_bg = 20, 60, 160
+    n = n_de + n_lab_only + n_bg
+    idx = np.arange(n)
+    de_induced = idx < n_de
+    lab_induced = idx < (n_de + n_lab_only)  # DE genes are a subset of labeling genes
+    logFC = np.where(de_induced, rng.normal(2.5, 0.3, n), rng.normal(0.0, 0.2, n))
+    p_adj = np.where(de_induced, rng.uniform(1e-8, 1e-4, n), rng.uniform(0.2, 0.9, n))
+    # new-RNA log2FC: high on ALL labeling-induced genes (the ground truth)
+    new_log2fc = np.where(lab_induced, rng.uniform(1.5, 4.0, n), rng.uniform(-0.3, 0.5, n))
+    # residual (proxy): HIGH on the labeling-only genes (still transcribing),
+    # LOW on the fast DE/IEG genes (unspliced depleted) -> tracks labeling, not DE.
+    resid = rng.normal(0, 1, n)
+    resid = np.where(lab_induced & ~de_induced, resid + 3.0, resid)
+    resid = np.where(de_induced, resid - 2.0, resid)
+    df = pd.DataFrame(
+        {
+            "active_score": rng.uniform(0, 100, n),
+            "unspliced_excess_residual": resid,
+            "logFC": logFC,
+            "p_adj": p_adj,
+            "new_log2fc": new_log2fc,
+            "valid_expr": True,
+        },
+        index=[f"g{i}" for i in range(n)],
+    )
+    return df
+
+
+def test_labeling_anchor_rescues_proxy_de_anchor_disables():
+    df = _make_anchor_mismatch()
+    _, de_diag = add_adaptive_score(df, anchor="de")
+    _, lab_diag = add_adaptive_score(df, anchor=labeling_anchor())
+    # DE anchor mis-scores reliability and disables the proxy...
+    assert de_diag["reliability_auc"] < 0.5
+    assert de_diag["w_proxy"] == 0.0
+    # ...while the labeling anchor recovers it and keeps the proxy on.
+    assert lab_diag["reliability_auc"] > 0.7
+    assert lab_diag["w_proxy"] > 0.0
+    assert lab_diag["anchor"].startswith("labeling_anchor")
+    assert lab_diag["n_anchor_induced"] > de_diag["n_anchor_induced"]
+
+
+def test_anchor_accepts_callable_and_array():
+    df, induced = _make_results(reliable=True)
+    # callable
+    _, d1 = add_adaptive_score(df, anchor=lambda e: (e["logFC"] >= 1.0).to_numpy(int))
+    assert d1["anchor"] == "<lambda>"
+    # plain array aligned to valid_expr rows
+    _, d2 = add_adaptive_score(df, anchor=induced.astype(int))
+    assert d2["anchor"] == "array"
+    assert d1["w_proxy"] > 0 and d2["w_proxy"] > 0
+
+
+def test_labeling_anchor_missing_column_raises():
+    df, _ = _make_results(reliable=True)  # no new_log2fc column
+    with pytest.raises(KeyError):
+        add_adaptive_score(df, anchor=labeling_anchor())
+
+
+def test_unknown_string_anchor_raises():
+    df, _ = _make_results(reliable=True)
+    with pytest.raises(ValueError):
+        add_adaptive_score(df, anchor="labeling")
 
 
 def test_public_api_and_end_to_end(adata_basic):
