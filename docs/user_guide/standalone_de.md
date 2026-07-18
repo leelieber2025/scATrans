@@ -8,8 +8,10 @@ that does **not** require velocity layers.
 ```python
 import scatrans as scat
 
-# Early (right after load + basic QC, before HVG/normalize/log):
-scat.store_raw_counts(adata, layer="counts", save_raw=True)
+# Early (right after load + basic QC, before HVG/normalize/log).
+# sidecar=True (default) snapshots the full-gene counts into .uns so they
+# survive later HVG/cell subsetting.
+scat.store_raw_counts(adata, layer="counts")
 
 # Works on regular count AnnData (no spliced/unspliced needed)
 adata, de_results = scat.differential_expression(
@@ -43,7 +45,7 @@ scat.pl.enrich_dotplot(enrich)
 optionally Memento as a method-of-moments estimator). **Do not enable
 `use_mixed_model` and `use_memento_de` together** — they are mutually
 exclusive. With MixedLM, reported `logFC` is sample-mean-of-means log2FC
-(see {doc}`user_guide/advanced`). The returned table is directly compatible
+(see {doc}`advanced`). The returned table is directly compatible
 with `filter_active_genes`, enrichment functions, and all `scat.pl.*`
 plotting helpers.
 
@@ -72,7 +74,7 @@ This leaves `adata.X` as log-transformed HVGs only, which is unsuitable.
 import scatrans as scat
 
 # Before HVG + normalize + log1p
-scat.ensure_raw_counts(adata)          # saves raw counts to adata.layers["counts"]
+scat.store_raw_counts(adata, layer="counts")   # saves raw counts to layers["counts"] + .uns snapshot
 
 # Then normal Scanpy preprocessing
 sc.pp.highly_variable_genes(adata, ...)
@@ -80,11 +82,15 @@ adata = adata[:, adata.var.highly_variable].copy()
 sc.pp.normalize_total(adata, target_sum=1e4)
 sc.pp.log1p(adata)
 
-# Now safe
+# Now safe (count-based backends read the snapshot / counts layer automatically)
 adata, de_res = scat.differential_expression(adata, use_memento_de=True, ...)
+
+# To run DE / enrichment on the full pre-HVG gene set:
+adata_full = scat.restore_raw_counts(adata, full_genes=True)
 ```
 
-`ensure_raw_counts()` will also try to recover from `adata.raw`. The
+`store_raw_counts(adata, mode="auto")` is idempotent and will also try to recover
+counts from `adata.raw` when `.X` is already normalized/log-transformed. The
 functions emit clear warnings when they detect this situation.
 
 **Note on `anndata.concat()` and `de_preprocess="auto"`:** `ad.concat()`

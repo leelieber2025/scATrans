@@ -41,11 +41,14 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 1. **Top-level package** — every name in `scatrans.__all__`, including:
    - scoring / DE / pipeline: `active_score`, `active_score_simple`,
+     `adaptive_active_score`, `add_adaptive_score`, `adaptive_weight`,
+     `add_abundance_normalized_residual`,
      `differential_expression`, `differential_expression_simple`,
      `run_default_pipeline`, `PipelineResult`, `filter_active_genes`,
      `diagnose_design`, `recommend_workflow`, `WORKFLOW_PRESETS`,
-     raw-count helpers (`store_raw_counts`, `ensure_raw_counts`,
-     `restore_raw_counts`)
+     raw-count helpers (`store_raw_counts`, `restore_raw_counts`;
+     `ensure_raw_counts` is **deprecated** — use
+     `store_raw_counts(..., mode="auto")`)
    - gene features: `add_gene_features`, `generate_gene_features_from_gtf`,
      `list_available_gene_features`
    - enrichment: `run_enrichment`, `run_go`, `run_kegg`, `run_gsea`,

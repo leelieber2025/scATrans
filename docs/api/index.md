@@ -50,6 +50,10 @@ inspects cell/sample counts and suggests a preset.
 
    active_score
    active_score_simple
+   adaptive_active_score
+   add_adaptive_score
+   adaptive_weight
+   add_abundance_normalized_residual
    differential_expression
    differential_expression_simple
    diagnose_design
@@ -66,6 +70,16 @@ takes `preset="heuristic"` (default cutoffs), `"pseudobulk"` (looser,
 post-aggregation), `"significant"` (replays the built-in strict mask; requires
 `use_permutation=True` upstream), or `"permissive"`; or pass explicit
 `*_cutoff` kwargs instead of a preset.
+
+### Post-hoc ranking helpers (additive; core `active_score` unchanged)
+
+| Function | Adds columns | When to use |
+|----------|--------------|-------------|
+| `add_adaptive_score` / `adaptive_active_score` | `adaptive_score`, `adaptive_score_pct` | Reliability-weighted nascent leg: shrink weight when residual anti-correlates with strong DE, up-weight when it recovers induced genes well |
+| `add_abundance_normalized_residual` | `unspliced_excess_residual_abnorm` | Demote abundance / nuclear-retention artifacts (e.g. *MALAT1*) from residual rankings; optional mild length residualization |
+
+Both return `(table, diagnostics)`. See {doc}`../user_guide/advanced` and
+{doc}`../statistical_guidance`.
 
 ## Gene features
 

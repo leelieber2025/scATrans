@@ -94,6 +94,48 @@ scientific judgment that the user must make; the correction is therefore
 optional. The `bias_diagnostic_plot` function can be used to inspect the
 relationship before and after correction.
 
+### Abundance / nuclear-retention artifacts (post-hoc)
+
+Built-in Huber length/intron correction does **not** remove extreme
+abundance or nuclear-retention confounds (e.g. *MALAT1*). After
+`active_score`, you can add a scale-free residual:
+
+```python
+import scatrans as scat
+
+all_results, diag = scat.add_abundance_normalized_residual(
+    all_results, method="abundance"  # or "abundance_length"
+)
+# column: unspliced_excess_residual_abnorm
+print(diag["abundance_floor"], diag["method"])
+```
+
+This improves **interpretability** of residual rankings; it does not fix a
+kinetically uninformative nascent proxy on steady-state snapshots.
+
+## Reliability-adaptive nascent weight (post-hoc)
+
+When the residual anti-correlates with induction (common on late /
+steady-state velocity snapshots), a fixed nascent weight can pull the
+composite below plain DE. `add_adaptive_score` estimates reliability as the
+AUC of `unspliced_excess_residual` recovering strongly DE-induced genes
+(`logFC >= 1` and `p_adj < 0.05`) and builds `adaptive_score` with weight
+`w = clip(k * (reliability - 0.5), 0, w_max)` (defaults `k=4`, `w_max=2`):
+
+```python
+all_results, diag = scat.add_adaptive_score(all_results)
+# or end-to-end:
+# all_results, diag = scat.adaptive_active_score(
+#     adata, groupby="condition", target_group="Disease",
+#     reference_group="Control", organism="mouse",
+# )
+print(diag["reliability_auc"], diag["w_proxy"], diag["verdict"])
+```
+
+`adaptive_score` is still a **heuristic rank**, not FDR. Report the
+diagnostics when you use it. Core `active_score` columns and defaults are
+unchanged.
+
 ## `gamma_method` and reference gamma robustness
 
 The core unspliced excess uses a per-gene reference gamma = U_ref / S_ref

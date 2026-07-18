@@ -8,6 +8,7 @@ to keep the core active_score readable and to enable reuse (esp. bias correction
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 import warnings
 from collections.abc import Iterable
@@ -335,6 +336,11 @@ __all__ = [
     "_pseudobulk_with_layers",
     "_fit_huber_bias_correction",
     "_resolve_aligned_raw_counts",
+    "_get_raw_snapshot",
+    "_align_snapshot_counts",
+    "_align_snapshot_bundle",
+    "_load_snapshot_matrix",
+    "_load_snapshot_full",
     "_x_looks_log_normalized",
     "_clear_log_preprocess_metadata",
     "_reconcile_log1p_marker",
@@ -655,6 +661,174 @@ def _warn_if_not_integer_counts_matrix(X: Any, max_check: int = 100000) -> None:
         )
 
 
+def _get_raw_snapshot(adata: ad.AnnData) -> dict[str, Any] | None:
+    """Return the label-indexed raw count snapshot from ``uns['scatrans']``, or None.
+
+    The snapshot is written by ``store_raw_counts(..., sidecar=True)`` and lives in
+    ``adata.uns`` so it survives gene subsetting, cell subsetting, ``copy()`` and
+    ``write_h5ad()`` (unlike axis-aligned ``layers``/``.raw``).
+    """
+    scat = adata.uns.get("scatrans")
+    if not isinstance(scat, dict):
+        return None
+    snap = scat.get("raw_snapshot")
+    if not isinstance(snap, dict):
+        return None
+    has_inline = "X" in snap
+    is_ondisk = snap.get("backend") == "ondisk" and snap.get("path")
+    if not (has_inline or is_ondisk):
+        return None
+    return snap
+
+
+def _load_snapshot_matrix(snap: dict[str, Any]) -> Any:
+    """Return the full count matrix for a snapshot, loading from disk if needed.
+
+    The stored matrix format (dense vs sparse) is preserved. Sparse matrices are
+    returned as CSR so that row/column fancy indexing is efficient.
+    """
+    X, _ = _load_snapshot_full(snap)
+    return X
+
+
+def _load_snapshot_full(snap: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Return ``(X, layers)`` for a snapshot, loading from disk if needed.
+
+    ``layers`` maps velocity layer names (spliced/unspliced/mature/nascent) to their
+    full obs x var matrices. Matrix format (dense vs sparse) is preserved; sparse
+    matrices are returned as CSR for efficient row/column indexing.
+    """
+    if snap.get("backend") == "ondisk":
+        path = snap.get("path")
+        if not path or not os.path.exists(path):
+            raise ValueError(
+                f"On-disk raw_snapshot file not found at {path!r}. It may have been moved "
+                "or deleted; re-run store_raw_counts(sidecar='ondisk', snapshot_path=...)."
+            )
+        snap_ad = ad.read_h5ad(path)
+        X = snap_ad.X
+        layers = {name: snap_ad.layers[name] for name in snap_ad.layers}
+    else:
+        X = snap["X"]
+        layers = dict(snap.get("layers") or {})
+
+    def _as_indexable(m: Any) -> Any:
+        return m.tocsr() if sparse.issparse(m) else m
+
+    return _as_indexable(X), {k: _as_indexable(v) for k, v in layers.items()}
+
+
+def _slice_snapshot_matrix(mat: Any, row_idx: np.ndarray, col_idx: np.ndarray) -> Any:
+    """Slice a snapshot matrix by row/column index arrays, preserving format."""
+    if sparse.issparse(mat):
+        return mat[row_idx][:, col_idx]
+    return np.asarray(mat)[np.ix_(row_idx, col_idx)]
+
+
+def _snapshot_alignment_indices(
+    adata: ad.AnnData, snap: dict[str, Any], *, full_genes: bool
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute ``(row_idx, col_idx, var_names_out)`` aligning a snapshot to ``adata``.
+
+    Rows align to ``adata.obs_names``; columns align to ``adata.var_names`` (or the
+    full stored gene set when ``full_genes``). Raises ``ValueError`` on non-unique
+    names or when the snapshot is missing some of the current cells/genes.
+    """
+    snap_obs = pd.Index(np.asarray(snap["obs_names"]).astype(str))
+    snap_var = pd.Index(np.asarray(snap["var_names"]).astype(str))
+
+    # Label alignment requires unique names on both sides (duplicate barcodes across
+    # batches are common before obs_names_make_unique()); fail with a clear message
+    # rather than pandas' cryptic InvalidIndexError.
+    if not snap_obs.is_unique or not adata.obs_names.is_unique:
+        raise ValueError(
+            "raw_snapshot restore requires unique cell names on both the snapshot and "
+            "the current object. Call adata.obs_names_make_unique() before "
+            "store_raw_counts() (and keep names stable) to enable label-aligned restore."
+        )
+    if not full_genes and (not snap_var.is_unique or not adata.var_names.is_unique):
+        raise ValueError(
+            "raw_snapshot restore requires unique gene names. Call "
+            "adata.var_names_make_unique() before store_raw_counts()."
+        )
+
+    row_idx = snap_obs.get_indexer(adata.obs_names.astype(str))
+    if (row_idx < 0).any():
+        n_missing = int((row_idx < 0).sum())
+        raise ValueError(
+            f"raw_snapshot is missing {n_missing} of {adata.n_obs} current cells "
+            "(obs_names not found). The snapshot may originate from a different object."
+        )
+
+    if full_genes:
+        col_idx = np.arange(snap_var.size)
+        var_names_out = snap_var.to_numpy()
+    else:
+        col_idx = snap_var.get_indexer(adata.var_names.astype(str))
+        if (col_idx < 0).any():
+            n_missing = int((col_idx < 0).sum())
+            raise ValueError(
+                f"raw_snapshot is missing {n_missing} of {adata.n_vars} current genes "
+                "(var_names not found). Re-run store_raw_counts() on the current object."
+            )
+        var_names_out = adata.var_names.to_numpy()
+
+    return row_idx, col_idx, var_names_out
+
+
+def _align_snapshot_counts(
+    adata: ad.AnnData,
+    *,
+    full_genes: bool = False,
+    require_integer: bool = False,
+) -> tuple[Any, np.ndarray] | None:
+    """Align the ``uns`` raw count snapshot to ``adata`` by label.
+
+    Rows are aligned to ``adata.obs_names`` (absorbs cell subsetting/reordering).
+    Columns are aligned to ``adata.var_names`` when ``full_genes`` is False, or the
+    complete stored gene set is returned when ``full_genes`` is True (recovers the
+    pre-HVG universe for DE/enrichment).
+
+    Returns ``(X, var_names)`` and a string array of gene names, or None when no usable
+    snapshot exists. Raises ``ValueError`` when a snapshot exists but cannot be aligned
+    safely (non-unique names, missing cells/genes).
+    """
+    snap = _get_raw_snapshot(adata)
+    if snap is None:
+        return None
+    if require_integer and not bool(snap.get("is_integer", False)):
+        return None
+    row_idx, col_idx, var_names_out = _snapshot_alignment_indices(
+        adata, snap, full_genes=full_genes
+    )
+    X = _load_snapshot_matrix(snap)
+    return _slice_snapshot_matrix(X, row_idx, col_idx), var_names_out
+
+
+def _align_snapshot_bundle(
+    adata: ad.AnnData, *, full_genes: bool = False
+) -> tuple[Any, np.ndarray, dict[str, Any]] | None:
+    """Align the snapshot counts **and** velocity layers to ``adata`` by label.
+
+    Returns ``(X, var_names, layers)`` where ``layers`` maps each stored velocity layer
+    (spliced/unspliced/mature/nascent) to its aligned matrix, or None when no snapshot
+    exists. Raises ``ValueError`` on unsafe alignment (see
+    :func:`_snapshot_alignment_indices`).
+    """
+    snap = _get_raw_snapshot(adata)
+    if snap is None:
+        return None
+    row_idx, col_idx, var_names_out = _snapshot_alignment_indices(
+        adata, snap, full_genes=full_genes
+    )
+    X, layers = _load_snapshot_full(snap)
+    X_aligned = _slice_snapshot_matrix(X, row_idx, col_idx)
+    layers_aligned = {
+        name: _slice_snapshot_matrix(mat, row_idx, col_idx) for name, mat in layers.items()
+    }
+    return X_aligned, var_names_out, layers_aligned
+
+
 def _resolve_aligned_raw_counts(
     adata: ad.AnnData,
     *,
@@ -666,7 +840,26 @@ def _resolve_aligned_raw_counts(
     Refuses matrices whose second dimension does not match the current gene count.
     When ``raw_gene_list`` in ``.uns`` differs in length (typical after HVG subsetting),
     a counts layer that matches current ``var_names`` is still accepted for DE backends.
+
+    A label-indexed ``uns`` raw snapshot (from ``store_raw_counts(sidecar=True)``) is
+    preferred when present, since it stays aligned through gene/cell subsetting.
     """
+    try:
+        snap_result = _align_snapshot_counts(
+            adata, full_genes=False, require_integer=require_integer
+        )
+    except ValueError as exc:
+        logger.warning(
+            "raw_snapshot present but could not be aligned (%s); falling back to "
+            "layers/.raw for count-based DE.",
+            exc,
+        )
+        snap_result = None
+    if snap_result is not None:
+        snap_mat, _ = snap_result
+        logger.debug("Using label-aligned raw_snapshot from uns for count-based DE.")
+        return snap_mat
+
     candidates: list[tuple[str, Any]] = []
     if layer in adata.layers:
         candidates.append((f"layers['{layer}']", adata.layers[layer]))

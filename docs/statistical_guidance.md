@@ -11,7 +11,9 @@ means, p-value cutoffs, residual vs DE, GSEA ranks, gene length), see
 | Output | Safe use | Do **not** use it for |
 |--------|----------|------------------------|
 | `active_score` (0–100) | **Within-run ranking** and visualization (λ is data-adaptive; not absolute) | Cross-dataset / cross-subset numeric comparison; p-values, FDR, or "statistically significant activation" on its own |
+| `adaptive_score` / `adaptive_score_pct` | **Optional** post-hoc rank that reweights the nascent leg by a data-driven reliability AUC (see `add_adaptive_score`). Report `diagnostics["reliability_auc"]`, `w_proxy`, and `verdict` | Treating it as FDR, calibrated probability, or a replacement for DE/`unspliced_excess_fdr`; cross-dataset numeric comparison of the score itself |
 | `unspliced_excess_delta` / `unspliced_excess_residual` | Exploratory signal for **group-contrast** nascent excess (after reference γ) | Literal transcription rates, causal claims, or equivalence to dynamical RNA velocity |
+| `unspliced_excess_residual_abnorm` | Interpretable residual ranking after abundance (and optional length) normalization — demotes nuclear-retained / extreme-abundance outliers | A significance test, or assuming it restores residual reliability on steady-state velocity snapshots (kinetic limitation remains) |
 | `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats). Under **`use_mixed_model=True`**, `logFC` is **sample-mean-of-means log2FC**, not the LMM fixed-effect coefficient — see `diagnostics["mixed_model"]["logFC_method"]`. Sign discordance vs `mixedlm_coef` triggers a **warning** and is counted in `n_genes_logFC_mixedlm_sign_discordant` | Treating MixedLM `logFC` as the LMM coef, or ignoring high `n_genes_logFC_mixedlm_sign_discordant` |
 | `unspliced_excess_fdr` (with `use_permutation=True`) | **Primary** active-gene significance filter (one-sided, conditional null) | Claims without inspecting diagnostics and replicate structure |
 
@@ -44,6 +46,7 @@ permutation off by default so new users explore ranked tables first; enable
 |------|----------|-------------|
 | 0. Pre-flight | `recommend_workflow(adata, groupby, target, ref, sample_col=...)` | `workflow_preset`, `suggested_kwargs`, `filter_preset`, `power_summary` |
 | 1. Score | `active_score(..., **rec["suggested_kwargs"])` or `active_score_simple(...)` | `all_results` (rank by `active_score`), `adata.uns["scatrans"]` |
+| 1b. Optional | `add_adaptive_score` / `add_abundance_normalized_residual` | `adaptive_score`, `unspliced_excess_residual_abnorm` + diagnostics |
 | 2. Filter | `filter_active_genes(all_results, preset=rec["filter_preset"])` | candidate gene list for plots / enrichment |
 | 3. Enrich | `run_enrichment(candidates, gene_sets="GO_Biological_Process", adata=adata)` | ORA table; cite `attrs["gene_set_info"]["provenance"]` |
 | 4. Plot | `scat.pl.comet_plot(...)`, `volcano_plot(..., label_repel=True)` | `(fig, ax)`; batch export via `scat.pl.figure_export_context` or `save_all_figures` |
@@ -80,6 +83,8 @@ RNA velocity):
 |----------------|---------------------------|---------|
 | `unspliced_excess_delta` | `velocity_delta_raw` | Raw U − γ_ref·S in target group |
 | `unspliced_excess_residual` | `velocity_residual` | Bias-corrected excess residual |
+| `unspliced_excess_residual_abnorm` | — | Optional post-hoc abundance-/length-normalized residual (`add_abundance_normalized_residual`) |
+| `adaptive_score` / `adaptive_score_pct` | — | Optional reliability-weighted composite (`add_adaptive_score`) |
 | `unspliced_excess_pval` | — | One-sided permutation p-value on residual |
 | `unspliced_excess_fdr` | — | BH-FDR on `unspliced_excess_pval` |
 

@@ -19,6 +19,8 @@ from ._common import (
     PSEUDOBULK_FILTER_DEFAULTS,
 )
 from .active import active_score
+from .adaptive import adaptive_active_score, adaptive_weight, add_adaptive_score
+from .bias import add_abundance_normalized_residual
 from .de import (
     differential_expression,
     ensure_raw_counts,
@@ -39,6 +41,10 @@ logger.addHandler(logging.NullHandler())
 
 __all__ = [
     "active_score",
+    "adaptive_active_score",
+    "add_adaptive_score",
+    "adaptive_weight",
+    "add_abundance_normalized_residual",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

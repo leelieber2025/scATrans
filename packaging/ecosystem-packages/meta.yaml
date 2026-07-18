@@ -1,25 +1,26 @@
 name: scATrans
 description: |
-  scATrans is a Python toolkit for single-cell differential analysis. It computes a
-  composite active transcription score from AnnData objects with spliced/unspliced (or
-  mature/nascent) RNA layers, and also supports conventional DE, pseudobulk, enrichment,
-  and visualization workflows via scanpy-compatible APIs.
+  scATrans is a Python toolkit for single-cell differential analysis that computes a
+  composite "active transcription" score from AnnData objects carrying spliced/unspliced
+  (mature/nascent) RNA layers. It also provides conventional DE, pseudobulk, gene-set
+  enrichment, and visualization workflows through scanpy-compatible APIs.
 project_home: https://github.com/leelieber2025/scATrans
 documentation_home: https://scatrans.readthedocs.io/
 tutorials_home: https://scatrans.readthedocs.io/en/latest/tutorials/index.html
 install:
   pypi: scatrans
-license: Apache-2.0
+  conda: bioconda::scatrans
 tags:
   - single-cell
-  - differential-expression
+  - differential expression
   - rna velocity
-  - unspliced RNA
+  - unspliced rna
   - gene set enrichment
   - active transcription
-version: 0.10.3
+license: Apache-2.0
+version: 0.10.5
 contact:
   - leelieber2025
 test_command: |
-  pip install ".[dev]" && PYTHONPATH=src:. python -m pytest -m "not plot and not slow" -q
+  pip install ".[dev]" && pytest -m "not plot and not slow"
 category: ecosystem

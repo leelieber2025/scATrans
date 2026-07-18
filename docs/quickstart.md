@@ -49,8 +49,10 @@ import scatrans as scat
 # 1. Load your data (must contain spliced/unspliced layers or use differential_expression instead)
 adata = sc.read_h5ad("your_data.h5ad")
 
-# 2. Store raw counts + original layers early (before HVG/normalization)
-scat.store_raw_counts(adata, layer="counts", save_raw=False)
+# 2. Store raw counts + original layers early (before HVG/normalization).
+#    sidecar=True (default) also snapshots the full-gene counts + velocity layers
+#    into .uns so they survive later HVG/cell subsetting.
+scat.store_raw_counts(adata, layer="counts")
 
 # 3. Standard preprocessing (adjust as needed for your analysis)
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
@@ -127,25 +129,45 @@ step 5 with `scat.differential_expression(...)` — see
 ## Preserving raw counts and layers
 
 Call `store_raw_counts` early (after loading and QC, before HVG or
-normalization). It writes the current `.X` to `layers["counts"]` and copies
-the original spliced/unspliced layers. These survive later subsetting and
-provide the correct background for enrichment and count-based DE.
+normalization). It does two things:
 
-The default `save_raw=False` avoids populating `adata.raw`.
+- writes the current `.X` to `layers["counts"]` (axis-aligned, like any layer);
+- with `sidecar=True` (the default), also writes a **label-indexed snapshot** of
+  the full obs × var counts — plus any velocity layers
+  (`spliced`/`unspliced` or `mature`/`nascent`) — to
+  `adata.uns['scatrans']['raw_snapshot']`.
 
-After HVG-based visualization on a copy, restore or use the preserved layers
-for full-gene DE, active scoring, or enrichment (pass `adata=` to
-`run_enrichment` or `run_kegg` to use the stored gene list as background).
+The counts layer and velocity layers follow normal AnnData behavior: HVG or cell
+subsetting trims them. The **snapshot** lives in `.uns`, so it is *not* tied to
+the obs/var axes — it survives HVG subsetting, cell subsetting, `copy()`, and
+`write_h5ad()`, and is aligned back by cell/gene name.
 
-HVG subsetting also subsets the saved layers. This keeps velocity
-calculations consistent with `.X`. To analyze more genes than the HVG set,
-store before subsetting or operate on the unfiltered object for DE and
-enrichment steps.
-
-To restore raw counts into `.X` for the current gene set:
+To restore raw counts into `.X` for the **current** gene set (also absorbs cell
+subsetting and gene reordering):
 
 ```python
-adata_raw = scat.restore_raw_counts(adata, layer="counts", inplace=False)
+adata_raw = scat.restore_raw_counts(adata, inplace=False)
+```
+
+To recover the **full pre-HVG gene universe** (counts + velocity layers) as a new
+AnnData — for full-gene DE, active scoring, or enrichment — even after HVG or cell
+subsetting:
+
+```python
+adata_full = scat.restore_raw_counts(adata, full_genes=True)
+```
+
+For enrichment you can also just pass `adata=` to `run_enrichment` / `run_kegg`
+to use the stored full gene list as the background universe.
+
+For large datasets, use `store_raw_counts(adata, sidecar="ondisk",
+snapshot_path="raw_snapshot.h5ad")` to keep the full matrix on disk and only a
+lightweight pointer in `.uns`.
+
+```{note}
+`save_raw=True` is deprecated: `adata.raw` is commonly reserved for
+log-normalized data, and the sidecar snapshot already preserves full-gene raw
+counts. Use `restore_raw_counts(..., full_genes=True)` instead.
 ```
 
 See {doc}`user_guide/standalone_de` for the no-velocity use case.

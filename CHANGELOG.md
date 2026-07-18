@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.10.5] - 2026-07-18
+
+### Added
+- **Reliability-adaptive weighting of the nascent leg** (`scatrans.tl.adaptive`,
+  exported as `scat.adaptive_active_score`, `scat.add_adaptive_score`,
+  `scat.adaptive_weight`). An **additive** wrapper (core `active_score` is
+  unchanged) that estimates how informative the unspliced-excess leg is on the
+  data at hand — the AUC of `unspliced_excess_residual` for recovering the
+  obvious DE-induced genes (`logFC >= 1` & `p_adj < 0.05`) — and produces an
+  `adaptive_score` whose nascent leg is weighted by that reliability:
+  `w = clip(k*(reliability-0.5), 0, w_max)` (defaults `k=4`, `w_max=2`). The
+  proxy is shrunk to 0 when it anti-correlates with induction (e.g. steady-state
+  / late velocity snapshots) and up-weighted (>1) when it is highly reliable
+  (e.g. metabolic-labeling data). Returns diagnostics (`reliability_auc`,
+  `w_proxy`, `verdict`). Heuristic ranking, not a calibrated FDR; the DE anchor
+  is isolated in `_de_induced_anchor` for future swapping to a labeling anchor.
+- **Abundance-/length-normalized unspliced-excess residual**
+  (`scatrans.tl.bias`, exported as `scat.add_abundance_normalized_residual`).
+  Adds `unspliced_excess_residual_abnorm`. `method="abundance"` (default) uses a
+  scale-free excess `delta / (total_us_counts + quantile(total_us_counts,
+  floor_quantile))` (default 0.75) that removes the abundance / nuclear-retention
+  artifact — nuclear-retained lncRNAs (e.g. *MALAT1*) and very high-abundance
+  genes no longer dominate the top of the ranking. `method="abundance_length"`
+  additionally applies a gentle robust residualization on `log1p(gene_length)`
+  and `log1p(intron_number)` to suppress long-gene artifacts. Improves
+  interpretability of the residual ranking; it does not change the residual's
+  reliability on steady-state snapshots (a kinetic, not a bias, limitation).
+
+## [0.10.4] - 2026-07-15
+
+### Added
+- **Raw-count sidecar snapshot (survives HVG / cell subsetting)**:
+  `store_raw_counts(..., sidecar=True)` (the new default) now also writes a
+  label-indexed snapshot of the full obs × var count matrix to
+  `adata.uns['scatrans']['raw_snapshot']`. Because `uns` is not tied to the
+  obs/var axes, the snapshot survives HVG gene subsetting, cell subsetting,
+  `copy()`, and `write_h5ad()` — unlike `layers['counts']` (trimmed on both
+  axes) and `adata.raw` (trimmed on cells). It is aligned by cell/gene **name**,
+  so it also tolerates reordering.
+  - `restore_raw_counts(..., full_genes=True)` reconstructs the complete
+    pre-HVG gene universe as a new AnnData (for DE / enrichment on all genes),
+    even when called on an HVG-subsetted or cell-subsetted object.
+  - `restore_raw_counts(..., prefer_snapshot=True)` (default) restores counts
+    aligned to the current cells/genes, absorbing cell subsetting and gene
+    reordering.
+  - `store_raw_counts(sidecar='ondisk', snapshot_path=...)` writes the full
+    matrix to a standalone `.h5ad` and keeps only a lightweight pointer in
+    `uns`, avoiding a doubled count matrix in memory / in the main file for
+    large datasets.
+  - **Velocity layers preserved too**: `spliced`/`unspliced` (or
+    `mature`/`nascent`) are captured into the snapshot and restored alongside
+    the counts, so active-transcription analysis can run on the full gene set
+    after HVG subsetting via `restore_raw_counts(full_genes=True)`.
+
+### Changed
+- **`store_raw_counts` gained `mode="force"|"auto"`**: `"auto"` is idempotent
+  and recovery-aware (reuse an existing integer counts layer, or recover from
+  `adata.raw` when `.X` is already normalized/log-transformed). This folds the
+  former `ensure_raw_counts` logic into one function.
+- **Density preserved through store → restore**: restoring no longer forces a
+  dense matrix to sparse (or vice versa); the original matrix format round-trips.
+
+### Fixed
+- **`restore_raw_counts` no longer misreads a log-normalized `adata.raw` as
+  counts**: the `adata.raw` fallback is used only when it actually looks like
+  integer counts. Following the common scanpy convention where `adata.raw`
+  holds log-normalized data, restoring it into `.X` as raw counts would have
+  been a silent correctness bug; it now raises a clear error pointing to the
+  sidecar snapshot instead.
+- **Snapshot restore with duplicate cell/gene names**: label-aligned restore now
+  fails with an actionable message (call `obs_names_make_unique()` /
+  `var_names_make_unique()`) instead of pandas' cryptic `InvalidIndexError` when
+  barcodes are duplicated (e.g. multiple batches before de-duplication).
+- **Dead velocity `raw_*` layers removed**: `store_raw_counts` no longer writes
+  `raw_spliced`/`raw_unspliced`/`raw_mature`/`raw_nascent` layers. They were
+  position-aligned (so trimmed by HVG/cell subsetting) and never read back —
+  the sidecar snapshot now preserves velocity correctly instead.
+
+### Deprecated
+- **`ensure_raw_counts()`** — use `store_raw_counts(..., mode="auto")`. The old
+  name remains as a thin alias and emits a `DeprecationWarning`.
+- **`store_raw_counts(save_raw=True)`** — `adata.raw` is commonly reserved for
+  log-normalized data, so writing raw integer counts there is ambiguous. The
+  sidecar snapshot supersedes it; `save_raw=True` now emits a
+  `DeprecationWarning`.
+
 ## [0.10.3] - 2026-07-14
 
 ### Added

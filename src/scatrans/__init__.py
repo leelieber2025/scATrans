@@ -40,6 +40,10 @@ from .tl import (
     PipelineResult,
     active_score,
     active_score_simple,
+    adaptive_active_score,
+    adaptive_weight,
+    add_abundance_normalized_residual,
+    add_adaptive_score,
     diagnose_design,
     differential_expression,
     differential_expression_simple,
@@ -53,6 +57,10 @@ from .tl import (
 
 __all__ = [
     "active_score",
+    "adaptive_active_score",
+    "add_adaptive_score",
+    "adaptive_weight",
+    "add_abundance_normalized_residual",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

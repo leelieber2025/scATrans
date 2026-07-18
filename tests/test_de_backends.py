@@ -205,14 +205,42 @@ def test_differential_expression_pseudobulk_scanpy(adata_pb):
     assert len(res) == adata_pb.n_vars
 
 
-def test_store_raw_counts_mature_nascent_layers():
+def test_store_raw_counts_captures_velocity_layers_in_snapshot():
     np.random.seed(3)
     X = np.random.negative_binomial(4, 0.4, size=(30, 40)).astype(float)
     ad = sc.AnnData(X)
     ad.layers["mature"] = X.copy()
     ad.layers["nascent"] = X * 0.4
     scat.store_raw_counts(ad, layer="counts")
-    assert "raw_mature" in ad.layers or "raw_spliced" in ad.layers
+    # Velocity layers are captured into the label-indexed snapshot (not position-aligned
+    # raw_* layers, which used to be written but never read).
+    snap = ad.uns["scatrans"]["raw_snapshot"]
+    assert set(snap["layers"]) == {"mature", "nascent"}
+    assert "raw_mature" not in ad.layers and "raw_nascent" not in ad.layers
+
+
+def test_restore_full_genes_recovers_velocity_after_hvg():
+    np.random.seed(3)
+    n_obs, n_var = 30, 40
+    X = np.random.negative_binomial(4, 0.4, size=(n_obs, n_var)).astype(float)
+    mature = X.copy()
+    nascent = (X * 0.4).round()
+    ad = sc.AnnData(X.copy())
+    ad.var_names = [f"g{i}" for i in range(n_var)]
+    ad.layers["mature"] = mature.copy()
+    ad.layers["nascent"] = nascent.copy()
+    scat.store_raw_counts(ad, layer="counts")
+
+    sc.pp.normalize_total(ad, target_sum=1e4)
+    sc.pp.log1p(ad)
+    sc.pp.highly_variable_genes(ad, n_top_genes=10)
+    hvg = ad[:, ad.var["highly_variable"]].copy()
+    assert hvg.n_vars == 10  # velocity layers trimmed on the subsetted object
+
+    full = scat.restore_raw_counts(hvg, full_genes=True)
+    assert full.n_vars == n_var
+    assert np.allclose(np.asarray(full.layers["mature"]), mature)
+    assert np.allclose(np.asarray(full.layers["nascent"]), nascent)
 
 
 def test_active_score_subset_and_gene_type(adata_basic):
