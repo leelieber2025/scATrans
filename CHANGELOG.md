@@ -6,6 +6,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+- **Regime / proxy-reliability pre-flight `scatrans.qc.regime_diagnosis`** — maps
+  the global unspliced fraction to a dataset-level `reliability` scalar in [0, 1]
+  (U-shaped: full in a normal band, degrading at both extremes — too little
+  nascent signal, or too much = nuclear/gDNA contamination and gamma mis-fit, e.g.
+  HTEC 67.7%) plus a `regime` verdict (ok / low_unspliced / high_unspliced) and a
+  message. `run_default_pipeline` now always records it in `meta["regime"]`
+  (cheap, fail-soft) and, when `annotate_mechanism=True`, uses its `reliability`
+  to scale `mechanism_confidence`. NOTE: this is the data-quality/gamma half of
+  the regime check; the dynamic-vs-steady half (`velocity_length`) is pending
+  sci-fate cross-validation.
+- **Mechanism annotation module `scatrans.tl.mechanism`** — the "proxy annotates"
+  half of the DE-selects/proxy-annotates workflow (all annotation-only, never gate
+  membership):
+  - `annotate_mechanism_class(...)` adds `transcription_support` (robust-z of the
+    nascent unspliced-excess residual, preferring the bias-corrected
+    `unspliced_excess_residual_abnorm`), `mechanism_class`
+    (transcription-driven / stabilization-driven / ambiguous / unclassified_down /
+    unknown), and `mechanism_confidence` (scaled by a dataset-level `reliability`).
+    The per-gene call is deliberately LOW-confidence (validated static specificity
+    is modest, AUC ~0.63).
+  - `program_mechanism(results, gene_sets, ...)` — **threshold-free** program-level
+    mechanism inference: pools `transcription_support` over each gene set and tests
+    it against the background (competitive Mann-Whitney + BH FDR), turning the weak
+    per-gene signal into a decisive per-program transcription-vs-stabilization call.
+  - `threshold_sensitivity(results, ...)` tabulates DE-selected list size and
+    Jaccard-vs-reference across a (padj, logFC) grid, to report threshold
+    robustness instead of defending one cutoff.
+  - `run_default_pipeline(..., annotate_mechanism=True)` runs the per-gene
+    annotation as an additive, fail-soft add-on (diagnostics in `meta["mechanism"]`);
+    default off.
+- **`select_by="de"` — decouple gene-list SELECTION from proxy ANNOTATION**
+  (`filter_active_genes` and `run_default_pipeline`). Implements the
+  "DE selects, proxy annotates" workflow: with `select_by="de"` membership is
+  decided by the differential-expression gates only (`p_adj` / `logFC` +
+  direction, and `mixedlm_coef` direction when present; DE defaults `padj<0.05`
+  and `|log2FC|>1`), while the nascent-proxy gates (`active_score`,
+  `unspliced_excess_residual`, the permutation FDR columns, `effective_gamma`,
+  `delta_variance`) are **skipped** — those columns remain on the output as
+  annotations rather than gating membership, and genes with missing proxy
+  columns stay selectable. Sorting is by `p_adj` then `logFC` (direction-aware),
+  never by `active_score`. Default `select_by="composite"` reproduces the prior
+  behavior exactly; `run_default_pipeline` records the mode in `meta["select_by"]`.
+  Incompatible with `preset="significant"` (the built-in composite list).
+- **Bias correction and adaptive weighting are now first-class
+  `run_default_pipeline` options** (previously additive wrappers you had to call
+  separately on `all_results`). `run_default_pipeline(..., bias_method=...,
+  adaptive_weighting=..., adaptive_anchor=...)`:
+  - `bias_method="abundance"` / `"abundance_length"` adds the
+    `unspliced_excess_residual_abnorm` column (demotes abundance/length
+    artifacts such as *MALAT1* / long genes); diagnostics in `meta["bias"]`.
+  - `adaptive_weighting=True` adds `adaptive_score` / `adaptive_score_pct`
+    columns (reliability-weighted nascent leg); `adaptive_anchor` selects the
+    reliability anchor (`"de"` default or `labeling_anchor()` / callable / array);
+    diagnostics in `meta["adaptive"]`.
+  Both default off (existing behavior unchanged), operate additively on
+  `all_results` (core `active_score` untouched), and **fail soft** — if an add-on
+  cannot be computed the core result is still returned and the reason recorded
+  under the matching `meta` key. An invalid `bias_method` value raises upfront.
+- **Configurable reliability anchor for adaptive weighting** (`scatrans.tl.adaptive`).
+  `add_adaptive_score` / `adaptive_active_score` now accept `anchor=` — `"de"`
+  (default, unchanged behavior) or a callable / array / Series naming the induced
+  gene set the proxy's reliability is scored against. New helper
+  `scat.labeling_anchor(column="new_log2fc", threshold=1.0)` anchors reliability on
+  metabolic-labeling truth. Validated on scNT-seq (GSE141851, KCl time course):
+  the DE anchor under-estimates reliability there (it is dominated by fast IEGs
+  whose unspliced-excess is depleted) and disables the proxy at every timepoint
+  (`w_proxy=0`), whereas the labeling anchor recovers the correct graded
+  down-weighting `w=0.79→0.60→0.10→0.00` for 15/30/60/120 min post-stimulus —
+  matching the proxy's measured reliability (labeling-truth AUC 0.70→0.48).
+  Diagnostics gain `anchor` and `n_anchor_induced` (with `n_anchor_de_induced`
+  kept as a back-compat alias).
+
+## [0.10.5] - 2026-07-18
+
+### Added
+- **Reliability-adaptive weighting of the nascent leg** (`scatrans.tl.adaptive`,
+  exported as `scat.adaptive_active_score`, `scat.add_adaptive_score`,
+  `scat.adaptive_weight`). An **additive** wrapper (core `active_score` is
+  unchanged) that estimates how informative the unspliced-excess leg is on the
+  data at hand — the AUC of `unspliced_excess_residual` for recovering the
+  obvious DE-induced genes (`logFC >= 1` & `p_adj < 0.05`) — and produces an
+  `adaptive_score` whose nascent leg is weighted by that reliability:
+  `w = clip(k*(reliability-0.5), 0, w_max)` (defaults `k=4`, `w_max=2`). The
+  proxy is shrunk to 0 when it anti-correlates with induction (e.g. steady-state
+  / late velocity snapshots) and up-weighted (>1) when it is highly reliable
+  (e.g. metabolic-labeling data). Returns diagnostics (`reliability_auc`,
+  `w_proxy`, `verdict`). Heuristic ranking, not a calibrated FDR; the DE anchor
+  is isolated in `_de_induced_anchor` for future swapping to a labeling anchor.
+- **Abundance-/length-normalized unspliced-excess residual**
+  (`scatrans.tl.bias`, exported as `scat.add_abundance_normalized_residual`).
+  Adds `unspliced_excess_residual_abnorm`. `method="abundance"` (default) uses a
+  scale-free excess `delta / (total_us_counts + quantile(total_us_counts,
+  floor_quantile))` (default 0.75) that removes the abundance / nuclear-retention
+  artifact — nuclear-retained lncRNAs (e.g. *MALAT1*) and very high-abundance
+  genes no longer dominate the top of the ranking. `method="abundance_length"`
+  additionally applies a gentle robust residualization on `log1p(gene_length)`
+  and `log1p(intron_number)` to suppress long-gene artifacts. Improves
+  interpretability of the residual ranking; it does not change the residual's
+  reliability on steady-state snapshots (a kinetic, not a bias, limitation).
+
 ## [0.10.4] - 2026-07-15
 
 ### Added

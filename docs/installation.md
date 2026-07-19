@@ -64,12 +64,20 @@ logging.getLogger("scatrans").setLevel(logging.INFO)
 
 ## Quick data quality check
 
-Before analysis, inspect the global unspliced fraction:
+Before analysis, inspect the global unspliced fraction and the regime
+pre-flight (proxy data-quality reliability):
 
 ```python
 import scatrans as scat
-ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
+
+ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if high
+regime = scat.qc.regime_diagnosis(adata)
+# regime["unspliced_fraction"], regime["reliability"] in [0, 1],
+# regime["regime"] in {"ok", "low_unspliced", "high_unspliced"}, regime["message"]
+print(regime["regime"], regime["reliability"], regime["message"])
 ```
 
-`active_score` automatically runs this check and records the value in
-diagnostics.
+`active_score` records the unspliced fraction in diagnostics.
+`run_default_pipeline` always stores the regime block in `result.meta["regime"]`
+(fail-soft) and, when `annotate_mechanism=True`, scales mechanism confidence by
+`regime["reliability"]`.

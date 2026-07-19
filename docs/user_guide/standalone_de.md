@@ -1,9 +1,9 @@
 # Standalone Differential Expression (no velocity data required)
 
-While the primary focus of scATrans is composite active transcription
-scoring from spliced/unspliced (velocity) data via `active_score`, the
-package also provides a general-purpose differential expression entry point
-that does **not** require velocity layers.
+While scATrans can compute composite active transcription scores from
+spliced/unspliced (velocity) data via `active_score`, that path is still
+**experimental**. For production analyses that do not need velocity layers,
+use this **stable** general-purpose differential expression entry point.
 
 ```python
 import scatrans as scat
@@ -28,6 +28,8 @@ adata, de_results = scat.differential_expression(
 candidates = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3)  # upregulated (default)
 # downregulated: logfc_direction="down"
 # both: logfc_direction="both"
+# DE-only defaults (padj<0.05 & |log2FC|>1 when cutoffs omitted):
+# candidates = scat.filter_active_genes(de_results, select_by="de")
 
 # After scat.store_raw_counts(adata) early in the workflow,
 # just pass adata= here. It auto-supplies the full measured gene list as background/universe.

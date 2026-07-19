@@ -13,13 +13,17 @@ import pandas as pd
 from .._utils import (
     _normalize_group_label,
 )
+from ..qc import regime_diagnosis
 from ._common import (
     _PERM_FDR_MIN_SUCCESS,
     VERSION,
 )
 from .active import active_score
+from .adaptive import add_adaptive_score
+from .bias import add_abundance_normalized_residual
 from .de import differential_expression
 from .filter import filter_active_genes
+from .mechanism import annotate_mechanism_class
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -446,6 +450,11 @@ def run_default_pipeline(
     gene_sets: str = "GO_Biological_Process",
     filter_preset: str | None = None,
     show_plot: bool = False,
+    bias_method: str | None = None,
+    adaptive_weighting: bool = False,
+    adaptive_anchor: Any = "de",
+    select_by: str = "composite",
+    annotate_mechanism: bool = False,
 ) -> PipelineResult:
     """
     End-to-end recommended workflow for first-time users.
@@ -460,6 +469,52 @@ def run_default_pipeline(
     consistent with the actual scale of active_score / unspliced_excess_residual
     (see WORKFLOW_PRESETS["pseudobulk_report"]).
 
+    Optional additive post-processing (core ``active_score`` is untouched; both
+    default off so existing behavior is unchanged):
+
+    - ``bias_method``: ``"abundance"`` or ``"abundance_length"`` runs
+      :func:`~scatrans.tl.bias.add_abundance_normalized_residual`, adding an
+      ``unspliced_excess_residual_abnorm`` column to ``all_results`` that demotes
+      abundance/length artifacts (e.g. *MALAT1*, long genes) from the top of the
+      residual ranking. Diagnostics land in ``meta["bias"]``.
+    - ``adaptive_weighting``: ``True`` runs
+      :func:`~scatrans.tl.adaptive.add_adaptive_score`, adding
+      ``adaptive_score`` / ``adaptive_score_pct`` columns whose nascent leg is
+      weighted by the proxy's estimated reliability (shrunk to 0 when
+      uninformative / anti-correlated). ``adaptive_anchor`` selects the
+      reliability anchor (``"de"`` default, or a :func:`labeling_anchor` /
+      callable / array for metabolic-labeling data). Diagnostics land in
+      ``meta["adaptive"]``.
+
+    Both fail soft: if an add-on cannot be computed (e.g. missing feature
+    columns) the core result is still returned and the reason is logged and
+    recorded under the corresponding ``meta`` key.
+
+    - ``select_by``: which axis defines ``candidates`` membership.
+      ``"composite"`` (default) keeps the current behavior (proxy participates in
+      selection via ``filter_preset``). ``"de"`` switches to **DE SELECTS, proxy
+      ANNOTATES**: ``candidates`` are chosen by the DE gates only (padj<0.05 &
+      |log2FC|>1 by default) via ``filter_active_genes(select_by="de")``, and the
+      nascent-proxy columns remain on ``all_results`` as annotations rather than
+      gating membership. ``significant`` (the built-in composite list) is
+      unchanged; use ``candidates`` for the DE-selected list. Recorded in
+      ``meta["select_by"]``.
+    - ``annotate_mechanism``: ``True`` runs
+      :func:`~scatrans.tl.mechanism.annotate_mechanism_class`, adding
+      ``transcription_support`` / ``mechanism_class`` / ``mechanism_confidence``
+      columns to ``all_results`` (static transcription-vs-stabilization label; a
+      LOW-confidence per-gene annotation — pool with
+      :func:`~scatrans.tl.mechanism.program_mechanism` for decisive calls).
+      Diagnostics in ``meta["mechanism"]``. The confidence is scaled by the
+      dataset ``reliability`` from the regime pre-flight (see below).
+
+    ``meta`` always includes a ``regime`` block from
+    :func:`~scatrans.qc.regime_diagnosis` (a cheap, fail-soft proxy-reliability
+    pre-flight from the global unspliced fraction: ``reliability`` in [0, 1],
+    ``regime`` = ok / low_unspliced / high_unspliced, plus a message). It scales
+    the mechanism-annotation confidence and tells the user how far to trust the
+    proxy annotations on this dataset.
+
     Returns a :class:`PipelineResult` (mapping-compatible) with fields:
       - ``adata``, ``significant``, ``all_results``, ``candidates``
       - ``enrichment`` (DataFrame or None)
@@ -471,6 +526,10 @@ def run_default_pipeline(
         ``unspliced_global_fraction``, …). Full run metadata remains on
         ``result.adata.uns["scatrans"]``.
     """
+    _BIAS_METHODS = ("abundance", "abundance_length")
+    if bias_method is not None and bias_method not in _BIAS_METHODS:
+        raise ValueError(f"bias_method must be None or one of {_BIAS_METHODS}, got {bias_method!r}")
+
     # Resolve once so we can pick a matching filter_preset (addresses mismatch
     # between auto-pseudobulk in active_score_simple and hardcoded "heuristic").
     backend = _resolve_simple_backend_kwargs(
@@ -488,7 +547,13 @@ def run_default_pipeline(
         organism=organism,
         show_plot=show_plot,
     )
-    candidates = filter_active_genes(all_results, preset=filter_preset)
+    if str(select_by).lower() == "de":
+        # DE SELECTS, proxy ANNOTATES: membership from p_adj/logFC only (DE defaults
+        # padj<0.05 & |log2FC|>1); the composite filter_preset is not applied so the
+        # proxy columns ride along on all_results as annotations, not gates.
+        candidates = filter_active_genes(all_results, select_by="de")
+    else:
+        candidates = filter_active_genes(all_results, preset=filter_preset)
 
     # active_score writes rich run metadata under .uns["scatrans"] (diagnostics,
     # gamma_method, use_permutation, …). Keep this separate from the result
@@ -535,6 +600,7 @@ def run_default_pipeline(
     result_meta: dict[str, Any] = {
         "scatrans_version": VERSION,
         "organism": organism,
+        "select_by": str(select_by).lower(),
     }
     diag = scatrans_uns.get("diagnostics")
     if diag is not None:
@@ -552,6 +618,42 @@ def run_default_pipeline(
     ):
         if key in scatrans_uns:
             result_meta[key] = scatrans_uns[key]
+
+    # Optional additive post-processing on all_results (adds columns in place;
+    # core active_score untouched). Fail soft: the core result must survive an
+    # add-on that cannot run (e.g. missing feature columns).
+    if bias_method is not None:
+        try:
+            _, bias_diag = add_abundance_normalized_residual(
+                all_results, method=bias_method, inplace=True
+            )
+            result_meta["bias"] = bias_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("bias_method=%r skipped: %s", bias_method, exc)
+            result_meta["bias"] = {"error": str(exc), "method": bias_method}
+    if adaptive_weighting:
+        try:
+            _, adaptive_diag = add_adaptive_score(all_results, anchor=adaptive_anchor, inplace=True)
+            result_meta["adaptive"] = adaptive_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("adaptive_weighting skipped: %s", exc)
+            result_meta["adaptive"] = {"error": str(exc)}
+    # Regime / proxy-reliability pre-flight (unspliced-fraction QC; cheap, always
+    # run, fail-soft). Feeds mechanism-annotation confidence below.
+    try:
+        result_meta["regime"] = regime_diagnosis(adata_res)
+    except Exception as exc:  # noqa: BLE001 — diagnostic is optional
+        logger.info("regime_diagnosis skipped: %s", exc)
+    if annotate_mechanism:
+        try:
+            reliability = float(result_meta.get("regime", {}).get("reliability", 1.0))
+            _, mech_diag = annotate_mechanism_class(
+                all_results, reliability=reliability, inplace=True
+            )
+            result_meta["mechanism"] = mech_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("annotate_mechanism skipped: %s", exc)
+            result_meta["mechanism"] = {"error": str(exc)}
 
     # We already resolved backend above (avoids calling the resolver a second time
     # just to "guess" what active_score_simple decided internally).

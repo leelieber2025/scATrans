@@ -95,6 +95,12 @@ candidates = scat.filter_active_genes(
 # Or use presets that choose reasonable defaults for common analysis styles
 candidates = scat.filter_active_genes(all_results, preset="heuristic")
 
+# DE selects, proxy annotates: membership from DE only (padj/logFC defaults
+# padj<0.05 & |log2FC|>1 when no cutoffs given). Nascent columns stay as
+# annotations and do not gate the list. Prefer this when treating composite
+# scoring as experimental / exploratory.
+de_list = scat.filter_active_genes(all_results, select_by="de")
+
 # Reproduce the built-in `significant` list exactly (requires use_permutation=True upstream)
 builtin_again = scat.filter_active_genes(all_results, preset="significant")
 assert builtin_again.index.tolist() == significant.index.tolist()
@@ -104,6 +110,17 @@ mask = scat.filter_active_genes(all_results, return_mask=True)  # boolean Series
 filtered_inplace = scat.filter_active_genes(all_results, preset="heuristic", inplace=True)
 # or preset="pseudobulk" after aggregation, or preset="permissive"
 ```
+
+**`select_by="composite"` (default)** vs **`select_by="de"`**
+
+| Mode | Who decides membership | Proxy / composite gates | Sort |
+|------|------------------------|-------------------------|------|
+| `"composite"` | DE **and** nascent/composite cutoffs | Applied | Prefer `active_score` when present |
+| `"de"` | DE only (`p_adj`, `logFC`, optional MixedLM coef direction) | **Skipped** (columns remain) | `p_adj` then `logFC` |
+
+`select_by="de"` is incompatible with `preset="significant"`. The same flag is
+accepted by `run_default_pipeline(..., select_by="de")` and recorded in
+`meta["select_by"]`.
 
 **`preset="significant"`** (aliases: `"builtin"`, `"active_score_significant"`)
 replays the built-in `significant` mask from `active_score` using metadata in
@@ -118,6 +135,7 @@ downregulated genes:
 ```python
 down_cands = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down")
 both = scat.filter_active_genes(de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both")
+# or the DE-only defaults: select_by="de"
 ```
 
 The helper safely ignores filters for columns that do not exist (e.g.
@@ -175,3 +193,21 @@ output in the log.
 The package auto-detects `mature`/`nascent` (kb_python) and remaps them
 internally. You can also pass `spliced_layer=...` and `unspliced_layer=...`
 explicitly.
+
+## Regime pre-flight (velocity layers)
+
+When spliced/unspliced layers are present, run a cheap proxy data-quality check
+before interpreting residual or mechanism annotations:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+print(r["regime"], r["reliability"], r["message"])
+```
+
+`run_default_pipeline` always writes this block to `result.meta["regime"]`
+(fail-soft). See {doc}`advanced` for how reliability scales
+`mechanism_confidence`.
+
+Runnable end-to-end demo of this workflow (`select_by="de"`, `annotate_mechanism`,
+`threshold_sensitivity`, `program_mechanism`, `regime_diagnosis`) on synthetic and
+real data: `examples/select_annotate_workflow_example.py`.

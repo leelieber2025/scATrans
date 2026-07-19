@@ -50,6 +50,14 @@ inspects cell/sample counts and suggests a preset.
 
    active_score
    active_score_simple
+   adaptive_active_score
+   add_adaptive_score
+   adaptive_weight
+   labeling_anchor
+   add_abundance_normalized_residual
+   annotate_mechanism_class
+   program_mechanism
+   threshold_sensitivity
    differential_expression
    differential_expression_simple
    diagnose_design
@@ -61,11 +69,47 @@ inspects cell/sample counts and suggests a preset.
    restore_raw_counts
 ```
 
-`filter_active_genes(results_df, preset=..., logfc_direction=..., return_mask=...)`
-takes `preset="heuristic"` (default cutoffs), `"pseudobulk"` (looser,
-post-aggregation), `"significant"` (replays the built-in strict mask; requires
-`use_permutation=True` upstream), or `"permissive"`; or pass explicit
+`filter_active_genes(results_df, preset=..., select_by=..., logfc_direction=...,
+return_mask=...)` takes `preset="heuristic"` (default cutoffs), `"pseudobulk"`
+(looser, post-aggregation), `"significant"` (replays the built-in strict mask;
+requires `use_permutation=True` upstream), or `"permissive"`; or pass explicit
 `*_cutoff` kwargs instead of a preset.
+
+**`select_by`** (default `"composite"`):
+
+| Value | Membership decided by | Proxy columns |
+|-------|----------------------|---------------|
+| `"composite"` | DE gates **and** nascent/composite gates (prior behavior) | Participate in selection |
+| `"de"` | **DE only** (`p_adj` / `logFC`; defaults `padj < 0.05` and `|log2FC| > 1` when no cutoffs given) | Annotation only — never gate membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
+
+### Pipeline add-ons (`run_default_pipeline`)
+
+Optional kwargs (all default off / prior behavior):
+
+| Kwarg | Effect | `meta` key |
+|-------|--------|------------|
+| `bias_method="abundance"` / `"abundance_length"` | Adds `unspliced_excess_residual_abnorm` | `meta["bias"]` |
+| `adaptive_weighting=True` | Adds `adaptive_score` / `adaptive_score_pct`; `adaptive_anchor=` selects reliability anchor (`"de"` or `labeling_anchor()` / callable) | `meta["adaptive"]` |
+| `select_by="de"` | Candidates from DE gates only (proxy annotates) | `meta["select_by"]` |
+| `annotate_mechanism=True` | Adds `transcription_support` / `mechanism_class` / `mechanism_confidence` (confidence scaled by regime reliability) | `meta["mechanism"]` |
+
+`run_default_pipeline` **always** records `meta["regime"]` from
+`scat.qc.regime_diagnosis` (cheap, fail-soft pre-flight from the global
+unspliced fraction). Add-ons fail soft when columns are missing; invalid
+`bias_method` raises.
+
+### Post-hoc ranking & mechanism helpers (additive; core `active_score` unchanged)
+
+| Function | Adds / returns | When to use |
+|----------|----------------|-------------|
+| `add_adaptive_score` / `adaptive_active_score` | `adaptive_score`, `adaptive_score_pct` | Reliability-weighted nascent leg; `anchor=` (`"de"` or `labeling_anchor(...)`) chooses the induced-gene set used for reliability AUC |
+| `labeling_anchor` | callable for `anchor=` | Metabolic-labeling truth (e.g. `new_log2fc`) instead of DE-induced genes |
+| `add_abundance_normalized_residual` | `unspliced_excess_residual_abnorm` | Demote abundance / nuclear-retention artifacts (e.g. *MALAT1*) |
+| `annotate_mechanism_class` | `transcription_support`, `mechanism_class`, `mechanism_confidence` | Low-confidence per-gene transcription vs stabilization label (**annotation only**) |
+| `program_mechanism` | program-level DataFrame | Threshold-free gene-set pooling of support (stronger than per-gene) |
+| `threshold_sensitivity` | padj×logFC grid table | Report DE-list robustness instead of defending one cutoff |
+
+See {doc}`../user_guide/advanced` and {doc}`../statistical_guidance`.
 
 ## Gene features
 
@@ -134,12 +178,25 @@ ranked list instead of a candidate gene list.
 
 ## Quality control (`scat.qc`)
 
+| Function | Returns | When to use |
+|----------|---------|-------------|
+| `qc.unspliced_global` | float in [0, 1] | Raw global unspliced fraction; logs a warning if high |
+| `qc.regime_diagnosis` | dict: `unspliced_fraction`, `reliability` [0, 1], `regime` (`ok` / `low_unspliced` / `high_unspliced`), `basis`, `message` | Pre-flight proxy **data-quality** reliability (U-shaped map of fraction → reliability). Pass `reliability` into `annotate_mechanism_class`; `run_default_pipeline` stores it in `meta["regime"]` and uses it when `annotate_mechanism=True` |
+
+**Scope:** `regime_diagnosis` is the **data-quality / gamma** half of a regime
+check (too little nascent signal, or too much ≈ nuclear/gDNA → gamma mis-fit).
+It does **not** yet distinguish dynamic vs steady-state transcription (that
+needs a velocity-magnitude signal such as `velocity_length`, pending
+validation). High `reliability` means “proxy not obviously corrupted”, not
+“proxy beats DE on this dataset”.
+
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/
    :nosignatures:
 
    qc.unspliced_global
+   qc.regime_diagnosis
 ```
 
 ## Plotting (`scat.pl`)

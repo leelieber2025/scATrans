@@ -1,5 +1,13 @@
 # Quickstart
 
+:::{important}
+**Note:** Spliced/unspliced (nascent-transcription) scoring is still
+**experimental** and under active validation — not yet recommended for
+production use on velocity layers. Differential expression, functional
+enrichment, and plotting that do **not** rely on those layers are stable.
+See {doc}`user_guide/standalone_de` for a pure-DE path.
+:::
+
 ## Minimal API (recommended default path)
 
 If you want the recommended default path without dozens of parameters, use
@@ -20,6 +28,17 @@ result = scat.run_default_pipeline(
 print(result["candidates"].head())
 print(result["enrichment"].head())
 
+# Production-oriented gene list while still computing nascent columns:
+# DE selects membership; residual / mechanism columns stay as annotations.
+result_de = scat.run_default_pipeline(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    select_by="de",
+)
+
 # Or just the core scoring step:
 adata_res, significant, all_results = scat.active_score_simple(
     adata,
@@ -32,8 +51,12 @@ adata_res, significant, all_results = scat.active_score_simple(
 
 `active_score_simple` / `run_default_pipeline` auto-attach gene features,
 pick Wilcoxon (single-cell) or pseudobulk+PyDESeq2 (when replicates allow),
-and keep permutation off by default. Use `active_score(...)` directly for
-advanced options (permutation, mixed models, Memento, etc.) — see the
+and keep permutation off by default. The pipeline always records
+`result.meta["regime"]` from `scat.qc.regime_diagnosis` when velocity layers
+are available (fail-soft). Optional add-ons: `bias_method=`,
+`adaptive_weighting=`, `annotate_mechanism=` (confidence scaled by regime
+reliability), `select_by=`. Use `active_score(...)` directly for advanced
+options (permutation, mixed models, Memento, etc.) — see the
 {doc}`user_guide/index`.
 
 ## Complete end-to-end example

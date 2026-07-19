@@ -20,6 +20,12 @@ models, or optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG)
 uses bundled gene sets with consistent universe handling, and a set of
 visualization functions is provided.
 
+> **Note:** The spliced/unspliced (nascent-transcription) scoring is still
+> experimental and under active validation — it is **not yet recommended for
+> production use** on spliced/unspliced applications. The features that do
+> **not** rely on the spliced/unspliced layers — differential expression,
+> functional enrichment, and plotting — are stable and ready to use.
+
 **📚 Full documentation, tutorials, and the complete API reference are on
 [Read the Docs](https://scatrans.readthedocs.io/en/latest/).**
 

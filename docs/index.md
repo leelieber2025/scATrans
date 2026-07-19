@@ -21,6 +21,18 @@ optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG) uses bundled
 gene sets with consistent universe handling, and a set of visualization
 functions is provided.
 
+:::{important}
+**Note:** The spliced/unspliced (nascent-transcription) scoring is still
+**experimental** and under active validation — it is **not yet recommended for
+production use** on spliced/unspliced applications. The features that do
+**not** rely on the spliced/unspliced layers — differential expression,
+functional enrichment, and plotting — are **stable and ready to use**.
+
+For production analyses prefer {doc}`user_guide/standalone_de` plus enrichment
+and `scat.pl`, or `run_default_pipeline(..., select_by="de")` when you only
+want DE to define the gene list and treat nascent columns as annotations.
+:::
+
 ## Try it now
 
 ```bash

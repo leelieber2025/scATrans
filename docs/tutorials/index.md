@@ -5,6 +5,12 @@ with its outputs already rendered, so you can read it here without running
 anything — or reproduce it locally with the commands at the bottom of this
 page.
 
+:::{important}
+Active-transcription tutorials use spliced/unspliced layers. That scoring path
+is still **experimental** and under validation. For production DE + enrichment
++ plotting without velocity layers, start with the **standalone** notebook.
+:::
+
 The two **active transcription** notebooks share a deliberately chosen theme: a
 real 3-vs-3 replicate design where statistical power — not the tool —
 determines how much signal survives. The **standalone** notebook covers the

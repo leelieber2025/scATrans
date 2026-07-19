@@ -5,6 +5,16 @@ fuller explanation. Domain conventions (why top-N is not DE, why residual
 can score without significant `p_adj`, cutoff names, etc.) are summarized in
 {doc}`domain_assumptions`.
 
+## Is nascent / spliced-unspliced scoring production-ready?
+
+**Not yet.** Composite scoring that depends on spliced/unspliced (or
+mature/nascent) layers is still **experimental** and under active validation.
+Prefer DE + enrichment + plotting for production work
+({doc}`user_guide/standalone_de`). If you already ran `active_score`, use
+`filter_active_genes(..., select_by="de")` or
+`run_default_pipeline(..., select_by="de")` so membership is DE-defined and
+nascent columns remain annotations only. See the note on {doc}`index`.
+
 ## "My `significant` gene list is empty" — is that a bug?
 
 No. The built-in `significant` mask uses strict, all-of thresholds on
@@ -22,10 +32,10 @@ DE significance**. Genes that DE backends did not test or filled as neutral
 (e.g. PyDESeq2 independent filtering → `padj` set to 1) can still score from
 positive unspliced excess. Top-N ranking is therefore **not** a
 DE-significant gene list. For DE-gated candidates use
-`filter_active_genes(..., padj_cutoff=0.05, logfc_cutoff=...)` (preferred;
-legacy `pval_cutoff=` still works but maps to **adjusted** p) or the
-built-in `significant` conjunction. See {doc}`statistical_guidance` for the
-full default cutoff table.
+`filter_active_genes(..., select_by="de")` or explicit
+`padj_cutoff=0.05, logfc_cutoff=...` (preferred; legacy `pval_cutoff=` still
+works but maps to **adjusted** p) or the built-in `significant` conjunction.
+See {doc}`statistical_guidance` for the full default cutoff table.
 
 ## Can I compare `active_score` across cell types or datasets?
 
@@ -121,10 +131,27 @@ check any such gene against raw spliced/unspliced counts (e.g.
 ## I see a warning that the global unspliced fraction is > 50%
 
 That usually indicates a technical issue (ambient RNA, mismatched
-spliced/unspliced layers, or a very immature cell population) rather than a
-real biological signal. `scat.qc.unspliced_global(adata)` reports this
-value directly; `active_score` runs it automatically and stores it in
-`adata.uns["scatrans"]["diagnostics"]`. See {doc}`installation`.
+spliced/unspliced layers, nuclear enrichment / gDNA contamination, or a very
+immature cell population) rather than a clean nascent-transcription signal.
+`scat.qc.unspliced_global(adata)` reports the raw fraction; prefer
+`scat.qc.regime_diagnosis(adata)` for a structured verdict:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+print(r["regime"], r["reliability"], r["message"])
+# "high_unspliced" / "low_unspliced" / "ok"; reliability in [0, 1]
+```
+
+Reliability is **U-shaped**: full (~1) in a normal unspliced band (~10–45%),
+and degrades toward 0 when the fraction is too low (little nascent signal) or
+too high (gamma / proxy may mis-fit). `run_default_pipeline` always records
+this as `result.meta["regime"]` and uses `reliability` to scale
+`mechanism_confidence` when `annotate_mechanism=True`.
+
+**Caveat:** this is data-quality / gamma reliability only — it does not yet
+flag dynamic vs steady-state regimes. High reliability means the proxy is not
+obviously corrupted, not that it outperforms DE. See {doc}`installation` and
+{doc}`user_guide/advanced`.
 
 ## `add_gene_features` silently produced all-`NaN` length/intron columns for some genes
 

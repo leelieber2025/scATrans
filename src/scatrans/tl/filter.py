@@ -112,6 +112,7 @@ def filter_active_genes(
     effective_gamma_min: Any = _NOT_PROVIDED,
     effective_gamma_max: Any = _NOT_PROVIDED,
     delta_variance_min: Any = _NOT_PROVIDED,
+    select_by: str = "composite",
     return_mask: bool = False,
     inplace: bool = False,
     **deprecated_kwargs: Any,
@@ -215,6 +216,20 @@ def filter_active_genes(
     delta_variance_min : float or None
         If the column exists (use_mixed_model=True), minimum variance fraction
         explained by condition.
+    select_by : {"composite", "de"}
+        Which axis DEFINES gene-list membership.
+        - "composite" (default): the current behavior — the nascent proxy
+          (active_score / unspliced_excess_residual / their FDRs) participates in
+          selection alongside DE.
+        - "de": **DE SELECTS, proxy ANNOTATES.** Membership is decided ONLY by the
+          differential-expression gates (p_adj / logFC + direction, and mixedlm_coef
+          direction when present); the active_score, unspliced_excess_residual,
+          active_score_fdr, unspliced_excess_fdr, effective_gamma and delta_variance
+          gates are SKIPPED (they remain as annotation columns on the output).
+          Genes with missing proxy columns stay selectable. Sorting is by p_adj then
+          logFC (direction-aware), never by active_score. When no preset / explicit
+          cutoffs are given, DE defaults padj<0.05 and |log2FC|>1 apply. Not
+          compatible with preset="significant".
 
     Returns
     -------
@@ -237,6 +252,25 @@ def filter_active_genes(
         raise TypeError(
             "filter_active_genes() got unexpected keyword argument(s): "
             f"{', '.join(sorted(deprecated_kwargs))}"
+        )
+
+    sel = str(select_by).lower()
+    if sel not in ("composite", "de"):
+        raise ValueError(f"select_by must be 'composite' or 'de', got {select_by!r}")
+    _de_only = sel == "de"
+    if (
+        _de_only
+        and preset is not None
+        and preset.lower()
+        in (
+            "significant",
+            "builtin",
+            "active_score_significant",
+        )
+    ):
+        raise ValueError(
+            "select_by='de' is incompatible with preset='significant' (the built-in "
+            "significant list is the composite selection). Use select_by='composite'."
         )
 
     df = results.copy()
@@ -355,8 +389,12 @@ def filter_active_genes(
         pval_cutoff = padj_cutoff
     elif user_set_padj:
         pval_cutoff = padj_cutoff
+    # select_by="de" with no preset/explicit cutoff -> the agreed DE standard
+    # (padj<0.05 AND |log2FC|>1); preset or explicit args still take precedence.
+    _pval_default = 0.05 if _de_only else float("inf")
+    _logfc_default = 1.0 if _de_only else float("inf")
     pval_cutoff = _coerce_numeric_cutoff(
-        _resolve("pval_cutoff", pval_cutoff, float("inf")), float("inf"), "pval_cutoff"
+        _resolve("pval_cutoff", pval_cutoff, _pval_default), _pval_default, "pval_cutoff"
     )
     if pval_cutoff < 0 or (not math.isfinite(pval_cutoff) and not math.isinf(pval_cutoff)):
         raise ValueError(
@@ -382,7 +420,7 @@ def filter_active_genes(
         "unspliced_excess_residual_cutoff",
     )
     logfc_cutoff = _coerce_numeric_cutoff(
-        _resolve("logfc_cutoff", logfc_cutoff, float("inf")), float("inf"), "logfc_cutoff"
+        _resolve("logfc_cutoff", logfc_cutoff, _logfc_default), _logfc_default, "logfc_cutoff"
     )
     # logfc_direction is not preset-driven (presets remain up-biased); normalize here
     dir_raw = str(logfc_direction).lower() if logfc_direction is not None else "up"
@@ -438,7 +476,7 @@ def filter_active_genes(
     # Core filters
     # Prefer adjusted p-value when present (consistent with active_score internal significant mask
     # and common user expectation). Fall back to nominal p_val only if p_adj is absent.
-    if "active_score" in df.columns:
+    if "active_score" in df.columns and not _de_only:
         active_vals = pd.to_numeric(df["active_score"], errors="coerce")
         mask &= active_vals.notna() & (active_vals >= active_score_cutoff)
     if "p_adj" in df.columns:
@@ -452,7 +490,7 @@ def filter_active_genes(
         if UNSPLICED_EXCESS_RESIDUAL_COL in df.columns
         else LEGACY_VELOCITY_RESIDUAL_COL
     )
-    if residual_col in df.columns:
+    if residual_col in df.columns and not _de_only:
         resid_vals = pd.to_numeric(df[residual_col], errors="coerce")
         rc = float(unspliced_excess_residual_cutoff)
         # -inf disables residual magnitude filtering (permissive default).
@@ -501,7 +539,7 @@ def filter_active_genes(
             mask &= coef_vals.notna() & (coef_vals < 0)
 
     # Permutation FDR on composite score (optional ranking filter)
-    if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns:
+    if active_score_fdr_cutoff is not None and "active_score_fdr" in df.columns and not _de_only:
         fdr = pd.to_numeric(df["active_score_fdr"], errors="coerce")
         if math.isinf(active_score_fdr_cutoff):
             # Permissive: NaN FDR = not computed / no permutation — do not drop.
@@ -511,7 +549,11 @@ def filter_active_genes(
 
     # Permutation FDR on unspliced excess residual (recommended significance filter).
     # One-sided for positive residual only — skip when user selected down/both.
-    if unspliced_excess_fdr_cutoff is not None and UNSPLICED_EXCESS_FDR_COL in df.columns:
+    if (
+        unspliced_excess_fdr_cutoff is not None
+        and UNSPLICED_EXCESS_FDR_COL in df.columns
+        and not _de_only
+    ):
         apply_ue_fdr = True
         if direction != "up" and not (
             isinstance(unspliced_excess_fdr_cutoff, float)
@@ -532,8 +574,10 @@ def filter_active_genes(
                 mask &= fdr.notna() & (fdr < unspliced_excess_fdr_cutoff)
 
     # effective_gamma bounds (only when user/preset sets a finite min/max)
-    if "effective_gamma" in df.columns and (
-        effective_gamma_min is not None or effective_gamma_max is not None
+    if (
+        "effective_gamma" in df.columns
+        and not _de_only
+        and (effective_gamma_min is not None or effective_gamma_max is not None)
     ):
         gamma = pd.to_numeric(df["effective_gamma"], errors="coerce")
         if effective_gamma_min is not None:
@@ -542,7 +586,7 @@ def filter_active_genes(
             mask &= gamma.notna() & (gamma < effective_gamma_max)
 
     # Delta variance
-    if delta_variance_min is not None and "delta_variance" in df.columns:
+    if delta_variance_min is not None and "delta_variance" in df.columns and not _de_only:
         mask &= df["delta_variance"] >= delta_variance_min
 
     filtered = df[mask].copy()
@@ -550,7 +594,7 @@ def filter_active_genes(
     # Sorting: prefer active_score when present (velocity + DE composite),
     # otherwise fall back to p_adj, then logFC according to direction
     # (strongest up first, strongest down first, or largest |logFC| for both).
-    if "active_score" in filtered.columns:
+    if "active_score" in filtered.columns and not _de_only:
         filtered = filtered.sort_values("active_score", ascending=False)
     elif "p_adj" in filtered.columns:
         sort_cols = ["p_adj"]
@@ -581,7 +625,7 @@ def filter_active_genes(
         if len(to_drop) > 0:
             results.drop(index=to_drop, inplace=True)
         # Re-apply the sort in place on the surviving rows
-        if "active_score" in results.columns:
+        if "active_score" in results.columns and not _de_only:
             results.sort_values("active_score", ascending=False, inplace=True)
         elif "p_adj" in results.columns:
             sort_cols = ["p_adj"]

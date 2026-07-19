@@ -94,6 +94,161 @@ scientific judgment that the user must make; the correction is therefore
 optional. The `bias_diagnostic_plot` function can be used to inspect the
 relationship before and after correction.
 
+### Abundance / nuclear-retention artifacts (post-hoc)
+
+Built-in Huber length/intron correction does **not** remove extreme
+abundance or nuclear-retention confounds (e.g. *MALAT1*). After
+`active_score`, you can add a scale-free residual:
+
+```python
+import scatrans as scat
+
+all_results, diag = scat.add_abundance_normalized_residual(
+    all_results, method="abundance"  # or "abundance_length"
+)
+# column: unspliced_excess_residual_abnorm
+print(diag["abundance_floor"], diag["method"])
+```
+
+Or fold the same step into the one-liner (fail-soft; diagnostics in
+`meta["bias"]`):
+
+```python
+result = scat.run_default_pipeline(
+    adata, groupby="condition", target_group="Disease",
+    reference_group="Control", organism="mouse",
+    bias_method="abundance",  # or "abundance_length"
+)
+```
+
+This improves **interpretability** of residual rankings; it does not fix a
+kinetically uninformative nascent proxy on steady-state snapshots.
+
+## Reliability-adaptive nascent weight (post-hoc)
+
+When the residual anti-correlates with induction (common on late /
+steady-state velocity snapshots), a fixed nascent weight can pull the
+composite below plain DE. `add_adaptive_score` estimates reliability as the
+AUC of `unspliced_excess_residual` recovering an **anchor** gene set and
+builds `adaptive_score` with weight
+`w = clip(k * (reliability - 0.5), 0, w_max)` (defaults `k=4`, `w_max=2`):
+
+```python
+all_results, diag = scat.add_adaptive_score(all_results)  # anchor="de" default
+# or end-to-end:
+# all_results, diag = scat.adaptive_active_score(
+#     adata, groupby="condition", target_group="Disease",
+#     reference_group="Control", organism="mouse",
+# )
+print(diag["reliability_auc"], diag["w_proxy"], diag["verdict"], diag.get("anchor"))
+```
+
+### Reliability anchor (`anchor=` / `adaptive_anchor=`)
+
+| Anchor | Meaning |
+|--------|---------|
+| `"de"` (default) | Strong DE-induced genes (`logFC >= 1` & `p_adj < 0.05`) |
+| `scat.labeling_anchor(column="new_log2fc", threshold=1.0)` | Metabolic-labeling truth column |
+| callable / boolean array / Series | Custom induced set |
+
+On metabolic-labeling time courses the DE anchor can under-estimate reliability
+(e.g. fast IEGs with depleted unspliced excess) and force `w_proxy=0`; a labeling
+anchor recovers graded down-weighting as the proxy becomes less informative.
+Pipeline form:
+
+```python
+result = scat.run_default_pipeline(
+    adata, ..., adaptive_weighting=True,
+    adaptive_anchor=scat.labeling_anchor("new_log2fc"),  # or "de"
+)
+print(result.meta.get("adaptive"))
+```
+
+`adaptive_score` is still a **heuristic rank**, not FDR. Report the
+diagnostics when you use it. Core `active_score` columns and defaults are
+unchanged.
+
+## DE selects, proxy annotates
+
+When you want a **production-ready gene list** from DE while still computing
+nascent columns for exploration, use `select_by="de"`:
+
+```python
+result = scat.run_default_pipeline(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    select_by="de",              # candidates = DE gates only
+    bias_method="abundance",     # optional residual cleanup
+    annotate_mechanism=True,     # optional per-gene mechanism labels
+)
+# result.candidates: padj/logFC-selected
+# result.all_results: still carries residual / adaptive / mechanism columns
+print(result.meta["select_by"], result.meta.get("mechanism"))
+```
+
+Standalone filter:
+
+```python
+candidates = scat.filter_active_genes(all_results, select_by="de")
+```
+
+## Regime / proxy-reliability pre-flight
+
+Before trusting nascent annotations, map the global unspliced fraction to a
+dataset-level reliability scalar:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+# keys: unspliced_fraction, reliability [0, 1], regime, basis, message
+# regime: "ok" | "low_unspliced" | "high_unspliced"
+```
+
+| Regime | Typical meaning |
+|--------|-----------------|
+| `ok` | Fraction in the normal band (~10–45%); reliability ≈ 1 |
+| `low_unspliced` | Little nascent signal; reliability ramps down toward 0 |
+| `high_unspliced` | Possible nuclear/gDNA contamination; gamma / proxy may mis-fit |
+
+`run_default_pipeline` always stores this in `meta["regime"]` (fail-soft if
+layers are missing). Scope: **data-quality / gamma** only — not yet
+dynamic-vs-steady-state (that needs a velocity-magnitude signal, pending
+validation). Treat high reliability as “not obviously corrupted”, not
+“proxy wins over DE”.
+
+## Mechanism annotation (experimental nascent path)
+
+**Annotation only — never changes who is on the gene list.** Prefer
+`select_by="de"` for membership, then annotate. Scale confidence by the
+regime reliability when you have velocity layers:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+# Per-gene (LOW confidence by design; AUC ~0.63 on static validation)
+all_results, mdiag = scat.annotate_mechanism_class(
+    all_results, reliability=r["reliability"]
+)
+# columns: transcription_support, mechanism_class, mechanism_confidence
+# classes: transcription-driven | stabilization-driven | ambiguous |
+#          unclassified_down | unknown
+
+# Or via the pipeline (uses meta["regime"]["reliability"] automatically):
+# result = scat.run_default_pipeline(..., annotate_mechanism=True)
+# result.meta["regime"], result.meta["mechanism"]
+
+# Program-level (threshold-free competitive Mann–Whitney on support)
+prog = scat.program_mechanism(all_results, gene_sets={"IEG": ieg_list, "inflam": inflam_list})
+
+# Threshold robustness of a DE-selected list
+sens = scat.threshold_sensitivity(all_results)  # padj × logFC grid + Jaccard vs reference
+```
+
+Per-gene labels are exploratory. Pool with `program_mechanism` for stronger
+program-level transcription-vs-stabilization calls, and report
+`threshold_sensitivity` rather than defending a single DE cutoff.
+
 ## `gamma_method` and reference gamma robustness
 
 The core unspliced excess uses a per-gene reference gamma = U_ref / S_ref

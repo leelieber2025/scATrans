@@ -8,12 +8,25 @@ For the full list of **implicit domain rules made explicit** (what “active”
 means, p-value cutoffs, residual vs DE, GSEA ranks, gene length), see
 {doc}`domain_assumptions`.
 
+:::{important}
+Spliced/unspliced (nascent-transcription) composite scoring remains
+**experimental** and under active validation. For production gene lists prefer
+DE (`logFC` / `p_adj`) via `differential_expression` or
+`filter_active_genes(..., select_by="de")` /
+`run_default_pipeline(..., select_by="de")`. Nascent columns may annotate that
+list but should not be the sole basis for claims until validation matures.
+:::
+
 | Output | Safe use | Do **not** use it for |
 |--------|----------|------------------------|
-| `active_score` (0–100) | **Within-run ranking** and visualization (λ is data-adaptive; not absolute) | Cross-dataset / cross-subset numeric comparison; p-values, FDR, or "statistically significant activation" on its own |
+| `active_score` (0–100) | **Within-run ranking** and visualization (λ is data-adaptive; not absolute); experimental composite | Cross-dataset / cross-subset numeric comparison; p-values, FDR, or "statistically significant activation" on its own; production gene selection without DE |
+| `adaptive_score` / `adaptive_score_pct` | **Optional** post-hoc rank that reweights the nascent leg by a data-driven reliability AUC (see `add_adaptive_score`). Report `diagnostics["reliability_auc"]`, `w_proxy`, `verdict`, and `anchor` | Treating it as FDR, calibrated probability, or a replacement for DE/`unspliced_excess_fdr`; cross-dataset numeric comparison of the score itself |
 | `unspliced_excess_delta` / `unspliced_excess_residual` | Exploratory signal for **group-contrast** nascent excess (after reference γ) | Literal transcription rates, causal claims, or equivalence to dynamical RNA velocity |
+| `unspliced_excess_residual_abnorm` | Interpretable residual ranking after abundance (and optional length) normalization — demotes nuclear-retained / extreme-abundance outliers | A significance test, or assuming it restores residual reliability on steady-state velocity snapshots (kinetic limitation remains) |
+| `transcription_support` / `mechanism_class` / `mechanism_confidence` | **Annotation** of DE-selected genes (transcription- vs stabilization-driven labels). Prefer `program_mechanism` for program-level calls. Confidence should be scaled by `qc.regime_diagnosis` reliability | High-confidence per-gene mechanism claims; gating gene-list membership; treating high regime reliability as “proxy beats DE” |
+| `meta["regime"]` / `qc.regime_diagnosis` | Pre-flight data-quality reliability of the nascent proxy from global unspliced fraction (U-shaped map) | Dynamic-vs-steady-state claims (not yet implemented); sole justification for production gene lists |
 | `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats). Under **`use_mixed_model=True`**, `logFC` is **sample-mean-of-means log2FC**, not the LMM fixed-effect coefficient — see `diagnostics["mixed_model"]["logFC_method"]`. Sign discordance vs `mixedlm_coef` triggers a **warning** and is counted in `n_genes_logFC_mixedlm_sign_discordant` | Treating MixedLM `logFC` as the LMM coef, or ignoring high `n_genes_logFC_mixedlm_sign_discordant` |
-| `unspliced_excess_fdr` (with `use_permutation=True`) | **Primary** active-gene significance filter (one-sided, conditional null) | Claims without inspecting diagnostics and replicate structure |
+| `unspliced_excess_fdr` (with `use_permutation=True`) | Exploratory significance on residual under conditional permutation | Sole production filter without DE; claims without inspecting diagnostics and replicate structure |
 
 ## Reporting checklist
 
@@ -42,9 +55,11 @@ permutation off by default so new users explore ranked tables first; enable
 
 | Step | Function | Key outputs |
 |------|----------|-------------|
-| 0. Pre-flight | `recommend_workflow(adata, groupby, target, ref, sample_col=...)` | `workflow_preset`, `suggested_kwargs`, `filter_preset`, `power_summary` |
-| 1. Score | `active_score(..., **rec["suggested_kwargs"])` or `active_score_simple(...)` | `all_results` (rank by `active_score`), `adata.uns["scatrans"]` |
-| 2. Filter | `filter_active_genes(all_results, preset=rec["filter_preset"])` | candidate gene list for plots / enrichment |
+| 0. Pre-flight | `recommend_workflow(...)`; with velocity layers also `scat.qc.regime_diagnosis(adata)` | workflow presets; `regime` / `reliability` / message |
+| 1. Score | `active_score(...)` / `active_score_simple(...)` **or** pure DE via `differential_expression` | `all_results` / `de_results`, `adata.uns["scatrans"]` |
+| 1b. Optional | `add_adaptive_score` / `add_abundance_normalized_residual` / pipeline `bias_method` & `adaptive_weighting` | `adaptive_score`, `unspliced_excess_residual_abnorm` + diagnostics |
+| 1c. Optional | `annotate_mechanism_class` (pass `reliability=` from regime) / `program_mechanism` / `threshold_sensitivity` | mechanism labels; program table; threshold grid; pipeline stores `meta["regime"]` always |
+| 2. Filter | `filter_active_genes(..., select_by="de")` for production DE lists, or `preset=...` for composite exploration | candidate gene list for plots / enrichment |
 | 3. Enrich | `run_enrichment(candidates, gene_sets="GO_Biological_Process", adata=adata)` | ORA table; cite `attrs["gene_set_info"]["provenance"]` |
 | 4. Plot | `scat.pl.comet_plot(...)`, `volcano_plot(..., label_repel=True)` | `(fig, ax)`; batch export via `scat.pl.figure_export_context` or `save_all_figures` |
 
@@ -59,15 +74,21 @@ permutation off by default so new users explore ranked tables first; enable
 
 **Paper checklist (minimal):**
 
-1. State that `active_score` is a **composite heuristic rank**, not a p-value.
-2. Report DE with `p_adj`; report nascent excess significance with
-   `unspliced_excess_fdr` when `use_permutation=True`.
-3. Describe unspliced excess as a **reference-gamma group contrast** (not
+1. If you used velocity-dependent scoring, state that composite
+   nascent-transcription scoring is **experimental** and report how the gene
+   list was selected (`select_by="de"` vs composite presets).
+2. State that `active_score` is a **composite heuristic rank**, not a p-value.
+3. Report DE with `p_adj`; treat residual / adaptive / mechanism columns as
+   annotations unless permutation FDR and diagnostics support stronger claims.
+4. Describe unspliced excess as a **reference-gamma group contrast** (not
    full dynamical velocity).
-4. Enrichment: name bundled library (`Hs/Mm_*_2026`) and `p_adjust_method`;
+5. Enrichment: name bundled library (`Hs/Mm_*_2026`) and `p_adjust_method`;
    see `src/scatrans/data/README.md`.
-5. Plots: note `adjustText` is optional (`label_repel=False` to skip); label
+6. Plots: note `adjustText` is optional (`label_repel=False` to skip); label
    density via `min_label_score` / `label_fontsize`.
+7. When using mechanism labels, report per-gene vs program-level calls,
+   the regime pre-flight (`meta["regime"]` or `qc.regime_diagnosis`), and
+   consider attaching `threshold_sensitivity` results.
 
 ## Result interpretation
 
@@ -80,6 +101,9 @@ RNA velocity):
 |----------------|---------------------------|---------|
 | `unspliced_excess_delta` | `velocity_delta_raw` | Raw U − γ_ref·S in target group |
 | `unspliced_excess_residual` | `velocity_residual` | Bias-corrected excess residual |
+| `unspliced_excess_residual_abnorm` | — | Optional post-hoc abundance-/length-normalized residual (`add_abundance_normalized_residual` / `bias_method=`) |
+| `adaptive_score` / `adaptive_score_pct` | — | Optional reliability-weighted composite (`add_adaptive_score` / `adaptive_weighting=`) |
+| `transcription_support` / `mechanism_class` / `mechanism_confidence` | — | Optional mechanism annotation (`annotate_mechanism_class`) |
 | `unspliced_excess_pval` | — | One-sided permutation p-value on residual |
 | `unspliced_excess_fdr` | — | BH-FDR on `unspliced_excess_pval` |
 

@@ -60,6 +60,73 @@ def test_run_default_pipeline_returns_pipeline_result(adata_basic):
     assert result.meta["gamma_method"] == scatrans_uns.get("gamma_method")
 
 
+def _run(adata_basic, **kw):
+    return scat.run_default_pipeline(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        run_go_enrichment=False,
+        show_plot=False,
+        **kw,
+    )
+
+
+def test_pipeline_bias_method_adds_column_and_meta(adata_basic):
+    base = _run(adata_basic)
+    assert "unspliced_excess_residual_abnorm" not in base.all_results.columns  # off by default
+    assert "bias" not in base.meta
+    for method in ("abundance", "abundance_length"):
+        res = _run(adata_basic, bias_method=method)
+        assert "unspliced_excess_residual_abnorm" in res.all_results.columns
+        assert res.meta["bias"]["method"] == method
+        assert "error" not in res.meta["bias"]
+
+
+def test_pipeline_adaptive_weighting_adds_score_and_meta(adata_basic):
+    base = _run(adata_basic)
+    assert "adaptive_score" not in base.all_results.columns  # off by default
+    res = _run(adata_basic, adaptive_weighting=True)
+    assert {"adaptive_score", "adaptive_score_pct"} <= set(res.all_results.columns)
+    assert {"reliability_auc", "w_proxy", "anchor", "verdict"} <= set(res.meta["adaptive"])
+    assert res.meta["adaptive"]["anchor"] == "de"
+
+
+def test_pipeline_adaptive_custom_anchor(adata_basic):
+    res = _run(adata_basic, adaptive_weighting=True, adaptive_anchor=scat.labeling_anchor("logFC"))
+    assert res.meta["adaptive"]["anchor"].startswith("labeling_anchor")
+
+
+def test_pipeline_bias_and_adaptive_together(adata_basic):
+    res = _run(adata_basic, bias_method="abundance", adaptive_weighting=True)
+    cols = set(res.all_results.columns)
+    assert {"unspliced_excess_residual_abnorm", "adaptive_score"} <= cols
+    assert "bias" in res.meta and "adaptive" in res.meta
+
+
+def test_pipeline_invalid_bias_method_raises(adata_basic):
+    with pytest.raises(ValueError):
+        _run(adata_basic, bias_method="not_a_method")
+
+
+def test_pipeline_addons_fail_soft(adata_basic, monkeypatch):
+    # If an add-on raises (e.g. missing feature columns), the core result must
+    # still be returned and the reason recorded under the matching meta key.
+    import scatrans.tl.pipeline as pl
+
+    def _boom(*a, **k):
+        raise KeyError("simulated missing columns")
+
+    monkeypatch.setattr(pl, "add_abundance_normalized_residual", _boom)
+    monkeypatch.setattr(pl, "add_adaptive_score", _boom)
+    res = _run(adata_basic, bias_method="abundance", adaptive_weighting=True)
+    assert isinstance(res, scat.PipelineResult)
+    assert "error" in res.meta["bias"]
+    assert "error" in res.meta["adaptive"]
+    # core deliverables unaffected
+    assert isinstance(res.candidates, pd.DataFrame)
+
+
 def test_pipeline_result_keyerror():
     pr = _empty_result(candidates=pd.DataFrame())
     with pytest.raises(KeyError):

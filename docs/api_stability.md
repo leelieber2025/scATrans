@@ -29,6 +29,7 @@ scat.differential_expression(...)
 scat.run_default_pipeline(...)
 scat.pl.volcano_plot(...)
 scat.qc.unspliced_global(...)
+scat.qc.regime_diagnosis(...)
 ```
 
 Prefer the top-level `scat.*` surface (and `scat.pl` / `scat.qc`) for all
@@ -41,6 +42,10 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 1. **Top-level package** — every name in `scatrans.__all__`, including:
    - scoring / DE / pipeline: `active_score`, `active_score_simple`,
+     `adaptive_active_score`, `add_adaptive_score`, `adaptive_weight`,
+     `labeling_anchor`, `add_abundance_normalized_residual`,
+     `annotate_mechanism_class`, `program_mechanism`,
+     `threshold_sensitivity`,
      `differential_expression`, `differential_expression_simple`,
      `run_default_pipeline`, `PipelineResult`, `filter_active_genes`,
      `diagnose_design`, `recommend_workflow`, `WORKFLOW_PRESETS`,
@@ -53,8 +58,16 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
      `simplify_enrichment`, `compare_enrichment`, and related helpers listed
      in `__all__`
    - version: `scatrans.__version__`
+
+**Scientific maturity (not the same as import stability):** differential
+expression, enrichment, and plotting that do **not** depend on
+spliced/unspliced layers are intended for production use. Composite
+nascent-transcription scoring (`active_score` and its velocity-dependent
+add-ons) remains **experimental** and under validation — see the note on
+the documentation homepage and in the README.
 2. **`scatrans.pl`** — names in `scatrans.pl.__all__` (plotting helpers).
-3. **`scatrans.qc`** — names in `scatrans.qc.__all__`.
+3. **`scatrans.qc`** — names in `scatrans.qc.__all__`
+   (`unspliced_global`, `regime_diagnosis`).
 4. **CLI entry points** declared in packaging metadata (e.g.
    `generate-gene-features` → `scatrans.generate_gene_features:main`).
 
@@ -69,8 +82,11 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 `meta` always includes `scatrans_version` and `organism`. When
 `active_score` ran, it also surfaces the nested `diagnostics` block and
 selected run flags from `adata.uns["scatrans"]` (e.g. `use_permutation`,
-`gamma_method`, `mode`). The full run metadata remains on
-`result.adata.uns["scatrans"]`.
+`gamma_method`, `mode`). On velocity-capable objects the pipeline also
+records **`meta["regime"]`** from `scat.qc.regime_diagnosis` (fail-soft if
+layers are missing). Optional add-ons record under `meta["bias"]`,
+`meta["adaptive"]`, `meta["mechanism"]`, and `meta["select_by"]` when used.
+The full run metadata remains on `result.adata.uns["scatrans"]`.
 
 In-place mutation (`result[k] = …`, `result |= …`, `update` / `pop` / …)
 raises `TypeError`. Use `result.to_dict()` or `result.copy()` for a mutable
