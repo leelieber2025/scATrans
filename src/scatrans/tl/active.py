@@ -154,6 +154,7 @@ def active_score(
     for Disease/Control convenience defaults.
 
     **Recommended entry points (to avoid the long parameter list):**
+
     - For new users: :func:`active_score_simple`
     - For guided configuration: :func:`recommend_workflow` then ``active_score(..., **rec["suggested_kwargs"])``
     - Presets are defined in ``WORKFLOW_PRESETS``.
@@ -166,18 +167,23 @@ def active_score(
     ranking_mode affects some weight_* defaults).
 
     The function computes:
+
     - logFC and p_adj between target and reference (via scanpy or PyDESeq2).
     - An unspliced (nascent) excess delta = U_target − (gamma_ref × S_target), where
       gamma_ref is a shrunk U/S ratio estimated in the reference group.
+
     - (by default) A Huber regression correction of the delta on log(gene length) and
       log(intron number); the residuals become ``unspliced_excess_residual``.
+
     - When ``use_permutation=True``, independent one-sided permutation p-values and
       BH-FDR are computed for the bias-corrected unspliced excess residual
       (``unspliced_excess_pval``, ``unspliced_excess_fdr``).
+
     - A soft-scaled, weighted combination of the three signals, scaled to 0–100.
 
     Several extensions are available as explicit options (see the README section
     "Optional advanced features"):
+
     - show_effective_gamma
     - gamma_method="robust_median" (heuristic variant of additive shrinkage using median per-gene ratio as base; not Bayesian)
     - gamma_method="empirical_bayes" (hierarchical empirical Bayes log-ratio shrinkage; recommended for small reference groups)
@@ -199,6 +205,7 @@ def active_score(
     design and surface relevant warnings before analysis.
 
     **Important statistical note (reporting boundaries)**:
+
     - `active_score` is a **heuristic ranking score only**. It is NOT a p-value,
       effect size with calibrated uncertainty, or evidence of causal transcriptional activation.
       Composite legs for logFC and -log10(p_adj) are upregulation-gated
@@ -206,6 +213,7 @@ def active_score(
       what ``p_adj`` tests); downregulated genes do not receive score from the DE
       significance term alone. The p-value soft-scale λ is estimated on
       direction-positive genes only.
+
     - The unspliced-excess leg (s2) is **independent of DE significance**: genes that
       DE backends did not test or returned neutral (e.g. PyDESeq2 ``padj`` filled to 1
       after independent filtering) still receive residual-based score when nascent
@@ -213,6 +221,7 @@ def active_score(
       DE-nonsignificant genes** — that is a feature of composite ranking, not a bug.
       For DE-gated lists use ``filter_active_genes`` (``p_adj`` / ``logFC`` cutoffs) or
       the built-in ``significant`` conjunction.
+
     - Soft-scale λ for each leg is **estimated from this run's data**
       (``median(positive values) / ln(2)``, with floors). The 0–100 ``active_score`` is
       therefore a **within-analysis relative rank**, not an absolute unit. Do **not**
@@ -220,11 +229,14 @@ def active_score(
       genes): changing the gene pool re-estimates λ and rescales every gene even if
       its raw logFC/residual/p is unchanged. Lambdas are stored under
       ``adata.uns["scatrans"]["diagnostics"]["scoring"]``.
+
     - `unspliced_excess_*` columns are **group-contrast proxies** (reference-gamma excess),
       not outputs of a stochastic/dynamical RNA velocity model. Do not treat them as
       literal nascent transcription rates without independent validation.
+
     - For significance claims use DE ``p_adj`` and/or permutation ``unspliced_excess_fdr``
       (when ``use_permutation=True``). Cross-check with orthogonal methods when possible.
+
     - The built-in ``significant`` list is a strict conjunction and is frequently empty —
       this is intentional. Use ``all_results`` + ``filter_active_genes`` for exploration.
 

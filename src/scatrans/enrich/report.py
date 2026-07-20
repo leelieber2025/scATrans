@@ -86,6 +86,24 @@ def expand_enrichment_genes(res: pd.DataFrame) -> pd.DataFrame:
     """
     has_ontology = "Ontology" in (res.columns if res is not None else [])
 
+    # GSEA results carry the gene list in ``leading_edge`` (renamed from gseapy
+    # ``Lead_genes``) rather than the ORA ``Genes`` column. Alias it so GSEA inputs
+    # expand instead of silently returning an empty table.
+    if res is not None and not res.empty and "Genes" not in res.columns:
+        for _alt in ("leading_edge", "Lead_genes"):
+            if _alt in res.columns:
+                res = res.copy()
+                res["Genes"] = res[_alt]
+                break
+        else:
+            logger.warning(
+                "expand_enrichment_genes: enrichment frame has %d rows but no usable "
+                "gene-list column (Genes / leading_edge / Lead_genes); the term-gene "
+                "table will be empty. Available columns: %s",
+                len(res),
+                list(res.columns),
+            )
+
     if res is None or res.empty or "Genes" not in res.columns:
         base_cols = [
             "Term",
@@ -182,6 +200,7 @@ def save_enrichment_report(
     Save enrichment results in formats friendly for manuscripts and supplementary materials.
 
     Produces a combination of:
+
       - {prefix}_results.csv / .tsv / .xlsx   (main table; Genes column is semicolon-joined)
       - {prefix}_term_gene_table.csv / .tsv / (in xlsx)   (long format: one row per term-gene pair)
       - {prefix}_metadata.json   (and a "metadata" sheet in xlsx)  (res.attrs + analysis provenance)
@@ -191,7 +210,8 @@ def save_enrichment_report(
 
     The parent directory of `prefix` is created if it does not exist.
 
-    Returns a dict with the written file paths, e.g.:
+    Returns a dict with the written file paths, e.g.::
+
         {
             "results_csv": "..._results.csv",
             "term_gene_table_csv": "..._term_gene_table.csv",

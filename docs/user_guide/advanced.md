@@ -8,7 +8,7 @@ required by the experimental design:
 - `show_effective_gamma=True`
 - `gamma_method="robust_median"` (or `"raw"`)
 - `use_mixed_model=True`
-- `prioritize_velocity=True`
+- `prioritize_velocity=True` (**deprecated** — prefer `ranking_mode="nascent_excess"`)
 
 `diagnose_design` summarizes cell and sample counts plus global unspliced
 fraction and returns warnings and a suggested `filter_active_genes` preset.

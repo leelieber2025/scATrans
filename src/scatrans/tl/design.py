@@ -383,6 +383,7 @@ def recommend_workflow(
     actionable preset + backend suggestions.
 
     Returns keys:
+
       - workflow_preset: key into ``WORKFLOW_PRESETS`` (e.g. ``"pseudobulk_report"``)
       - preset_config: full preset dict (label, active_score_kwargs, filter_preset)
       - recommended_preset: ``filter_active_genes`` preset name
@@ -391,7 +392,8 @@ def recommend_workflow(
       - warnings, recommendations, power_summary
       - full_diagnosis: raw dict from :func:`diagnose_design`
 
-    Example:
+    Example::
+
         rec = scat.recommend_workflow(adata, "condition", "GA", "Ctrl", sample_col="sample")
         adata, sig, res = scat.active_score(
             adata, groupby="condition", target_group="GA", reference_group="Ctrl",

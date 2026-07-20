@@ -39,6 +39,7 @@ from .mechanism import (
     program_mechanism,
     threshold_sensitivity,
 )
+from .partition import PartitionResult, partition_de_by_mechanism
 from .pipeline import (
     PipelineResult,
     active_score_simple,
@@ -59,6 +60,8 @@ __all__ = [
     "annotate_mechanism_class",
     "threshold_sensitivity",
     "program_mechanism",
+    "partition_de_by_mechanism",
+    "PartitionResult",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

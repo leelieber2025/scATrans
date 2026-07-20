@@ -9,11 +9,12 @@
 
 ## Single-cell active transcription analysis
 
-**scATrans** is a Python toolkit for single-cell differential analysis. It is
-primarily designed for datasets that contain spliced/unspliced (or
-mature/nascent) RNA layers: in this setting it computes a composite **active
-transcription score** that integrates differential expression with
-reference-based excess unspliced RNA to rank genes.
+**scATrans** is a single-cell differential-analysis toolkit with an RNA-velocity
+twist: standard DE **selects** the changed genes, then scATrans **partitions** them
+by mechanism — *transcription-driven* vs *stabilization-driven* — from the nascent
+(unspliced) signal ({func}`~scatrans.partition_de_by_mechanism`), a call a
+fold-change alone cannot make. Validated against metabolic-labeling data; most
+decisive at the pathway / program level.
 
 It also supports conventional differential expression workflows (no velocity
 data required) via scanpy, PyDESeq2 pseudobulk, linear mixed models, or
@@ -22,15 +23,16 @@ gene sets with consistent universe handling, and a set of visualization
 functions is provided.
 
 :::{important}
-**Note:** The spliced/unspliced (nascent-transcription) scoring is still
-**experimental** and under active validation — it is **not yet recommended for
-production use** on spliced/unspliced applications. The features that do
-**not** rely on the spliced/unspliced layers — differential expression,
-functional enrichment, and plotting — are **stable and ready to use**.
-
-For production analyses prefer {doc}`user_guide/standalone_de` plus enrichment
-and `scat.pl`, or `run_default_pipeline(..., select_by="de")` when you only
-want DE to define the gene list and treat nascent columns as annotations.
+**Scope & honesty.** scATrans does **not** out-discover DE — the nascent proxy's
+value is **mechanism**, not gene count. Gene-list membership always comes from DE;
+the proxy only annotates. Per-gene mechanism calls are **low-confidence hints**
+(proxy AUC ≈ 0.63) — conclude at the **program** level and heed the reliability
+pre-flight (`regime_diagnosis`), which is weak on low-capture / 3′-biased data.
+The composite `active_score` ranking (`run_default_pipeline(..., select_by="composite")`)
+is retained for backward-compatibility but **deprecated** in favor of
+{func}`~scatrans.partition_de_by_mechanism`. For a pure DE gene list without the
+mechanism layer, use {doc}`user_guide/standalone_de` or
+`run_default_pipeline(..., select_by="de")`.
 :::
 
 ## Try it now
@@ -43,14 +45,17 @@ pip install scatrans
 ```python
 import scatrans as scat
 
-result = scat.run_default_pipeline(
+# DE selects the changed genes; scATrans partitions them by MECHANISM.
+result = scat.partition_de_by_mechanism(
     adata,                       # AnnData with spliced/unspliced (or mature/nascent) layers
     groupby="condition", target_group="Disease", reference_group="Control",
-    sample_col="sample",          # optional; auto-selects pseudobulk when >=3 replicates/group
-    organism="mouse",             # or "human"
+    organism="mouse",            # or "human"
+    de="builtin",                # or a DE method name / precomputed DE table / callable
+    gene_sets=my_pathways,       # optional -> program-level transcription-vs-stabilization table
 )
-result["candidates"].head()       # ranked, filtered genes
-result["enrichment"].head()       # GO enrichment on those genes
+result.regime                     # reliability pre-flight
+result.selected.head()            # DE-selected genes + per-gene mechanism annotation
+result.programs                   # decisive program-level calls
 ```
 
 New here? Follow {doc}`installation` → {doc}`quickstart` → {doc}`tutorials/index`

@@ -1,20 +1,24 @@
 # User Guide
 
-`active_score` performs differential expression, reference-gamma unspliced
-excess calculation, optional bias correction, composite scoring, and stores
-results plus diagnostics. Downstream steps commonly include gene filtering
-with `filter_active_genes`, functional enrichment, and plotting.
+The recommended entry point is {func}`~scatrans.partition_de_by_mechanism`: a
+standard DE test **selects** the changed genes, then scATrans **partitions** them
+into transcription- vs stabilization-driven — with a per-gene soft annotation and a
+decisive program-level call. See {doc}`workflow` for the full walkthrough.
 
-The internal `significant` list uses strict thresholds. The complete results
-table is returned as `all_results`; use `filter_active_genes` for custom
-criteria (including `select_by="de"` for **DE selects, proxy annotates**).
-Diagnostics are available under `adata_res.uns["scatrans"]["diagnostics"]`.
+Under the hood it composes lower-level building blocks documented here:
+`active_score` (differential expression, reference-gamma unspliced-excess, optional
+bias correction, composite scoring + diagnostics), `filter_active_genes` for custom
+gene lists (including `select_by="de"` for **DE selects, proxy annotates**), then
+functional enrichment and plotting. The complete results table is `all_results`;
+diagnostics live under `adata_res.uns["scatrans"]["diagnostics"]`.
 
 :::{important}
-Spliced/unspliced (nascent-transcription) scoring is still **experimental**
-and not yet recommended for production use on velocity layers. DE,
-enrichment, and plotting paths that do not depend on those layers are stable
-— see {doc}`standalone_de` and the note on the {doc}`../index`.
+Gene-list membership comes from **DE**; the spliced/unspliced signal only
+**annotates** mechanism (a low-confidence per-gene hint — conclude at the program
+level, and heed the reliability pre-flight). The composite
+`run_default_pipeline(select_by="composite")` ranking is **deprecated**. DE,
+enrichment, and plotting paths that do not depend on velocity layers are stable —
+see {doc}`standalone_de` and the note on the {doc}`../index`.
 :::
 
 ```{toctree}

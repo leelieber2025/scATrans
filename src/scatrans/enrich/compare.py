@@ -76,10 +76,12 @@ def extract_gene_lists(
     Parameters
     ----------
     de_results : DataFrame or dict[str, DataFrame]
+
         - Single DataFrame: treated as one unnamed contrast (you can use name_prefix).
         - dict {contrast_name: de_df}: each df is processed and keys become the cluster names.
+
     logfc_cutoff : float
-        Minimum |logFC| (sign handled by direction).
+        Minimum ``|logFC|`` (sign handled by direction).
     pval_cutoff : float
         Legacy name for the **adjusted** p-value cutoff (max p_adj, or p_val if no p_adj).
         Prefer ``padj_cutoff``.
@@ -101,17 +103,19 @@ def extract_gene_lists(
 
     Example
     -------
-    # Multiple contrasts
-    de_dict = {"GA_vs_Ctrl": ga_res, "GB_vs_Ctrl": gb_res}
-    gene_sets = scat.extract_gene_lists(
-        de_dict, logfc_cutoff=0.5, padj_cutoff=0.05, logfc_direction="up"
-    )
-    comp = scat.compare_enrichment(gene_sets, gene_sets="GO_Biological_Process", organism="mouse")
+    ::
 
-    # Up and down as separate "clusters" for upset / grouped dotplot
-    gene_sets = scat.extract_gene_lists(
-        de_dict, logfc_direction="both", separate_directions=True
-    )
+        # Multiple contrasts
+        de_dict = {"GA_vs_Ctrl": ga_res, "GB_vs_Ctrl": gb_res}
+        gene_sets = scat.extract_gene_lists(
+            de_dict, logfc_cutoff=0.5, padj_cutoff=0.05, logfc_direction="up"
+        )
+        comp = scat.compare_enrichment(gene_sets, gene_sets="GO_Biological_Process", organism="mouse")
+
+        # Up and down as separate "clusters" for upset / grouped dotplot
+        gene_sets = scat.extract_gene_lists(
+            de_dict, logfc_direction="both", separate_directions=True
+        )
     """
     # Normalize direction
     dir_raw = str(logfc_direction).lower()
@@ -350,10 +354,13 @@ def compare_enrichment(
     ``return_all=True``.
 
     Biological comparability notes (inspired by clusterProfiler best practices):
+
     - When `adata=` or `universe=` is supplied, the **same background** is used for every cluster.
       This is critical for fair comparison across groups.
+
     - Term filtering (min_size etc.) and p-adjustment are done per-cluster (standard and
       conservative). You can post-filter the returned table.
+
     - A 'Cluster' column is always added as the first column.
     - Rich per-cluster metadata (including failures and empty) is stored under
       `.attrs["per_cluster"]` and also under `.attrs["scatrans"]["per_cluster"]`.

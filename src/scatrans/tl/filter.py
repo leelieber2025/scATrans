@@ -152,7 +152,7 @@ def filter_active_genes(
     logFC + positive unspliced_excess_residual; direction defaults to "up").
     For downregulated or two-sided selection, pass ``logfc_direction="down"`` or
     ``"both"`` (with your desired logfc_cutoff). Residual magnitude cutoffs then
-    follow the same direction (positive / negative / |residual|). Note that
+    follow the same direction (positive / negative / ``|residual|``). Note that
     ``unspliced_excess_fdr`` is one-sided for positive residual and is skipped
     automatically when ``logfc_direction`` is not ``"up"``.
 
@@ -165,6 +165,7 @@ def filter_active_genes(
     This is safe whether or not `use_permutation=True` or `use_mixed_model=True` was used.
 
     New options for power users:
+
     - return_mask=True: return the boolean mask (pd.Series) instead of the filtered DataFrame.
       Useful to combine with other logic or apply yourself.
     - inplace=True: mutate the input `results` DataFrame in-place (keeps only passing rows
@@ -197,9 +198,11 @@ def filter_active_genes(
         Magnitude threshold for logFC (treated as non-negative). See logfc_direction.
     logfc_direction : {"up", "down", "both"}
         Direction filter applied when a "logFC" column is present:
+
         - "up" (default): keep if logFC > logfc_cutoff (upregulated in target)
         - "down": keep if logFC < -logfc_cutoff (downregulated in target)
-        - "both": keep if |logFC| > logfc_cutoff (differentially expressed either way)
+        - "both": keep if ``|logFC|`` > logfc_cutoff (differentially expressed either way)
+
         Residual magnitude filters follow the same direction (see above).
         Presets remain "active"/up-biased by default.
     active_score_fdr_cutoff : float or None
@@ -218,6 +221,7 @@ def filter_active_genes(
         explained by condition.
     select_by : {"composite", "de"}
         Which axis DEFINES gene-list membership.
+
         - "composite" (default): the current behavior — the nascent proxy
           (active_score / unspliced_excess_residual / their FDRs) participates in
           selection alongside DE.
@@ -228,7 +232,7 @@ def filter_active_genes(
           gates are SKIPPED (they remain as annotation columns on the output).
           Genes with missing proxy columns stay selectable. Sorting is by p_adj then
           logFC (direction-aware), never by active_score. When no preset / explicit
-          cutoffs are given, DE defaults padj<0.05 and |log2FC|>1 apply. Not
+          cutoffs are given, DE defaults padj<0.05 and ``|log2FC|``>1 apply. Not
           compatible with preset="significant".
 
     Returns
@@ -493,9 +497,10 @@ def filter_active_genes(
     if residual_col in df.columns and not _de_only:
         resid_vals = pd.to_numeric(df[residual_col], errors="coerce")
         rc = float(unspliced_excess_residual_cutoff)
-        # -inf disables residual magnitude filtering (permissive default).
+        # -inf disables residual magnitude filtering (permissive default): skip the
+        # gate entirely so genes with a missing residual are NOT dropped.
         if math.isinf(rc) and rc < 0:
-            mask &= resid_vals.notna() & (resid_vals > rc)
+            pass
         else:
             mag = abs(rc) if math.isfinite(rc) else rc
             if direction == "up":

@@ -19,14 +19,24 @@ defined in {doc}`../api_stability` (read this before depending on
 
 ## Core: scoring, filtering, DE
 
-`active_score` is the main velocity-aware entry point; `differential_expression`
-is the no-velocity equivalent. Both return the same kind of results table and
-feed into the same `filter_active_genes` / enrichment / plotting tools.
+`partition_de_by_mechanism` is the **recommended primary entry point** — a DE
+step selects the changed genes and scATrans partitions them by transcription- vs
+stabilization-driven mechanism (returns a {class}`~scatrans.PartitionResult`).
+`active_score` is the lower-level velocity-aware scorer;
+`differential_expression` is the no-velocity DE equivalent. All return / feed the
+same `filter_active_genes` / mechanism / enrichment / plotting tools. The
+composite `run_default_pipeline(select_by="composite")` is **deprecated** (see
+{func}`~scatrans.run_default_pipeline`).
+
+In the table below "both" means `active_score` and `differential_expression` (the
+low-level scorers). The convenience entry points `partition_de_by_mechanism` /
+`active_score_simple` / `run_default_pipeline` instead default
+`target_group`/`reference_group` to `"Disease"`/`"Control"`.
 
 | Parameter | Applies to | Default | Options |
 |-----------|-----------|---------|---------|
 | `groupby` | both | `"condition"` | any `obs` column holding group labels |
-| `target_group` / `reference_group` | both | `None` (required) | must be set explicitly to two values in `adata.obs[groupby]`; tutorials often use e.g. `"GA"` / `"Ctrl"` |
+| `target_group` / `reference_group` | both | `None` (required for the low-level scorers) | must be set explicitly to two values in `adata.obs[groupby]`; tutorials often use e.g. `"GA"` / `"Ctrl"` |
 | `use_pseudobulk` + `sample_col` | both | `False` / `None` | aggregate to per-replicate pseudobulk before DE (needs `sample_col`) |
 | `pseudobulk_de_backend` | both | `"pydeseq2"` | `"pydeseq2"` (count-based DESeq2) or `"scanpy"` (rank_genes_groups on aggregated profiles) |
 | `de_method` | both | `"t-test_overestim_var"` | any `scanpy.tl.rank_genes_groups` method, e.g. `"wilcoxon"` |
@@ -48,6 +58,8 @@ inspects cell/sample counts and suggests a preset.
    :toctree: generated/
    :nosignatures:
 
+   partition_de_by_mechanism
+   PartitionResult
    active_score
    active_score_simple
    adaptive_active_score
@@ -70,10 +82,12 @@ inspects cell/sample counts and suggests a preset.
 ```
 
 `filter_active_genes(results_df, preset=..., select_by=..., logfc_direction=...,
-return_mask=...)` takes `preset="heuristic"` (default cutoffs), `"pseudobulk"`
+return_mask=...)` accepts `preset="heuristic"` (standard cutoffs), `"pseudobulk"`
 (looser, post-aggregation), `"significant"` (replays the built-in strict mask;
 requires `use_permutation=True` upstream), or `"permissive"`; or pass explicit
-`*_cutoff` kwargs instead of a preset.
+`*_cutoff` kwargs instead of a preset. The **default is `preset=None`**
+(permissive — only explicitly-passed cutoffs apply); `select_by="de"` additionally
+applies DE defaults (`padj<0.05`, `logFC>1`) when no cutoffs are given.
 
 **`select_by`** (default `"composite"`):
 
@@ -116,10 +130,12 @@ See {doc}`../user_guide/advanced` and {doc}`../statistical_guidance`.
 Used for optional bias correction inside `active_score` (length + intron
 count regressed out of the raw unspliced-excess delta).
 
-`WORKFLOW_PRESETS` is a public constant dict (keys such as `"explore"`,
-`"pseudobulk"`, `"memento"`) returned by `recommend_workflow()` and accepted
-by `active_score_simple` / `run_default_pipeline`. It is not autosummary'd
-here because it is data, not a callable.
+`WORKFLOW_PRESETS` is a public constant dict with keys `"explore"`, `"report"`,
+`"pseudobulk_report"`, and `"nascent_focus"`. `recommend_workflow()` selects one
+and returns its `active_score_kwargs` as `suggested_kwargs`; you apply them via
+`scat.active_score(..., **rec["suggested_kwargs"])` (they are **not** a parameter of
+`active_score_simple` / `run_default_pipeline`, which instead take `filter_preset`).
+It is not autosummary'd here because it is data, not a callable.
 
 The `generate-gene-features` console script maps to
 `scatrans.generate_gene_features:main` (not re-exported on the top-level

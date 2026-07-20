@@ -1,5 +1,30 @@
 # Core Workflow
 
+## Recommended entry: `partition_de_by_mechanism`
+
+The recommended workflow is {func}`~scatrans.partition_de_by_mechanism` — DE
+selects the changed genes, scATrans partitions them into transcription- vs
+stabilization-driven, with a mandatory reliability pre-flight and a decisive
+program-level call. It composes the lower-level pieces documented below
+(`active_score` → `filter_active_genes(select_by="de")` →
+`annotate_mechanism_class` / `program_mechanism`).
+
+```python
+res = scat.partition_de_by_mechanism(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    organism="mouse",
+    de="builtin",            # or a DE method name / precomputed DE table / callable
+    gene_sets=my_pathways,   # optional -> program-level mechanism table
+)
+res.regime          # reliability pre-flight
+res.selected        # DE-selected genes + per-gene mechanism annotation
+res.programs        # decisive program-level transcription-vs-stabilization calls
+```
+
+The rest of this page documents the lower-level building blocks. Note the
+composite `run_default_pipeline(select_by="composite")` ranking is **deprecated**
+in favor of the above; use `select_by="de"` for a pure DE gene list.
+
 ## Run `active_score` (default parameters)
 
 ```python
@@ -32,7 +57,7 @@ adata_res, significant, all_results = scat.active_score(
     use_pseudobulk=True,
     sample_col="sample",                    # column identifying biological samples/individuals
     pseudobulk_de_backend="pydeseq2",       # or "scanpy"
-    min_cells=5,
+    min_cells=5,                            # explicit override (code default is 10)
     min_counts=100,
     show_plot=True,
 )

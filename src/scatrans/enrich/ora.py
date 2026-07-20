@@ -68,21 +68,26 @@ def run_enrichment(
 
     Background / universe handling is designed to be close to clusterProfiler's
     `enricher` / `enrichGO` default conservative behavior:
+
     - If you provide a `universe` (or `background` for compat), by default it is
       intersected with the genes that appear in the gene_sets (i.e. have annotation).
       This matches clusterProfiler's default (see issues #283/#636).
+
     - Set `restrict_background_to_gene_sets=False` or `force_universe=True` to
       use the user-provided list untouched (analogous to clusterProfiler's
       `options(enrichment_force_universe = TRUE)`).
+
     - If neither provided, universe = union of all genes present in the gene_sets
       (safe default, similar to clusterProfiler when no universe given).
 
     New smart default (recommended):
+
     - If you do not pass `universe` or `background`, but you pass an `adata` on which
       `scat.store_raw_counts(adata)` was previously called, `run_enrichment` will
       automatically use the preserved full measured gene list (`adata.uns["scatrans"]["raw_gene_list"]`)
       as the background. This is the safest and most convenient behavior for
       single-cell data.
+
     - Explicit `universe=...` or `background=...` always takes precedence.
 
     Historical note on `universe`:
@@ -101,20 +106,25 @@ def run_enrichment(
     pval_cutoff / padj_cutoff : float
         Cutoff applied to **adjusted p-values** (`p.adjust` column), **NOT** raw p-values.
         IMPORTANT: Despite the name, pval_cutoff filters on the BH-adjusted p-value.
+
         - Preferred: use `padj_cutoff` explicitly.
         - `pval_cutoff` is deprecated for new code (warning emitted when used alone).
+
         Default 0.05. If both passed, padj_cutoff wins.
 
     gene_set_source : {"scatrans", "enrichr"}, default "scatrans"
         Explicit override for which family to use.
+
         - "scatrans" (default): Prefer the bundled scATrans / clusterProfiler-derived sets.
         - "enrichr": Force the original Enrichr/gseapy libraries.
 
         In most cases you do **not** need this parameter:
+
         - Default behavior uses the package's bundled sets (only organism needed for run_kegg).
         - To pick a specific Enrichr historical version, just write the exact name
           (e.g. gene_sets="GO_Biological_Process_2021" or kegg_library="KEGG_2021").
           Names containing year suffixes are automatically treated as Enrichr requests.
+
         The parameter is mainly for forcing one side when the auto-detection would
         choose differently.
 
@@ -597,6 +607,7 @@ def run_go(
     ----------
     ontology : {"BP", "CC", "MF", "ALL"}, default "BP"
         Which GO subtree to test.
+
         - "BP": Biological Process (default; also the only one with bundled 2026 sets)
         - "CC": Cellular Component
         - "MF": Molecular Function
@@ -604,8 +615,10 @@ def run_go(
 
     adjust_across_all : bool, default False
         Only relevant for ontology="ALL".
+
         - False (default): p.adjust is the one computed *within each ontology* separately
           (each sub-run uses its own ``p_adjust_method``). Documented behavior for most users.
+
         - True: After concatenating BP+CC+MF, recompute a single correction across
           *all* tested GO terms using their raw pvalues and the same
           ``p_adjust_method`` passed through to :func:`run_enrichment` (default
@@ -620,9 +633,11 @@ def run_go(
     ("BP"/"CC"/"MF") is prepended for disambiguation.
 
     The returned DataFrame.attrs contains rich diagnostics:
+
       - method, ontology="ALL", organism, gene_case, pval_cutoff, adjust_across_all
       - per_ontology_attrs: dict mapping "BP"/"CC"/"MF" -> the full .attrs from each sub-run
         (includes each ontology's own gene_set_info, universe_info, analysis_info etc.)
+
       - analysis_info (package/timestamp/version)
       - If adjust_across_all=True, the main "p.adjust" is the cross-GO re-adjustment
         using ``p_adjust_method``; the column "p.adjust.within_ontology" preserves

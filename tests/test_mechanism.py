@@ -132,6 +132,17 @@ def test_program_mechanism_min_genes_filters():
     assert "TRANS" in set(pm["program"])
 
 
+def test_program_mechanism_null_program_not_inflated_by_strong_one():
+    # A strong transcription program must NOT make a genuinely-null program read
+    # "stabilization-driven" via background inflation (exclude_other_programs=True).
+    df, trans = _table_with_program()
+    null_genes = [f"g{i}" for i in range(30)]  # ~mean-0 support, truly null
+    gene_sets = {"TRANS": trans, "NULL": null_genes}
+    pm = scat.program_mechanism(df, gene_sets, min_genes=5)  # default excludes
+    assert pm[pm.program == "TRANS"].iloc[0]["direction"] == "transcription-driven"
+    assert pm[pm.program == "NULL"].iloc[0]["direction"] == "ns"
+
+
 def test_program_mechanism_sorted_by_pvalue():
     df, trans = _table_with_program()
     gene_sets = {

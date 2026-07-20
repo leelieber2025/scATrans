@@ -4,10 +4,13 @@
 **1.0** + **preprint**. Stay on **0.10.x (Beta)** until the manuscript is
 done. Not a calendar commitment.
 
-**Positioning:** a focused method package for active-transcription scoring
-under spliced/unspliced (or nascent/mature) layers—not a multi-omics
-platform. Prefer depth, reportability, and reproducibility over feature
-breadth.
+**Positioning:** a focused method package whose primary workflow is
+**DE selects → scATrans partitions by mechanism** (transcription-driven vs
+stabilization-driven, via `partition_de_by_mechanism` / `PartitionResult`) from
+spliced/unspliced (or nascent/mature) layers — not a multi-omics platform. The
+composite `active_score` ranking is a lower-level scoring engine, retained but
+**deprecated** as the primary gene-discovery path. Prefer depth, reportability,
+and reproducibility over feature breadth.
 
 **Non-goals (until well after 1.0):** LLM agents / MCP productization,
 vendoring a zoo of third-party methods, becoming a general DE replacement

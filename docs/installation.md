@@ -53,6 +53,7 @@ The package version is defined in a **single place**:
 `scatrans.__version__`, and documentation release metadata all read that
 value. To prepare a release, bump `__version__` there, update `CHANGELOG.md`,
 then run `python -m build` or `python scripts/make_release_zips.py`.
+
 ## Logging
 
 The package logs under the name `scatrans`. You can control verbosity with:

@@ -122,14 +122,19 @@ def annotate_mechanism_class(
     support = _robust_z(resid)
     df[SUPPORT_COL] = support
 
-    up = (
-        (pd.to_numeric(df[logfc_col], errors="coerce").to_numpy(float) > 0)
-        if logfc_col in df.columns
-        else np.ones(len(df), bool)
-    )
+    # Missing/NaN logFC is neither up nor down (stays "unknown"); only a finite
+    # negative logFC is a down-regulated gene. When no logFC column exists, treat
+    # all genes as up-regulated (the validated contrast).
+    if logfc_col in df.columns:
+        lfc = pd.to_numeric(df[logfc_col], errors="coerce").to_numpy(float)
+        up = lfc > 0
+        down = lfc < 0
+    else:
+        up = np.ones(len(df), bool)
+        down = np.zeros(len(df), bool)
     finite = np.isfinite(support)
     label = np.full(len(df), "unknown", dtype=object)
-    label[finite & ~up] = "unclassified_down"
+    label[finite & down] = "unclassified_down"
     up_ok = finite & up
     label[up_ok & (support >= class_threshold)] = "transcription-driven"
     label[up_ok & (support <= -class_threshold)] = "stabilization-driven"
@@ -220,6 +225,7 @@ def program_mechanism(
     min_genes: int = 5,
     restrict_index: Sequence[str] | None = None,
     alpha: float = 0.05,
+    exclude_other_programs: bool = True,
 ) -> pd.DataFrame:
     """THRESHOLD-FREE program-level transcription-vs-stabilization inference.
 
@@ -248,6 +254,12 @@ def program_mechanism(
         analysis universe for both foreground and background.
     alpha
         FDR level flagged in the ``significant`` column (BH across programs).
+    exclude_other_programs
+        When True (default), each program is compared against a "generic"
+        background = tested genes in NONE of the provided gene sets. This avoids a
+        strong program inflating another's background (which can make a null
+        program read "stabilization-driven"). Set False for the plain competitive
+        background (all tested genes outside the current set).
 
     Returns
     -------
@@ -272,6 +284,11 @@ def program_mechanism(
     s = s[np.isfinite(s.to_numpy(float))]
     universe = s.index
 
+    # union of all provided programs (for the generic background)
+    all_set = universe.intersection(
+        pd.Index([str(g) for genes in gene_sets.values() for g in genes])
+    )
+
     rows = []
     for name, genes in gene_sets.items():
         in_set = universe.intersection(pd.Index([str(g) for g in genes]))
@@ -279,7 +296,23 @@ def program_mechanism(
         if n < min_genes:
             continue
         fg = s.loc[in_set].to_numpy(float)
-        bg = s.drop(index=in_set).to_numpy(float)
+        # background: generic genes (in no program) when exclude_other_programs,
+        # else all tested genes outside the current set.
+        bg_idx = (
+            universe.difference(all_set) if exclude_other_programs else universe.difference(in_set)
+        )
+        bg = s.loc[bg_idx].to_numpy(float)
+        if len(bg) == 0 and exclude_other_programs:
+            # The generic background is empty because every tested gene falls in
+            # some program (common when the user passes a complete partition of the
+            # DE list). Fall back to the plain competitive background (all tested
+            # genes outside this set) rather than silently dropping the program.
+            logger.warning(
+                "program_mechanism: generic background empty for %r (all tested genes "
+                "are inside some program); falling back to competitive background.",
+                name,
+            )
+            bg = s.loc[universe.difference(in_set)].to_numpy(float)
         if len(bg) == 0:
             continue
         U, p = stats.mannwhitneyu(fg, bg, alternative="two-sided")
@@ -309,13 +342,12 @@ def program_mechanism(
     fdr[order] = np.clip(fdr_sorted, 0, 1)
     out["fdr"] = fdr
     out["significant"] = out["fdr"] < alpha
+    # Direction requires strict inequality; equal foreground/background mean support
+    # (a tie) is not evidence for either mechanism → "ns".
+    diff = out["mean_support"] - out["bg_mean_support"]
     out["direction"] = np.where(
-        ~out["significant"],
+        ~out["significant"] | (diff == 0),
         "ns",
-        np.where(
-            out["mean_support"] > out["bg_mean_support"],
-            "transcription-driven",
-            "stabilization-driven",
-        ),
+        np.where(diff > 0, "transcription-driven", "stabilization-driven"),
     )
     return out.sort_values("p_value").reset_index(drop=True)

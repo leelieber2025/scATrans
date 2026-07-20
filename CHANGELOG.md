@@ -6,7 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.10.6] - 2026-07-20
+
 ### Added
+- **`scatrans.partition_de_by_mechanism(...)` — the DE→mechanism PRIMARY workflow.**
+  scATrans does not compete with DE for gene discovery; this single high-level entry
+  makes the intended identity explicit: (1) a standard **DE step SELECTS** the changed
+  genes, (2) scATrans **partitions** them into **transcription-driven** vs
+  **stabilization-driven** by the nascent unspliced-excess signal. The DE front-end is
+  **pluggable** via `de=`: `"builtin"` (reuse scATrans' own DE pass), a `de_method`
+  name / kwargs dict routed to `differential_expression` (t-test, wilcoxon, pydeseq2
+  pseudobulk, memento, …), a precomputed DataFrame (map columns with
+  `de_logfc_col`/`de_padj_col`), or a callable `adata -> DataFrame`. Runs a **mandatory
+  reliability pre-flight** (`regime_diagnosis`, scaling `mechanism_confidence`), a
+  per-gene **soft** annotation (never gates membership), and — with `gene_sets` — the
+  **decisive program-level** transcription-vs-stabilization table (`program_mechanism`).
+  Returns a `PartitionResult` (`adata`, `regime`, `gene_table`, `selected`, `programs`,
+  `enrichment`, `meta`). Validated on scEU-seq (specificity), scNT/sci-fate (kinetics),
+  and GSE226488 LPS-PBMC (ARE/ZFP36 stabilization biology, induction-matched). Exported
+  top-level and from `tl`. Tests: `tests/test_partition.py` (14). Down-regulation is not
+  yet mechanism-resolved (`unclassified_down`).
 - **Regime / proxy-reliability pre-flight `scatrans.qc.regime_diagnosis`** — maps
   the global unspliced fraction to a dataset-level `reliability` scalar in [0, 1]
   (U-shaped: full in a normal band, degrading at both extremes — too little
@@ -78,6 +97,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   matching the proxy's measured reliability (labeling-truth AUC 0.70→0.48).
   Diagnostics gain `anchor` and `n_anchor_induced` (with `n_anchor_de_induced`
   kept as a back-compat alias).
+
+### Deprecated
+- **`run_default_pipeline(select_by="composite")`** (the composite `active_score`
+  ranking) — the composite conflates the DE leg and the weaker nascent proxy leg,
+  and validation across steady-state 10x, scNT/sci-fate labeling, and scEU-seq
+  showed the proxy never out-discovers DE. The path still works (backward-compat,
+  default unchanged) but now emits a `DeprecationWarning` steering to
+  `partition_de_by_mechanism(...)` (or `run_default_pipeline(..., select_by="de",
+  annotate_mechanism=True)`). The proxy's unique value is MECHANISM
+  (transcription- vs stabilization-driven), not discovery.
+
+### Fixed
+- **External DE path of `partition_de_by_mechanism`**: reported `logFC` / `p_adj`
+  / `p_val` and mechanism direction now come from the *selecting* DE (not the
+  builtin `active_score` DE). Missing external raw p clears `p_val` to NaN so a
+  stale builtin p does not sit next to external stats.
+- **`run_default_pipeline`**: invalid `select_by` raises; add-on columns
+  (mechanism / bias / adaptive) are re-attached to `candidates` after annotate
+  (with an explicit copy); regime pre-flight failure uses cautious
+  `reliability=0.5` instead of implying full confidence.
+- **`filter_active_genes`**: residual cutoff of `-inf` truly disables the residual
+  gate (no longer drops genes with missing residual).
+- **`annotate_mechanism_class`**: missing/NaN `logFC` is `unknown`, not
+  `unclassified_down`.
+- **`program_mechanism`**: empty generic background falls back to competitive
+  background with a warning; equal mean support is `ns` (not a directional call).
+- **Enrichment**: `expand_enrichment_genes` accepts GSEA `leading_edge` /
+  `Lead_genes` and warns when no gene-list column is present; Entrez-style
+  numeric `Series` indexes are treated as gene IDs (aligned with DataFrame path).
+- **Adaptive DE anchor** uses strict `logFC > 1` to match `filter_active_genes`
+  / partition DE gates.
 
 ## [0.10.5] - 2026-07-18
 

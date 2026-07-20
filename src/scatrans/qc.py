@@ -87,11 +87,15 @@ def regime_diagnosis(
     the per-gene mechanism confidence reflects data quality.
 
     NOTE — scope: this is the DATA-QUALITY / gamma-reliability half of the regime
-    check (unspliced-fraction QC). It does NOT yet distinguish *dynamic vs
+    check (unspliced-fraction QC). It does NOT distinguish *dynamic vs
     steady-state* transcription, which is what actually governs whether the proxy
-    beats DE; that needs an RNA-velocity magnitude signal (``velocity_length``),
-    pending sci-fate cross-validation. Treat a high ``reliability`` here as "the
-    proxy is not obviously corrupted", not as "the proxy is in its winning regime".
+    beats DE. The candidate signal for that half — per-timepoint RNA-velocity
+    ``velocity_length`` — was cross-validated on sci-fate and REJECTED (it tracked
+    true proxy reliability on scNT at +0.80 but not across platforms, -0.50 on
+    sci-fate: its absolute magnitude is not comparable across depth/chemistry), so
+    no dynamic-vs-steady signal is provided; a validated label-free one is an open
+    problem. Treat a high ``reliability`` here as "the proxy is not obviously
+    corrupted", not as "the proxy is in its winning regime".
 
     Returns
     -------

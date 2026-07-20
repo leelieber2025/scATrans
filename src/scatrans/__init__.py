@@ -37,6 +37,7 @@ from .pp_bias import (
 )
 from .tl import (
     WORKFLOW_PRESETS,
+    PartitionResult,
     PipelineResult,
     active_score,
     active_score_simple,
@@ -51,6 +52,7 @@ from .tl import (
     ensure_raw_counts,
     filter_active_genes,
     labeling_anchor,
+    partition_de_by_mechanism,
     program_mechanism,
     recommend_workflow,
     restore_raw_counts,
@@ -69,6 +71,8 @@ __all__ = [
     "annotate_mechanism_class",
     "threshold_sensitivity",
     "program_mechanism",
+    "partition_de_by_mechanism",
+    "PartitionResult",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

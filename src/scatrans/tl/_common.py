@@ -16,7 +16,7 @@ try:
 
     VERSION = _version.version
 except (ImportError, AttributeError):
-    VERSION = "0.10.2"
+    VERSION = "0.0.0+unknown"
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())

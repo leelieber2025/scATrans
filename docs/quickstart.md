@@ -1,45 +1,41 @@
 # Quickstart
 
 :::{important}
-**Note:** Spliced/unspliced (nascent-transcription) scoring is still
-**experimental** and under active validation — not yet recommended for
-production use on velocity layers. Differential expression, functional
-enrichment, and plotting that do **not** rely on those layers are stable.
-See {doc}`user_guide/standalone_de` for a pure-DE path.
+**Scope.** Gene-list membership always comes from **DE**; the nascent
+(spliced/unspliced) signal only **annotates** mechanism and is a low-confidence
+hint per gene — conclude at the **program** level and heed the reliability
+pre-flight (weak on low-capture / 3′-biased data). Differential expression,
+functional enrichment, and plotting that do **not** rely on velocity layers are
+stable; see {doc}`user_guide/standalone_de` for a pure-DE path.
 :::
 
 ## Minimal API (recommended default path)
 
-If you want the recommended default path without dozens of parameters, use
-the simple wrappers:
+The recommended entry point is {func}`~scatrans.partition_de_by_mechanism`: a
+standard DE test **selects** the changed genes, then scATrans **partitions** them
+into transcription-driven vs stabilization-driven — a soft per-gene annotation and
+a decisive **program-level** call. It runs the mandatory reliability pre-flight for
+you.
 
 ```python
 import scatrans as scat
 
-# One-liner pipeline: score → filter → GO enrichment
-result = scat.run_default_pipeline(
-    adata,
-    groupby="condition",
-    target_group="Disease",
-    reference_group="Control",
-    sample_col="sample",   # optional; auto-selects pseudobulk when >=3 replicates/group
-    organism="mouse",
-)
-print(result["candidates"].head())
-print(result["enrichment"].head())
-
-# Production-oriented gene list while still computing nascent columns:
-# DE selects membership; residual / mechanism columns stay as annotations.
-result_de = scat.run_default_pipeline(
+# DE selects membership; scATrans annotates mechanism (never filters on the proxy).
+result = scat.partition_de_by_mechanism(
     adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
     organism="mouse",
-    select_by="de",
+    de="builtin",            # or "wilcoxon"/"t-test"/pseudobulk kwargs, a precomputed
+                             # DE DataFrame (de_logfc_col/de_padj_col), or a callable
+    gene_sets=my_pathways,   # optional -> program-level transcription-vs-stabilization table
 )
+print(result.regime)         # reliability pre-flight (regime_diagnosis)
+print(result.selected.head())    # DE-selected genes + transcription_support / mechanism_class
+print(result.programs)       # decisive program-level calls (when gene_sets given)
 
-# Or just the core scoring step:
+# Just the core scoring step (advanced):
 adata_res, significant, all_results = scat.active_score_simple(
     adata,
     groupby="condition",
@@ -49,21 +45,29 @@ adata_res, significant, all_results = scat.active_score_simple(
 )
 ```
 
-`active_score_simple` / `run_default_pipeline` auto-attach gene features,
-pick Wilcoxon (single-cell) or pseudobulk+PyDESeq2 (when replicates allow),
-and keep permutation off by default. The pipeline always records
-`result.meta["regime"]` from `scat.qc.regime_diagnosis` when velocity layers
-are available (fail-soft). Optional add-ons: `bias_method=`,
-`adaptive_weighting=`, `annotate_mechanism=` (confidence scaled by regime
-reliability), `select_by=`. Use `active_score(...)` directly for advanced
-options (permutation, mixed models, Memento, etc.) — see the
-{doc}`user_guide/index`.
+`partition_de_by_mechanism` / `active_score_simple` auto-attach gene features,
+pick Wilcoxon (single-cell) or pseudobulk+PyDESeq2 (when replicates allow), and
+keep permutation off by default. The reliability pre-flight
+(`scat.qc.regime_diagnosis`) scales every per-gene `mechanism_confidence`.
 
-## Complete end-to-end example
+:::{note}
+The legacy composite pipeline `scat.run_default_pipeline(..., select_by="composite")`
+(the default of `run_default_pipeline`) still works but now emits a
+`DeprecationWarning` — its composite `active_score` mixes the DE and proxy legs
+and does not out-discover DE. For a **pure DE gene list** without the mechanism
+layer, use `run_default_pipeline(..., select_by="de")` or
+{doc}`user_guide/standalone_de`. Use `active_score(...)` directly for advanced
+options (permutation, mixed models, Memento) — see the {doc}`user_guide/index`.
+:::
 
-This is a complete, copy-paste friendly workflow for first-time users. It
-takes you from loaded data to differential results, filtering, enrichment,
-and visualization of enrichment results.
+## Complete end-to-end example (lower-level `active_score` path)
+
+This walks the **lower-level** `active_score` → `filter_active_genes` → enrichment
+path in detail (QC, raw-count preservation, gene features, scoring, filtering,
+plotting). For the recommended primary workflow use
+{func}`~scatrans.partition_de_by_mechanism` (above) — it composes these steps and
+adds the mechanism partition. The example below is useful for understanding the
+building blocks and for the residual/scoring diagnostics `active_score` computes.
 
 ```python
 import scanpy as sc

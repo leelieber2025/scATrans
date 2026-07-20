@@ -41,6 +41,12 @@ The following are intended to remain importable and callable across
 compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 1. **Top-level package** — every name in `scatrans.__all__`, including:
+   - primary workflow: `partition_de_by_mechanism` (DE selects → mechanism
+     partition; the recommended entry point) and its result `PartitionResult`
+     (fields `adata`, `regime`, `gene_table`, `selected`, `programs`,
+     `enrichment`, `meta`, parallel to `PipelineResult`). The composite
+     `run_default_pipeline(select_by="composite")` path is **deprecated** in favor
+     of this / `select_by="de"`.
    - scoring / DE / pipeline: `active_score`, `active_score_simple`,
      `adaptive_active_score`, `add_adaptive_score`, `adaptive_weight`,
      `labeling_anchor`, `add_abundance_normalized_residual`,
@@ -129,6 +135,6 @@ changes that affect scientific interpretation should be called out in
 
 1. Depend on `scatrans.__all__` / documented functions, not internal modules.
 2. Pin a minor version range in papers and production
-   (`scatrans>=0.10.2,<0.11` or `==0.10.2` for exact reproducibility).
+   (`scatrans>=0.10.6,<0.11` or `==0.10.6` for exact reproducibility).
 3. Record `scatrans.__version__` (and backend versions such as PyDESeq2) in
    Methods / session logs.

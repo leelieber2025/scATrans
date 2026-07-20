@@ -157,8 +157,10 @@ def set_style(
 
     Key characteristics (inspired by professional single-cell visualization
     libraries such as OmicVerse):
+
     - Vector-friendly output (Type 42 fonts for easy editing of PDF/SVG in
       Illustrator, Affinity, etc.)
+
     - Minimal non-data ink (no top/right spines)
     - Consistent, readable sizes for journal figures (typically 11 pt labels)
     - White background, high contrast, no unnecessary grids
@@ -739,8 +741,10 @@ def volcano_3d(
     If `ax` (a 3D axes) is provided, plot into it.
 
     Size control (omicverse-style):
+
       - `s`: fixed point size for all points.
       - `point_scale`, `min_size`, `max_size` for variable sizing by active_score.
+
     Use s=2 or min_size=1 + small point_scale for tiny background points.
     """
     with _style_context_if(use_style):
@@ -2168,11 +2172,14 @@ def build_gene_membership(
         A plain gene list/set is taken as-is (already filtered; ``direction`` is
         ignored for that entry and it becomes a single set under ``name``).
     direction : {"separate", "up", "down", "both"}
+
         - ``"separate"`` (default): each DE table becomes **two** sets,
           ``name{up_suffix}`` and ``name{down_suffix}`` -- so common-up and
           common-down genes are both visible in one UpSet plot.
+
         - ``"up"`` / ``"down"``: one set per table (upregulated / downregulated only).
-        - ``"both"``: one set per table, differentially expressed either way (|logFC|).
+        - ``"both"``: one set per table, differentially expressed either way (``|logFC|``).
+
     pval_cutoff, padj_cutoff, logfc_cutoff : float
         Thresholds forwarded to :func:`filter_active_genes` (only applied to
         DataFrame inputs). ``padj_cutoff`` wins when both p-value cutoffs are given.

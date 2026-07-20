@@ -50,7 +50,7 @@ $${\widehat{\rho}}_{R,g} = \frac{{\bar{U}}_{R,g} + \eta\,\rho_{0}}{{\bar{S}}_{R,
 
 $$\Delta_{g} = {\bar{U}}_{T,g} - {\widehat{\rho}}_{R,g}\,{\bar{S}}_{T,g}.$$
 
-Here $\epsilon = 10^{- 8}$ is a numerical constant and $\eta > 0$ is a prior weight (default $\eta = 5$). Eq. 2 is equivalent to adding $\eta$ pseudo-spliced units carrying an expected unspliced abundance $\eta\rho_{0}$: it stabilises the ratio of low-coverage genes while leaving well-covered genes essentially unchanged, since ${\widehat{\rho}}_{R,g} \rightarrow {\bar{U}}_{R,g}/{\bar{S}}_{R,g}$ when ${\bar{S}}_{R,g} \gg \eta$. A positive $\Delta_{g}$ indicates more unspliced RNA in the target group than expected from its mature-mRNA level under the reference $U/S$ relationship. In the implementation this quantity is also stored under a legacy `velocity_delta` alias, but it is a static, condition-comparative contrast and must not be interpreted as a dynamical RNA-velocity estimate.
+Here $\epsilon = 10^{- 8}$ is a numerical constant and $\eta > 0$ is a prior weight (default $\eta = 5$). Eq. 2 is equivalent to adding $\eta$ pseudo-spliced units carrying an expected unspliced abundance $\eta\rho_{0}$: it stabilises the ratio of low-coverage genes while leaving well-covered genes essentially unchanged, since ${\widehat{\rho}}_{R,g} \rightarrow {\bar{U}}_{R,g}/{\bar{S}}_{R,g}$ when ${\bar{S}}_{R,g} \gg \eta$. A positive $\Delta_{g}$ indicates more unspliced RNA in the target group than expected from its mature-mRNA level under the reference $U/S$ relationship. In the implementation this quantity is also stored under a legacy `velocity_delta_raw` alias, but it is a static, condition-comparative contrast and must not be interpreted as a dynamical RNA-velocity estimate.
 
 ### Step 2: Robust gene-structure bias correction
 
@@ -172,7 +172,7 @@ The DE backend supplies only ${logFC}_{g}$ and $p_{g}^{adj}$ to Eq. 5; the rest 
 |:------|:-----------------------------------------------|:-------------------------------------------------------------------------------------------|
 | 1     | Kinetic model (context only)                   | —                                                                                          |
 | 2     | Reference $U/S$ ratio ${\widehat{\rho}}_{R,g}$ | `effective_gamma` (opt-in)                                                                 |
-| 3     | Raw unspliced excess $\Delta_{g}$              | `unspliced_excess_delta` (legacy: `velocity_delta`)                                        |
+| 3     | Raw unspliced excess $\Delta_{g}$              | `unspliced_excess_delta` (legacy: `velocity_delta_raw`)                                        |
 | 4     | Huber bias fit and residual $R_{g}$            | `unspliced_excess_residual`; coefficients in `uns["scatrans"]["diagnostics"]`              |
 | 5     | Composite Active Evidence Score $A_{g}$        | `active_score`                                                                             |
 | 6     | Permutation p-value and FDR                    | `unspliced_excess_pval` / `unspliced_excess_fdr`; `active_score_pval` / `active_score_fdr` |

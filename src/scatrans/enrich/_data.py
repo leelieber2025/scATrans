@@ -542,15 +542,15 @@ def _expand_gene_list_input(gene_list: Iterable[Any] | None) -> list[str]:
         return []
     if isinstance(gene_list, pd.Series):
         ser = gene_list
+        # A meaningful (non-Range) index is the gene identifier (gene -> score),
+        # INCLUDING all-numeric Entrez IDs — same rule as the DataFrame path above
+        # and run_gsea. Only a default RangeIndex means the values are the genes.
         if (
             isinstance(ser.index, pd.Index)
             and len(ser.index) > 0
             and not isinstance(ser.index, pd.RangeIndex)
         ):
-            as_str = ser.index.astype(str)
-            numeric_frac = float(pd.to_numeric(as_str, errors="coerce").notna().mean())
-            if numeric_frac < 0.5:
-                return as_str.tolist()
+            return ser.index.astype(str).tolist()
         return ser.dropna().astype(str).tolist()
     if isinstance(gene_list, np.ndarray):
         return gene_list.astype(str).tolist()
