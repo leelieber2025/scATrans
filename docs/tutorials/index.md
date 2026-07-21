@@ -1,134 +1,104 @@
 # Tutorials
 
-Worked, end-to-end examples on real and synthetic data. Every notebook ships
-with its outputs already rendered, so you can read it here without running
-anything — or reproduce it locally with the commands at the bottom of this
-page.
+Pre-rendered notebooks on real and synthetic data. Local reproduction notes are
+at the end of this page.
 
-The two **active transcription** notebooks share a deliberately chosen theme: a
-real 3-vs-3 replicate design where statistical power — not the tool —
-determines how much signal survives. The **standalone** notebook covers the
-common case of an ordinary count matrix with no velocity layers, and the
-**visualization** gallery is a pure plotting tour on synthetic data.
+| Notebook | Focus |
+|----------|--------|
+| LPS-PBMC (`GSE226488`) | Primary demonstration of `partition_de_by_mechanism`, program-level inference, optional `add_nascent_score` |
+| SCI vs UN (EC) | Same workflow on a low-power 3-vs-3 design (empty DE list by design) |
+| GA vs Ctrl | Powered mouse design with pseudobulk DE and mechanism partition |
+| Standalone DE | DE and enrichment without nascent layers |
+| Visualization gallery | `scat.pl` on synthetic tables |
+| Gene UpSet | Multi-method gene overlap |
 
 ::::{grid} 1 1 2 2
 :gutter: 3
 
-:::{grid-item-card} 🧬 Active transcription — real SCI vs. UN
+:::{grid-item-card} Partition DE by mechanism — LPS-PBMC (10x v3)
+:link: t_gse226488_partition_mechanism
+:link-type: doc
+:class-card: scat-meta
+
+Reliability pre-flight, DE selection, per-gene mechanism annotation, and
+program-level transcription-versus-stabilization calls (NF-κB vs ARE/ZFP36),
+with an induction-matched check and pluggable DE front end.
++++
+`GSE226488` subset · nascent layers · program-level mechanism
+:::
+
+:::{grid-item-card} Partition by mechanism — SCI versus UN (low power)
 :link: t_ec_active_transcription
 :link-type: doc
 :class-card: scat-meta
 
-The full `active_score` workflow on endothelial cells from mouse spinal cord
-(**with** spliced/unspliced layers): heuristic, pseudobulk, permutation, gamma
-robustness, bias correction, and advanced mode — reported honestly on a
-low-power 3-vs-3 design.
+`partition_de_by_mechanism` on mouse spinal cord endothelium (3 versus 3).
+Capture is adequate, but DE selects no genes at this power—an illustration of
+underpowered designs.
 +++
-`EC.h5ad` · velocity-aware · PyDESeq2 / scVelo
+`EC.h5ad` · nascent layers · pseudobulk · power illustration
 :::
 
-:::{grid-item-card} 🔬 Active transcription — higher-power GA vs. Ctrl
+:::{grid-item-card} Partition by mechanism — GA versus Ctrl
 :link: t_ga_active_transcription
 :link-type: doc
 :class-card: scat-meta
 
-The same `active_score` pipeline on a better-powered mouse dataset (~330 cells
-per replicate). A side-by-side companion to the EC notebook that shows what the
-output looks like when cells-per-replicate — i.e. power — is no longer the
-bottleneck.
+Same workflow on a better-powered mouse design (three individuals per group):
+pseudobulk DE selects a program; scATrans partitions with per-gene annotation,
+threshold sensitivity, and enrichment.
 +++
-`GA_test.h5ad` · velocity-aware · pseudobulk
+`GA_test.h5ad` · nascent layers · pseudobulk
 :::
 
-:::{grid-item-card} 📊 Differential expression + enrichment (no velocity)
+:::{grid-item-card} Differential expression and enrichment (no nascent layers)
 :link: t_ec_standalone_de_enrichment
 :link-type: doc
 :class-card: scat-meta
 
-For the majority of users with a plain count matrix: `differential_expression`
-across three backends (Wilcoxon, PyDESeq2, Memento), then the full enrichment
-toolkit — ORA, KEGG, GO (all ontologies), GSEA, redundancy reduction — and the
-plotting gallery.
+`differential_expression` across Wilcoxon, PyDESeq2, and Memento backends, then
+ORA, KEGG, GO, GSEA, redundancy reduction, and plotting.
 +++
 `EC.h5ad` · no layers required · ORA / GSEA
 :::
 
-:::{grid-item-card} 🔗 Gene overlap across DE methods (UpSet)
-:link: t_ec_gene_upset
-:link-type: doc
-:class-card: scat-meta
-
-Which genes are called by *several* DE backends, and what do the robust ones do?
-The gene-level UpSet trio — `build_gene_membership` → `gene_upsetplot` →
-`common_genes` — stacks Wilcoxon / *t*-test / pseudobulk into one figure, then
-feeds the common-up / common-down genes into enrichment. Works equally well on
-your own external DE tables (Seurat / DESeq2 / CSV).
-+++
-`EC.h5ad` · multi-method DE · bring-your-own tables · UpSet / ORA
-:::
-
-:::{grid-item-card} 🎨 Visualization gallery
+:::{grid-item-card} Visualization gallery (synthetic)
 :link: t_synthetic_visualization
 :link-type: doc
 :class-card: scat-meta
 
-A scene-by-scene tour of nearly every `scat.pl.*` function — what each figure
-answers, the key keyword arguments, parameter variants, multi-panel `ax=`
-composition, and export helpers. Synthetic data only, fully offline.
+Plotting helpers on synthetic results: volcano, comet, enrichment panels, and
+export utilities.
 +++
-synthetic · plotting API · offline
+Synthetic · plotting only
 :::
+
+:::{grid-item-card} Gene UpSet (optional)
+:link: t_ec_gene_upset
+:link-type: doc
+:class-card: scat-meta
+
+Gene-set membership UpSet plots for comparing gene lists across DE methods.
++++
+Gene membership visualization
+:::
+
 ::::
 
-```{admonition} Dataset provenance
-:class: note
-
-The EC notebooks use endothelial cells from mouse spinal cord, comparing
-uninjured controls (**UN**, 3 replicates) against spinal cord injury (**SCI**,
-3 replicates) — a subset of Squair et al. (2021), chosen precisely because that
-paper is *about* the false-discovery risk of single-cell pseudoreplication. See
-{doc}`../references` for the full citation and GEO accession (GSE165003).
-`GA_test.h5ad` is a bundled mouse test dataset (GA vs. Ctrl, three individuals
-per group) from Li et al. (2026); raw data GEO
-[GSE266598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266598) —
-see {doc}`../references`. The visualization gallery uses **synthetic** data
-only.
-```
-
 ```{toctree}
-:hidden:
 :maxdepth: 1
+:hidden:
 
+t_gse226488_partition_mechanism
 t_ec_active_transcription
 t_ga_active_transcription
 t_ec_standalone_de_enrichment
-t_ec_gene_upset
 t_synthetic_visualization
+t_ec_gene_upset
 ```
 
-## Reproducing these notebooks locally
+## Reproducing notebooks locally
 
-Notebooks ship with their outputs already rendered. To re-run them yourself:
-
-```bash
-git clone https://github.com/leelieber2025/scATrans.git
-cd scATrans
-pip install -e ".[dev,advanced,pseudobulk,gene_features,memento,gsea]"
-
-# Real-data active-transcription tutorials (need the bundled h5ad at repo root):
-jupyter lab docs/tutorials/t_ec_active_transcription.ipynb
-jupyter lab docs/tutorials/t_ga_active_transcription.ipynb
-
-# Standalone DE + enrichment (EC.h5ad, no velocity layers used):
-jupyter lab docs/tutorials/t_ec_standalone_de_enrichment.ipynb
-
-# Gene-level UpSet across DE methods (EC.h5ad):
-jupyter lab docs/tutorials/t_ec_gene_upset.ipynb
-
-# Plotting gallery (synthetic only — no h5ad required):
-jupyter lab docs/tutorials/t_synthetic_visualization.ipynb
-```
-
-`EC.h5ad` and `GA_test.h5ad` are included at the repository root, which is where
-the notebooks load them from (`sc.read_h5ad("../../EC.h5ad")`). The
-visualization tutorial generates its own AnnData in memory.
+Install documentation extras and open notebooks under `docs/tutorials/`. Large
+example AnnData files are not always shipped with the package; each notebook
+documents data paths and download notes.

@@ -1,31 +1,53 @@
 # FAQ / Troubleshooting
 
-Common questions and errors, collected in one place. Each links to the
-fuller explanation. Domain conventions (why top-N is not DE, why residual
-can score without significant `p_adj`, cutoff names, etc.) are summarized in
-{doc}`domain_assumptions`.
+Related pages: {doc}`domain_assumptions` (conventions),
+{doc}`statistical_guidance` (reporting).
 
-## "My `significant` gene list is empty" — is that a bug?
+## Scope and entry points
 
-No. The built-in `significant` mask uses strict, all-of thresholds on
-logFC, `p_adj`, `unspliced_excess_residual`, `active_score`, and
-`unspliced_excess_fdr` (see {doc}`statistical_guidance`). On modestly
-powered real designs it is often empty by design. Use the full
-`all_results` table with `filter_active_genes(preset="heuristic")` or your
-own cutoffs (see {doc}`user_guide/workflow`) — ranking + biological
-follow-up is the intended workflow, not a `p<0.05` gate on every run.
+scATrans does not replace differential expression for gene discovery. Empirical
+checks on steady-state and labeling-style designs indicate that the nascent
+residual does not systematically recover more true positives than DE. Its role
+is to annotate **mechanism** among DE genes (*transcription-driven* versus
+*stabilization-driven*). Per-gene labels are modest in accuracy; prefer
+program-level pooling. Check nascent-signal reliability with
+{func}`~scatrans.qc.regime_diagnosis` (often uninformative under low capture or
+strong 3′ bias).
 
-## Top-N by `active_score` includes genes with `p_adj ≈ 1` — is that a bug?
+| Topic | Practice |
+|-------|----------|
+| Gene-list membership | DE only (`partition_de_by_mechanism`, `filter_active_genes(..., select_by="de")`, or `differential_expression`). The residual does not remove DE hits. |
+| Mechanism | Residual-based `transcription_support` / `mechanism_class`; soft per-gene labels. Use `gene_sets=` / `program_mechanism` for program-level inference. |
+| Detection | Optional `add_nascent_score=True` → `nascent_poisson_z`, `de_reproducible`. Does not drive mechanism labels. |
+| Primary entry point | {func}`~scatrans.partition_de_by_mechanism` |
+| DE without mechanism | {doc}`user_guide/standalone_de` or `run_default_pipeline(..., select_by="de")` |
+| Composite ranking | `run_default_pipeline(select_by="composite")` is deprecated as a discovery path (`DeprecationWarning`). `active_score` remains the residual/scoring engine. |
 
-No. The residual (nascent excess) leg of `active_score` is **independent of
-DE significance**. Genes that DE backends did not test or filled as neutral
-(e.g. PyDESeq2 independent filtering → `padj` set to 1) can still score from
-positive unspliced excess. Top-N ranking is therefore **not** a
-DE-significant gene list. For DE-gated candidates use
-`filter_active_genes(..., padj_cutoff=0.05, logfc_cutoff=...)` (preferred;
-legacy `pval_cutoff=` still works but maps to **adjusted** p) or the
-built-in `significant` conjunction. See {doc}`statistical_guidance` for the
-full default cutoff table.
+## Is nascent-layer scoring suitable for production gene discovery?
+
+No. Composite ranking that depends on spliced and unspliced layers remains
+experimental. Prefer DE-defined membership (table above). Differential
+expression, enrichment, and plotting without nascent layers are suitable for
+routine use.
+
+## Why is the built-in `significant` list empty?
+
+The built-in `significant` mask requires conjunction of thresholds on logFC,
+`p_adj`, `unspliced_excess_residual`, `active_score`, and `unspliced_excess_fdr`
+({doc}`statistical_guidance`). On modestly powered designs it is often empty by
+design. Filter the full `all_results` table with
+`filter_active_genes(preset="heuristic")` or explicit cutoffs
+({doc}`user_guide/workflow`).
+
+## Why does top-N by `active_score` include genes with `p_adj ≈ 1`?
+
+The residual leg of `active_score` is **independent of DE significance**. Genes
+that DE backends did not test or filled as neutral (e.g. PyDESeq2 independent
+filtering → `padj` set to 1) can still rank highly from positive unspliced
+excess. Top-N by `active_score` is therefore not a DE-significant gene list.
+Use `filter_active_genes(..., select_by="de")`, explicit
+`padj_cutoff` / `logfc_cutoff`, or the built-in `significant` conjunction.
+Default cutoffs: {doc}`statistical_guidance`.
 
 ## Can I compare `active_score` across cell types or datasets?
 
@@ -121,18 +143,35 @@ check any such gene against raw spliced/unspliced counts (e.g.
 ## I see a warning that the global unspliced fraction is > 50%
 
 That usually indicates a technical issue (ambient RNA, mismatched
-spliced/unspliced layers, or a very immature cell population) rather than a
-real biological signal. `scat.qc.unspliced_global(adata)` reports this
-value directly; `active_score` runs it automatically and stores it in
-`adata.uns["scatrans"]["diagnostics"]`. See {doc}`installation`.
+spliced/unspliced layers, nuclear enrichment / gDNA contamination, or a very
+immature cell population) rather than a clean nascent-transcription signal.
+`scat.qc.unspliced_global(adata)` reports the raw fraction; prefer
+`scat.qc.regime_diagnosis(adata)` for a structured verdict:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+print(r["regime"], r["reliability"], r["message"])
+# "high_unspliced" / "low_unspliced" / "ok"; reliability in [0, 1]
+```
+
+Reliability is **U-shaped**: near 1 in a normal unspliced band (~10–45%), and
+lower when the fraction is too low (weak nascent signal) or too high (gamma /
+proxy may mis-fit). `partition_de_by_mechanism` always runs this pre-flight
+(`result.regime` / `meta["regime"]`) and scales `mechanism_confidence`.
+`run_default_pipeline` records `meta["regime"]` and applies the scale when
+`annotate_mechanism=True`.
+
+This check is data-quality / gamma reliability only. It does not classify
+dynamic versus steady-state regimes. High reliability means the proxy is not
+clearly corrupted; it does not imply that the residual outperforms DE.
+See {doc}`installation` and {doc}`user_guide/advanced`.
 
 ## `add_gene_features` silently produced all-`NaN` length/intron columns for some genes
 
-`add_gene_features` does a `reindex` against `adata.var_names`, so any gene
-not present in the bundled (or custom) feature table gets `NaN` and falls
-back to no bias correction for that gene. If you are using a custom table,
-make sure it has a `gene_name` column that matches your `var_names`
-exactly. See {doc}`user_guide/gene_features`.
+`add_gene_features` reindexes against `adata.var_names`. Genes absent from the
+feature table receive `NaN` and skip bias correction. Custom tables require a
+`gene_name` column that matches `var_names` exactly
+({doc}`user_guide/gene_features`).
 
 Huber bias correction only uses genes with **`gene_length > 0`** (and finite
 intron). Missing or non-positive lengths from GTF generation are stored as
@@ -163,5 +202,5 @@ license from Kanehisa Laboratories for non-academic use. To avoid the
 bundled files entirely, pass an Enrichr/gseapy version explicitly, e.g.
 `run_kegg(..., kegg_library="KEGG_2021")`. See {doc}`license`.
 
-Still stuck? Open an issue on
+For unresolved issues, open a ticket on
 [GitHub](https://github.com/leelieber2025/scATrans/issues).

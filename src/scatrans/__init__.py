@@ -37,6 +37,7 @@ from .pp_bias import (
 )
 from .tl import (
     WORKFLOW_PRESETS,
+    PartitionResult,
     PipelineResult,
     active_score,
     active_score_simple,
@@ -44,16 +45,21 @@ from .tl import (
     adaptive_weight,
     add_abundance_normalized_residual,
     add_adaptive_score,
+    annotate_mechanism_class,
     diagnose_design,
     differential_expression,
     differential_expression_simple,
     ensure_raw_counts,
     filter_active_genes,
     labeling_anchor,
+    nascent_activity_score,
+    partition_de_by_mechanism,
+    program_mechanism,
     recommend_workflow,
     restore_raw_counts,
     run_default_pipeline,
     store_raw_counts,
+    threshold_sensitivity,
 )
 
 __all__ = [
@@ -63,6 +69,12 @@ __all__ = [
     "adaptive_weight",
     "labeling_anchor",
     "add_abundance_normalized_residual",
+    "annotate_mechanism_class",
+    "threshold_sensitivity",
+    "program_mechanism",
+    "nascent_activity_score",
+    "partition_de_by_mechanism",
+    "PartitionResult",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

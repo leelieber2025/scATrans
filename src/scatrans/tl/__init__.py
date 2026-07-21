@@ -34,6 +34,13 @@ from .de import (
 )
 from .design import WORKFLOW_PRESETS, diagnose_design, recommend_workflow
 from .filter import filter_active_genes
+from .mechanism import (
+    annotate_mechanism_class,
+    program_mechanism,
+    threshold_sensitivity,
+)
+from .nascent import nascent_activity_score
+from .partition import PartitionResult, partition_de_by_mechanism
 from .pipeline import (
     PipelineResult,
     active_score_simple,
@@ -51,6 +58,12 @@ __all__ = [
     "adaptive_weight",
     "labeling_anchor",
     "add_abundance_normalized_residual",
+    "annotate_mechanism_class",
+    "threshold_sensitivity",
+    "program_mechanism",
+    "nascent_activity_score",
+    "partition_de_by_mechanism",
+    "PartitionResult",
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",

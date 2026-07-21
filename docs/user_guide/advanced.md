@@ -1,21 +1,18 @@
 # Optional Advanced Features
 
-The following flags are disabled by default and should be enabled only when
-required by the experimental design:
+These options are off by default; enable them only when the design requires them:
 
 - `use_permutation=True`
 - `bias_correction="none"`
 - `show_effective_gamma=True`
 - `gamma_method="robust_median"` (or `"raw"`)
 - `use_mixed_model=True`
-- `prioritize_velocity=True`
+- `prioritize_velocity=True` (**deprecated** — prefer `ranking_mode="nascent_excess"`)
 
-`diagnose_design` summarizes cell and sample counts plus global unspliced
-fraction and returns warnings and a suggested `filter_active_genes` preset.
-It runs automatically when `sample_col` or `use_pseudobulk=True` is
-supplied.
-
-Inspect the corresponding diagnostics after enabling any advanced option.
+`diagnose_design` summarizes cell and sample counts and the global unspliced
+fraction, and returns warnings plus a suggested `filter_active_genes` preset.
+It runs automatically when `sample_col` or `use_pseudobulk=True` is set.
+Inspect diagnostics after enabling any advanced option.
 
 ## `use_permutation=True`
 
@@ -110,6 +107,17 @@ all_results, diag = scat.add_abundance_normalized_residual(
 print(diag["abundance_floor"], diag["method"])
 ```
 
+Or fold the same step into the one-liner (fail-soft; diagnostics in
+`meta["bias"]`):
+
+```python
+result = scat.run_default_pipeline(
+    adata, groupby="condition", target_group="Disease",
+    reference_group="Control", organism="mouse",
+    bias_method="abundance",  # or "abundance_length"
+)
+```
+
 This improves **interpretability** of residual rankings; it does not fix a
 kinetically uninformative nascent proxy on steady-state snapshots.
 
@@ -118,23 +126,157 @@ kinetically uninformative nascent proxy on steady-state snapshots.
 When the residual anti-correlates with induction (common on late /
 steady-state velocity snapshots), a fixed nascent weight can pull the
 composite below plain DE. `add_adaptive_score` estimates reliability as the
-AUC of `unspliced_excess_residual` recovering strongly DE-induced genes
-(`logFC >= 1` and `p_adj < 0.05`) and builds `adaptive_score` with weight
+AUC of `unspliced_excess_residual` recovering an **anchor** gene set and
+builds `adaptive_score` with weight
 `w = clip(k * (reliability - 0.5), 0, w_max)` (defaults `k=4`, `w_max=2`):
 
 ```python
-all_results, diag = scat.add_adaptive_score(all_results)
+all_results, diag = scat.add_adaptive_score(all_results)  # anchor="de" default
 # or end-to-end:
 # all_results, diag = scat.adaptive_active_score(
 #     adata, groupby="condition", target_group="Disease",
 #     reference_group="Control", organism="mouse",
 # )
-print(diag["reliability_auc"], diag["w_proxy"], diag["verdict"])
+print(diag["reliability_auc"], diag["w_proxy"], diag["verdict"], diag.get("anchor"))
+```
+
+### Reliability anchor (`anchor=` / `adaptive_anchor=`)
+
+| Anchor | Meaning |
+|--------|---------|
+| `"de"` (default) | Strong DE-induced genes (`logFC >= 1` & `p_adj < 0.05`) |
+| `scat.labeling_anchor(column="new_log2fc", threshold=1.0)` | Metabolic-labeling truth column |
+| callable / boolean array / Series | Custom induced set |
+
+On metabolic-labeling time courses the DE anchor can under-estimate reliability
+(e.g. fast IEGs with depleted unspliced excess) and force `w_proxy=0`; a labeling
+anchor recovers graded down-weighting as the proxy becomes less informative.
+Pipeline form:
+
+```python
+result = scat.run_default_pipeline(
+    adata, ..., adaptive_weighting=True,
+    adaptive_anchor=scat.labeling_anchor("new_log2fc"),  # or "de"
+)
+print(result.meta.get("adaptive"))
 ```
 
 `adaptive_score` is still a **heuristic rank**, not FDR. Report the
 diagnostics when you use it. Core `active_score` columns and defaults are
 unchanged.
+
+## DE selects, proxy annotates
+
+**Preferred:** {func}`~scatrans.partition_de_by_mechanism` already selects by DE
+and annotates mechanism (optionally `add_nascent_score=True` for detection
+columns). For the legacy pipeline path, use `select_by="de"`:
+
+```python
+result = scat.run_default_pipeline(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    select_by="de",              # candidates = DE gates only
+    bias_method="abundance",     # optional residual cleanup
+    annotate_mechanism=True,     # optional per-gene mechanism labels
+)
+# result.candidates: padj/logFC-selected
+# result.all_results: still carries residual / adaptive / mechanism columns
+print(result.meta["select_by"], result.meta.get("mechanism"))
+```
+
+Standalone filter:
+
+```python
+candidates = scat.filter_active_genes(all_results, select_by="de")
+```
+
+## Regime / proxy-reliability pre-flight
+
+Before trusting nascent annotations, map the global unspliced fraction to a
+dataset-level reliability scalar:
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+# keys: unspliced_fraction, reliability [0, 1], regime, basis, message
+# regime: "ok" | "low_unspliced" | "high_unspliced"
+```
+
+| Regime | Typical meaning |
+|--------|-----------------|
+| `ok` | Fraction in the normal band (~10–45%); reliability ≈ 1 |
+| `low_unspliced` | Little nascent signal; reliability ramps down toward 0 |
+| `high_unspliced` | Possible nuclear/gDNA contamination; gamma / proxy may mis-fit |
+
+`run_default_pipeline` always stores this in `meta["regime"]` (fail-soft if
+layers are missing). Scope: **data-quality / gamma** only — not yet
+dynamic-vs-steady-state (that needs a velocity-magnitude signal, pending
+validation). High reliability means the proxy is not clearly corrupted; it is
+not evidence that the residual outperforms DE.
+
+## Mechanism annotation
+
+Annotation only — does not change gene-list membership. Scale confidence with
+regime reliability when velocity layers are present. Product rules: {doc}`../faq`.
+
+### Preferred: primary workflow (+ optional detection columns)
+
+```python
+# Mechanism always uses the induction-normalized residual
+res = scat.partition_de_by_mechanism(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    de="builtin", gene_sets=my_pathways,
+)
+
+# Same mechanism path, plus additive DETECTION columns (decoupled from mechanism)
+res = scat.partition_de_by_mechanism(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    de="builtin",
+    add_nascent_score=True,
+    gene_sets=my_pathways,
+)
+# gene_table gains: nascent_poisson_z, de_reproducible, de_repro_frac, …
+# meta["nascent_score"] records enabled / status / n_reproducible
+# transcription_support / program directions are unchanged vs residual-only run
+```
+
+### Manual building blocks
+
+```python
+r = scat.qc.regime_diagnosis(adata)
+# Optional: detection score (do NOT pass as residual_col for mechanism)
+nz = scat.nascent_activity_score(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    sample_col="sample",
+)
+all_results = all_results.join(nz, how="left")
+
+# Per-gene mechanism (low confidence by design; prefer program-level pooling)
+# omit residual_col to auto-pick unspliced_excess_residual / abnorm residual
+all_results, mdiag = scat.annotate_mechanism_class(
+    all_results,
+    reliability=r["reliability"],
+)
+# columns: transcription_support, mechanism_class, mechanism_confidence
+# classes: transcription-driven | stabilization-driven | ambiguous |
+#          unclassified_down | unknown
+
+# Or via the pipeline (uses meta["regime"]["reliability"] automatically):
+# result = scat.run_default_pipeline(..., select_by="de", annotate_mechanism=True)
+# result.meta["regime"], result.meta["mechanism"]
+
+# Program-level (threshold-free competitive Mann–Whitney on support)
+prog = scat.program_mechanism(all_results, gene_sets={"IEG": ieg_list, "inflam": inflam_list})
+
+# Threshold robustness of a DE-selected list
+sens = scat.threshold_sensitivity(all_results)  # padj × logFC grid + Jaccard vs reference
+```
+
+Per-gene labels are exploratory. Prefer `program_mechanism` for
+program-level transcription-versus-stabilization calls, and report
+`threshold_sensitivity` rather than relying on a single DE cutoff.
 
 ## `gamma_method` and reference gamma robustness
 
@@ -261,7 +403,7 @@ diagnostics.
 
 When ranking is residual-only, custom `weight_fc` / `weight_pval` /
 `weight_unspliced` are **ignored** and forced to `(0, 0, 1)` (with a
-warning). This keeps the mode name honest: composite DE weights cannot
+warning). This keeps the mode name accurate: composite DE weights cannot
 silently alter a residual-only ranking.
 
 **Impact on DE / permutation mismatches:** because `active_score` then

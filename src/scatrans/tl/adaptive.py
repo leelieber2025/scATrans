@@ -17,7 +17,7 @@ that:
    and up-weighted (>1) when it is highly reliable.
 
 Reliability is the AUC of ``unspliced_excess_residual`` recovering the obvious
-DE-induced genes (``logFC >= 1`` and ``p_adj < 0.05``).
+DE-induced genes (``logFC > 1`` and ``p_adj < 0.05``).
 
 .. note::
    The DE anchor rewards a nascent proxy that *corroborates* DE; it therefore
@@ -65,8 +65,13 @@ def _auc(score: np.ndarray, label: np.ndarray) -> float:
 
 
 def _de_induced_anchor(expr: pd.DataFrame) -> np.ndarray:
-    """Boolean anchor of 'obviously induced' genes (swap point for the anchor)."""
-    return ((expr["logFC"] >= 1.0) & (expr["p_adj"] < 0.05)).to_numpy(dtype=int)
+    """Boolean anchor of 'obviously induced' genes (swap point for the anchor).
+
+    Uses strict ``logFC > 1.0`` to match ``filter_active_genes(select_by="de")``
+    and ``partition_de_by_mechanism`` (genes exactly at the boundary are excluded
+    consistently everywhere).
+    """
+    return ((expr["logFC"] > 1.0) & (expr["p_adj"] < 0.05)).to_numpy(dtype=int)
 
 
 def labeling_anchor(
@@ -74,13 +79,12 @@ def labeling_anchor(
 ) -> Callable[[pd.DataFrame], np.ndarray]:
     """Build a labeling-truth anchor callable ``expr -> {0,1}`` from a column.
 
-    Use with metabolic-labeling data (e.g. scNT-seq / sci-fate) where a per-gene
-    newly-transcribed-RNA log2FC is available (default column ``new_log2fc``):
+    Use when a per-gene newly-transcribed-RNA log2FC (or similar) is available
+    (default column ``new_log2fc``):
     ``add_adaptive_score(df, anchor=labeling_anchor())``. Unlike the DE anchor,
-    this credits the proxy for tracking genuinely newly-transcribed genes that
-    plain DE misses — the empirically correct reliability signal on labeling data
-    (see the scNT-seq gating result). The named column must be present on the
-    ``valid_expr`` rows; missing/NaN values count as not-induced.
+    this scores reliability against labeling truth rather than DE-induced genes.
+    The named column must be present on the ``valid_expr`` rows; missing/NaN
+    values count as not-induced.
     """
 
     def _anchor(expr: pd.DataFrame) -> np.ndarray:
@@ -154,7 +158,7 @@ def add_adaptive_score(
         Slope and cap of the reliability→weight map (see :func:`adaptive_weight`).
     anchor
         The induced-gene set the proxy's reliability is scored against.
-        ``"de"`` (default) uses the built-in DE anchor (``logFC>=1 & p_adj<0.05``);
+        ``"de"`` (default) uses the built-in DE anchor (``logFC > 1 & p_adj < 0.05``);
         pass :func:`labeling_anchor` (or any callable ``expr -> 0/1`` / array /
         Series aligned to the ``valid_expr`` rows) to anchor on metabolic-labeling
         truth instead. On labeling data the DE anchor under-estimates reliability

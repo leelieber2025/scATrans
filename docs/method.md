@@ -1,32 +1,73 @@
-# Method: the Active Transcription framework
+# Method: Active Transcription Framework
 
-```{admonition} What this page is
+```{admonition} Scope of this page
 :class: note
 
-This page documents the **method** behind {func}`~scatrans.active_score` — the mathematical framework, its default replicate-aware configuration, and the optional routes and estimators — adapted from the scATrans manuscript. It is the reference for *how* the Active Score is defined and calibrated.
+Mathematical definition of {func}`~scatrans.active_score`: the default
+replicate-aware configuration, optional routes and estimators, and the
+induction-normalized unspliced residual used for mechanism annotation
+(adapted from the scATrans manuscript).
 
-- For what each **output column** means and how to report it, see {doc}`statistical_guidance`.
-- For domain conventions (upregulation-oriented scoring, residual vs. DE, cutoffs), see {doc}`domain_assumptions`.
-- For the **functions and arguments** that implement each equation, see {doc}`api/index` and {doc}`user_guide/index`.
+The recommended software entry point is
+{func}`~scatrans.partition_de_by_mechanism` (not composite ranking as gene
+discovery). Product scope and deprecated paths: {doc}`faq`.
+
+- Output columns and reporting: {doc}`statistical_guidance`
+- Domain conventions: {doc}`domain_assumptions`
+- Function signatures: {doc}`api/index`, {doc}`user_guide/index`
 ```
 
 ## Introduction
 
-Single-cell RNA sequencing (scRNA-seq) has transformed the study of cellular heterogeneity, allowing transcriptional states to be resolved at high resolution and molecular changes to be linked to phenotypic outcomes in development, disease and perturbation experiments. Conventional single-cell differential expression (DE) analysis quantifies differences in mature mRNA abundance. Mature mRNA levels, however, reflect the combined effects of transcription, processing, degradation and cellular history, and therefore may not fully capture ongoing transcriptional activation.
+Single-cell RNA sequencing (scRNA-seq) resolves transcriptional states at high
+resolution and links molecular changes to phenotype in development, disease, and
+perturbation experiments. Conventional single-cell differential expression (DE)
+quantifies differences in mature mRNA abundance. Mature mRNA levels reflect the
+combined effects of transcription, processing, degradation, and cellular
+history, and therefore may not fully capture ongoing transcriptional activation.
 
-Many modern scRNA-seq protocols assign reads to two related RNA populations within the same library: spliced mature mRNA and unspliced, intron-containing pre-mRNA. Because unspliced molecules largely represent recently transcribed species, they are a closer proxy for recent transcriptional activity than mature mRNA, although their abundance is also shaped by splicing kinetics, gene structure and technical capture efficiency. Under the standard kinetic model, the unspliced abundance $u$ and spliced abundance $s$ of a gene evolve as
+Many scRNA-seq protocols assign reads to two related RNA populations within the
+same library: spliced mature mRNA and unspliced, intron-containing pre-mRNA.
+Unspliced molecules largely represent recently transcribed species and are
+therefore a closer proxy for recent transcriptional activity than mature mRNA,
+although their abundance is also shaped by splicing kinetics, gene structure,
+and technical capture efficiency. Under the standard kinetic model, the
+unspliced abundance $u$ and spliced abundance $s$ of a gene evolve as
 
 $$\frac{du}{dt} = \alpha - \beta u,\quad\quad\frac{ds}{dt} = \beta u - \gamma s,$$
 
-with transcription rate $\alpha$, splicing rate $\beta$ and mRNA degradation rate $\gamma$; at steady state $u^{*}/s^{*} = \gamma/\beta$.
+with transcription rate $\alpha$, splicing rate $\beta$, and mRNA degradation
+rate $\gamma$; at steady state $u^{*}/s^{*} = \gamma/\beta$.
 
-Two consequences motivate scATrans. First, the *observable* steady-state unspliced-to-spliced ratio identifies only the compound quantity $\gamma/\beta$, not any individual kinetic rate; a ratio estimated from data must therefore be treated as an empirical calibration constant, not as a transcription or degradation rate. Second, away from steady state — precisely the regime of cell-state transitions, stimulus responses and disease onset — the unspliced abundance deviates from the value predicted by the reference ratio, and this *excess* provides an early signal of transcriptional activation before changes in total mRNA become detectable.
+Two consequences motivate scATrans. First, the *observable* steady-state
+unspliced-to-spliced ratio identifies only the compound quantity
+$\gamma/\beta$, not any individual kinetic rate; a ratio estimated from data
+must be treated as an empirical calibration constant, not as a transcription or
+degradation rate. Second, away from steady state—for example during cell-state
+transitions, stimulus responses, or disease onset—the unspliced abundance can
+deviate from the value predicted by the reference ratio, and this *excess* is an
+early signal of transcriptional activation before total mRNA has fully changed.
 
-This nascent-versus-mature distinction offers several mechanistic advantages over steady-state DE: (i) it prioritizes early candidate regulators associated with phenotypic reprogramming; (ii) it helps separate transcriptional regulation from post-transcriptional buffering; (iii) it can reveal poised or rapidly inducible genes whose mature mRNA does not yet show differential abundance; and (iv) it carries information about near-future transcriptional states on short timescales.
+Relative to steady-state DE alone, the nascent-versus-mature contrast can
+(i) highlight early transcriptional responses, (ii) help separate transcriptional
+from post-transcriptional regulation, and (iii) flag inducible genes before
+mature mRNA abundance has fully changed. These properties are limited by capture
+quality, kinetic regime, and power; product scope is summarized in {doc}`faq`.
 
-Rigorously quantifying active transcription nevertheless presents analytical challenges. A well-documented limitation of conventional single-cell DE is pseudoreplication: treating thousands of cells from one biological replicate as independent observations inflates statistical power and generates false-positive DE genes. Pseudobulk approaches substantially improve type-I error control by making the biological replicate the unit of inference, yet raw unspliced counts remain confounded by gene length and intron number. Few existing pipelines simultaneously address pseudoreplication, transcriptional dynamics, technical bias correction and empirical, score-level calibration.
+Single-cell DE is also subject to pseudoreplication when cells from one
+biological replicate are treated as independent observations. Pseudobulk
+methods improve type-I error control by making the replicate the unit of
+inference, yet raw unspliced counts remain confounded by gene length and intron
+number.
 
-We therefore developed **scATrans**, a single-cell **A**ctive **Trans**cription analysis framework that exploits the nascent-versus-mature distinction to prioritize genes with active transcriptional signatures. scATrans combines replicate-aware DE evidence with a reference-corrected, bias-adjusted unspliced residual, and summarizes these signals in a permutation-calibrated **Composite Active Evidence Score** bounded between 0 and 100. The score is explicitly an interpretable heuristic composite rather than a likelihood-based test statistic; statistical significance is supplied separately, by permutation calibration of the bias-corrected unspliced excess at the level of biological replicates.
+**scATrans** combines replicate-aware DE evidence with a reference-corrected,
+bias-adjusted unspliced residual and an optional permutation-calibrated
+**Composite Active Evidence Score** (0–100). The score is a heuristic ranking
+aid rather than a likelihood-based test statistic; significance for the residual
+is obtained separately by sample-level permutation when requested. In software,
+the recommended entry point is mechanism partition of DE-selected genes
+({func}`~scatrans.partition_de_by_mechanism`), not composite ranking as
+discovery.
 
 ## Methods
 
@@ -44,13 +85,13 @@ $\mathcal{G}_{valid}$ denotes the genes retained for modeling: those with availa
 
 ### Step 1: Reference-corrected unspliced excess
 
-The gene-wise reference ratio is shrunk towards a global background ratio $\rho_{0}$ by additive pseudo-count shrinkage, and the excess is the vertical deviation of the target group from the reference steady-state line:
+The gene-wise reference ratio is shrunk toward a global background ratio $\rho_{0}$ by additive pseudo-count shrinkage, and the excess is the vertical deviation of the target group from the reference steady-state line:
 
 $${\widehat{\rho}}_{R,g} = \frac{{\bar{U}}_{R,g} + \eta\,\rho_{0}}{{\bar{S}}_{R,g} + \eta},\quad\quad\rho_{0} = \frac{\sum_{i \in R}^{}{\sum_{h = 1}^{G}U_{i,h}} + \epsilon}{\sum_{i \in R}^{}{\sum_{h = 1}^{G}S_{i,h}} + \epsilon},$$
 
 $$\Delta_{g} = {\bar{U}}_{T,g} - {\widehat{\rho}}_{R,g}\,{\bar{S}}_{T,g}.$$
 
-Here $\epsilon = 10^{- 8}$ is a numerical constant and $\eta > 0$ is a prior weight (default $\eta = 5$). Eq. 2 is equivalent to adding $\eta$ pseudo-spliced units carrying an expected unspliced abundance $\eta\rho_{0}$: it stabilises the ratio of low-coverage genes while leaving well-covered genes essentially unchanged, since ${\widehat{\rho}}_{R,g} \rightarrow {\bar{U}}_{R,g}/{\bar{S}}_{R,g}$ when ${\bar{S}}_{R,g} \gg \eta$. A positive $\Delta_{g}$ indicates more unspliced RNA in the target group than expected from its mature-mRNA level under the reference $U/S$ relationship. In the implementation this quantity is also stored under a legacy `velocity_delta` alias, but it is a static, condition-comparative contrast and must not be interpreted as a dynamical RNA-velocity estimate.
+Here $\epsilon = 10^{- 8}$ is a numerical constant and $\eta > 0$ is a prior weight (default $\eta = 5$). Eq. 2 is equivalent to adding $\eta$ pseudo-spliced units carrying an expected unspliced abundance $\eta\rho_{0}$: it stabilizes the ratio of low-coverage genes while leaving well-covered genes essentially unchanged, since ${\widehat{\rho}}_{R,g} \rightarrow {\bar{U}}_{R,g}/{\bar{S}}_{R,g}$ when ${\bar{S}}_{R,g} \gg \eta$. A positive $\Delta_{g}$ indicates more unspliced RNA in the target group than expected from its mature-mRNA level under the reference $U/S$ relationship. In the implementation this quantity is also stored under a legacy `velocity_delta_raw` alias, but it is a static, condition-comparative contrast and must not be interpreted as a dynamical RNA-velocity estimate.
 
 ### Step 2: Robust gene-structure bias correction
 
@@ -62,7 +103,7 @@ $\rho_{c}$ is the Huber loss with threshold $c = 1.35$ (quadratic for $|e| \leq 
 
 ### Step 3: Composite Active Evidence Score
 
-Pseudobulk counts are modelled with PyDESeq2 (negative-binomial GLM, Wald test, Benjamini–Hochberg adjustment), yielding ${logFC}_{g}$ and the adjusted p-value $p_{g}^{adj}$; the latter is the DE backend’s own adjusted p-value and is distinct from the permutation-calibrated FDR of Step 4. The significance evidence is $E_{g} = - \log_{10}\left( p_{g}^{adj} + 10^{- 300} \right)$.
+Pseudobulk counts are modeled with PyDESeq2 (negative-binomial GLM, Wald test, Benjamini–Hochberg adjustment), yielding ${logFC}_{g}$ and the adjusted p-value $p_{g}^{adj}$; the latter is the DE backend’s own adjusted p-value and is distinct from the permutation-calibrated FDR of Step 4. The significance evidence is $E_{g} = - \log_{10}\left( p_{g}^{adj} + 10^{- 300} \right)$.
 
 The three raw components $z_{g}^{FC} = {logFC}_{g}$, $z_{g}^{V} = R_{g}$ and $z_{g}^{P} = E_{g}$ live on different, unbounded scales. Each is mapped to $\lbrack 0,1\rbrack$ by a monotone, one-sided saturating transform and the three legs are combined as a weighted mean, rescaled to $\lbrack 0,100\rbrack$:
 
@@ -124,7 +165,7 @@ $${\widehat{\rho}}_{R,g}^{M} = \frac{{\bar{M}}_{R,g}^{U} + \eta\,\rho_{0}^{M}}{{
 
 $$\Delta_{g}^{M} = {\bar{M}}_{T,g}^{U} - {\widehat{\rho}}_{R,g}^{M}\,{\bar{M}}_{T,g}^{S},\quad\quad{\bar{M}}_{T,g}^{U} = \frac{1}{|T|}\sum_{i \in T}^{}M_{i,g}^{U}\ \ \left( \text{and analogously for }{\bar{M}}^{S},\ R \right).$$
 
-Eqs. 4 and 5 then follow unchanged with $\Delta_{g}^{M}$ in place of $\Delta_{g}$. **Statistical caveat:** neighborhood averaging induces dependence between cells, so Mode C is intended for exploratory, cell-level visualisation of nascent-RNA excess and is not combined with permutation inference by default. It should not be used to make replicate-level claims.
+Eqs. 4 and 5 then follow unchanged with $\Delta_{g}^{M}$ in place of $\Delta_{g}$. **Statistical caveat:** neighborhood averaging induces dependence between cells, so Mode C is intended for exploratory, cell-level visualization of nascent-RNA excess and is not combined with permutation inference by default. It should not be used to make replicate-level claims.
 
 ### S2. Optional reference-ratio estimators
 
@@ -136,7 +177,7 @@ $$\rho_{0}^{med} = {median}_{\, h\,:\,{\bar{U}}_{R,h} + {\bar{S}}_{R,h} > 0}\lef
 
 This is a robust heuristic, not a Bayesian estimator. Zero-expression genes are excluded from the anchor because their ratio $\epsilon/\epsilon \approx 1$ would otherwise dominate on sparse data.
 
-**(b)** `empirical_bayes`**.** Per-gene log-ratios $r_{g} = \log\left( \left( {\bar{U}}_{R,g} + \epsilon \right)/\left( {\bar{S}}_{R,g} + \epsilon \right) \right)$ are shrunk towards a robust prior $\left( \mu_{0},\tau^{2} \right)$ estimated by trimmed median and MAD across genes:
+**(b)** `empirical_bayes`**.** Per-gene log-ratios $r_{g} = \log\left( \left( {\bar{U}}_{R,g} + \epsilon \right)/\left( {\bar{S}}_{R,g} + \epsilon \right) \right)$ are shrunk toward a robust prior $\left( \mu_{0},\tau^{2} \right)$ estimated by trimmed median and MAD across genes:
 
 $${\widehat{r}}_{g} = w_{g}r_{g} + \left( 1 - w_{g} \right)\,\mu_{0},\quad w_{g} = \frac{\tau^{2}}{\tau^{2} + \sigma_{g}^{2}},\quad\sigma_{g}^{2} = \frac{1}{n_{R}{\bar{U}}_{R,g} + c} + \frac{1}{n_{R}{\bar{S}}_{R,g} + c},\quad{\widehat{\rho}}_{R,g} = e^{{\widehat{r}}_{g}},$$
 
@@ -172,7 +213,7 @@ The DE backend supplies only ${logFC}_{g}$ and $p_{g}^{adj}$ to Eq. 5; the rest 
 |:------|:-----------------------------------------------|:-------------------------------------------------------------------------------------------|
 | 1     | Kinetic model (context only)                   | —                                                                                          |
 | 2     | Reference $U/S$ ratio ${\widehat{\rho}}_{R,g}$ | `effective_gamma` (opt-in)                                                                 |
-| 3     | Raw unspliced excess $\Delta_{g}$              | `unspliced_excess_delta` (legacy: `velocity_delta`)                                        |
+| 3     | Raw unspliced excess $\Delta_{g}$              | `unspliced_excess_delta` (legacy: `velocity_delta_raw`)                                        |
 | 4     | Huber bias fit and residual $R_{g}$            | `unspliced_excess_residual`; coefficients in `uns["scatrans"]["diagnostics"]`              |
 | 5     | Composite Active Evidence Score $A_{g}$        | `active_score`                                                                             |
 | 6     | Permutation p-value and FDR                    | `unspliced_excess_pval` / `unspliced_excess_fdr`; `active_score_pval` / `active_score_fdr` |

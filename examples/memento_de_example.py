@@ -88,7 +88,7 @@ adata_t, sig_t, all_t = scat.active_score(
     min_total_counts=5,
 )
 print("Traditional DE columns sample:", ["logFC", "p_adj"])
-print(all_t.head(3)[["active_score", "logFC", "p_adj", "velocity_residual"]])
+print(all_t.head(3)[["active_score", "logFC", "p_adj", "unspliced_excess_residual"]])
 
 # --- Run with Memento as the DE backend inside active_score ---
 print("\n--- active_score + Memento as DE backend (use_memento_de=True) ---")
@@ -106,7 +106,7 @@ adata_m, sig_m, all_m = scat.active_score(
     min_total_counts=5,
 )
 print("Memento-specific columns present:", [c for c in all_m.columns if c.startswith("memento_")])
-print(all_m.head(3)[["active_score", "logFC", "p_adj", "velocity_residual"]])
+print(all_m.head(3)[["active_score", "logFC", "p_adj", "unspliced_excess_residual"]])
 
 meta = adata_m.uns.get("scatrans", {})
 print("Memento recorded in metadata:", meta.get("use_memento_de"), meta.get("memento_capture_rate"))

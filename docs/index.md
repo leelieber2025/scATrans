@@ -7,49 +7,64 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/leelieber2025/scATrans/blob/main/LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21365873.svg)](https://doi.org/10.5281/zenodo.21365873)
 
-## Single-cell active transcription analysis
+## Overview
 
-**scATrans** is a Python toolkit for single-cell differential analysis. It is
-primarily designed for datasets that contain spliced/unspliced (or
-mature/nascent) RNA layers: in this setting it computes a composite **active
-transcription score** that integrates differential expression with
-reference-based excess unspliced RNA to rank genes.
+**scATrans** is a Python package for mechanism-aware analysis of single-cell
+differential expression. Given spliced and unspliced layers (or mature and
+nascent layers), it takes a DE-selected gene list and partitions genes into
+*transcription-driven* versus *stabilization-driven* classes using a
+reference-corrected nascent residual
+({func}`~scatrans.partition_de_by_mechanism`).
 
-It also supports conventional differential expression workflows (no velocity
-data required) via scanpy, PyDESeq2 pseudobulk, linear mixed models, or
-optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG) uses bundled
-gene sets with consistent universe handling, and a set of visualization
-functions is provided.
+| Role | Responsibility |
+|------|----------------|
+| **DE** | Defines gene-list membership |
+| **Mechanism** | Annotates transcription vs. stabilization from the residual |
+| **Detection** (optional) | `add_nascent_score=True` adds active-transcription scores; does not drive mechanism labels |
 
-## Try it now
+Program-level inference (`gene_sets=`) is preferred over single-gene mechanism
+claims. Scope, limitations, and reporting conventions: {doc}`faq`,
+{doc}`statistical_guidance`.
+
+The package also provides conventional DE without nascent layers, enrichment
+(ORA, GSEA, GO, KEGG with bundled sets), and plotting utilities.
+
+## Installation
 
 ```bash
 pip install scatrans
 # or: conda install -c conda-forge -c bioconda scatrans
 ```
 
+Optional extras and editable installs: {doc}`installation`.
+
+## Minimal example
+
 ```python
 import scatrans as scat
 
-result = scat.run_default_pipeline(
-    adata,                       # AnnData with spliced/unspliced (or mature/nascent) layers
-    groupby="condition", target_group="Disease", reference_group="Control",
-    sample_col="sample",          # optional; auto-selects pseudobulk when >=3 replicates/group
-    organism="mouse",             # or "human"
+result = scat.partition_de_by_mechanism(
+    adata,  # AnnData with spliced/unspliced or mature/nascent layers
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",  # or "human"
+    de="builtin",  # method name, kwargs dict, DataFrame, or callable
+    # add_nascent_score=True,  # optional detection columns
+    gene_sets=my_pathways,  # optional program-level table
 )
-result["candidates"].head()       # ranked, filtered genes
-result["enrichment"].head()       # GO enrichment on those genes
+result.regime           # reliability pre-flight
+result.selected.head()  # DE-selected genes with mechanism annotation
+result.programs         # present when gene_sets is provided
 ```
 
-New here? Follow {doc}`installation` → {doc}`quickstart` → {doc}`tutorials/index`
-(real data, fully worked) in that order.
+**Reading order:** {doc}`installation` → {doc}`quickstart` →
+{doc}`tutorials/index`.
 
 :::{note}
-**API stability.** scATrans is currently **Beta (0.10.x)**. Import the package
-as `import scatrans as scat` and rely on the names in `scatrans.__all__`,
-`scat.pl`, and `scat.qc`. Leaf modules such as `scatrans.tl.active` are an
-implementation detail and may move between minor releases. The complete
-contract is documented in {doc}`api_stability`.
+**Beta (0.10.x).** Use the public import surface `import scatrans as scat` and
+names in `scatrans.__all__`, `scat.pl`, and `scat.qc`. Leaf modules such as
+`scatrans.tl.active` may move before 1.0; see {doc}`api_stability`.
 :::
 
 ::::{grid} 1 2 3 3
@@ -59,73 +74,69 @@ contract is documented in {doc}`api_stability`.
 :link: installation
 :link-type: doc
 
-Install scATrans with pip, with optional extras for pseudobulk, velocity, or
-Memento backends.
+pip, Bioconda, optional extras, and logging.
 :::
 
 :::{grid-item-card} Quickstart {octicon}`rocket;1em;`
 :link: quickstart
 :link-type: doc
 
-A minimal end-to-end example: load data, score genes, filter, enrich, plot.
+Primary workflow, lower-level scoring, enrichment, and count snapshots.
 :::
 
 :::{grid-item-card} Tutorials {octicon}`play;1em;`
 :link: tutorials/index
 :link-type: doc
 
-Worked examples on real spinal-cord-injury endothelial cell data, with and
-without spliced/unspliced layers.
+Worked notebooks on real and synthetic data.
 :::
 
 :::{grid-item-card} User Guide {octicon}`book;1em;`
 :link: user_guide/index
 :link-type: doc
 
-Core workflow, DE backends, enrichment, plotting, and advanced options.
+Workflow, backends, enrichment, plotting, and advanced options.
 :::
 
 :::{grid-item-card} Method {octicon}`beaker;1em;`
 :link: method
 :link-type: doc
 
-The mathematical framework behind `active_score`: reference-corrected unspliced
-excess, Huber bias correction, the composite score, and permutation calibration.
+Unspliced excess, bias correction, composite score, and permutation.
 :::
 
 :::{grid-item-card} Statistical Guidance {octicon}`alert;1em;`
 :link: statistical_guidance
 :link-type: doc
 
-What each output column means, and what it should (and should not) be used
-for in a paper or supplement.
+Output columns, safe uses, and reporting checklist.
 :::
 
 :::{grid-item-card} API Reference {octicon}`code;1em;`
 :link: api/index
 :link-type: doc
 
-Detailed description of every public function in scATrans.
+Public functions, parameters, and autosummary.
 :::
 
-:::{grid-item-card} References {octicon}`mortar-board;1em;`
-:link: references
+:::{grid-item-card} API Stability {octicon}`shield-check;1em;`
+:link: api_stability
 :link-type: doc
 
-Tutorial data source, and the methods/libraries scATrans builds on.
+Stable imports versus implementation detail (pre-1.0).
 :::
 
-:::{grid-item-card} FAQ / Troubleshooting {octicon}`question;1em;`
+:::{grid-item-card} FAQ {octicon}`question;1em;`
 :link: faq
 :link-type: doc
 
-Common errors and how to fix them, in one place.
+Scope, limitations, and common errors.
 :::
 
 :::{grid-item-card} GitHub {octicon}`mark-github;1em;`
 :link: https://github.com/leelieber2025/scATrans
 
-Found a bug? Want to contribute? Check out the source and open an issue.
+Source code, issues, and contributions.
 :::
 ::::
 

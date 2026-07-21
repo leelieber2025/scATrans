@@ -1,44 +1,37 @@
 # Installation
 
-## From Bioconda
+## Requirements
 
-The core package is available on [Bioconda](https://anaconda.org/bioconda/scatrans)
-(noarch):
+- Python ≥ 3.10
+- A scientific Python environment (NumPy, SciPy, pandas, AnnData, scanpy)
+
+## Bioconda
 
 ```bash
 conda install -c conda-forge -c bioconda scatrans
 ```
 
-This installs the core dependencies only. The optional extras below (advanced
-mode, pseudobulk, Memento, GSEA) are packaged as PyPI extras — install them
-with `pip` as shown, or add the corresponding packages to your conda
-environment manually.
+This installs core dependencies. Optional extras listed below are distributed as
+PyPI extras; install them with `pip`, or add the corresponding packages to the
+conda environment.
 
-## From PyPI
+## PyPI
 
 ```bash
-# Basic installation
 pip install scatrans
 
-# With support for scVelo-based advanced mode and the gene feature generation CLI
-pip install "scatrans[advanced,gene_features]"
-
-# With support for pseudobulk differential expression using PyDESeq2
-pip install "scatrans[pseudobulk]"
-
-# Optional: Memento (Cell 2024) as an additional cell-level DE backend
-pip install "scatrans[memento]"
-
-# Optional: GSEA (pulls in gseapy)
-pip install "scatrans[gsea]"
+# Optional extras
+pip install "scatrans[advanced,gene_features]"  # scVelo mode + GTF feature CLI
+pip install "scatrans[pseudobulk]"              # PyDESeq2
+pip install "scatrans[memento]"                 # Memento DE backend
+pip install "scatrans[gsea]"                    # GSEA (gseapy)
 ```
 
-The package ships precomputed gene feature tables (gene length + intron
-number) for both mouse and human. These are used for optional bias
-correction in `active_score`. You can also supply custom tables (e.g. from
-your own GTF) — see {doc}`user_guide/gene_features`.
+Bundled gene-feature tables (length, intron number) for mouse and human support
+optional Huber bias correction. Custom GTF-derived tables:
+{doc}`user_guide/gene_features`.
 
-## Install from source
+## Development install
 
 ```bash
 git clone https://github.com/leelieber2025/scATrans.git
@@ -46,30 +39,35 @@ cd scATrans
 pip install -e ".[dev]"
 ```
 
-## Versioning (developers)
+## Versioning
 
-The package version is defined in a **single place**:
-`src/scatrans/_version.py` (`__version__`). Packaging, runtime
-`scatrans.__version__`, and documentation release metadata all read that
-value. To prepare a release, bump `__version__` there, update `CHANGELOG.md`,
-then run `python -m build` or `python scripts/make_release_zips.py`.
+The package version is defined in `src/scatrans/_version.py` (`__version__`).
+Runtime `scatrans.__version__`, packaging metadata, and documentation release
+strings all read that value. For a release: bump `__version__`, update
+`CHANGELOG.md`, then run `python -m build` or
+`python scripts/make_release_zips.py`.
+
 ## Logging
-
-The package logs under the name `scatrans`. You can control verbosity with:
 
 ```python
 import logging
 logging.getLogger("scatrans").setLevel(logging.INFO)
 ```
 
-## Quick data quality check
+## Nascent-layer quality check
 
-Before analysis, inspect the global unspliced fraction:
+Before mechanism analysis, inspect the global unspliced fraction:
 
 ```python
 import scatrans as scat
-ufrac = scat.qc.unspliced_global(adata)   # logs INFO + WARNING if > 50%
+
+ufrac = scat.qc.unspliced_global(adata)
+regime = scat.qc.regime_diagnosis(adata)
+print(regime["regime"], regime["reliability"], regime["message"])
+# regime in {"ok", "low_unspliced", "high_unspliced"}; reliability in [0, 1]
 ```
 
-`active_score` automatically runs this check and records the value in
-diagnostics.
+`partition_de_by_mechanism` always runs this pre-flight
+(`result.regime` / `meta["regime"]`, fail-soft) and scales mechanism confidence
+by `reliability`. `run_default_pipeline` stores the same block and applies the
+scale when `annotate_mechanism=True`.

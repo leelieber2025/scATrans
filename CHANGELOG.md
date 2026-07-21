@@ -6,35 +6,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.10.7] - 2026-07-20
+
 ### Added
-- **Bias correction and adaptive weighting are now first-class
-  `run_default_pipeline` options** (previously additive wrappers you had to call
-  separately on `all_results`). `run_default_pipeline(..., bias_method=...,
-  adaptive_weighting=..., adaptive_anchor=...)`:
-  - `bias_method="abundance"` / `"abundance_length"` adds the
-    `unspliced_excess_residual_abnorm` column (demotes abundance/length
-    artifacts such as *MALAT1* / long genes); diagnostics in `meta["bias"]`.
-  - `adaptive_weighting=True` adds `adaptive_score` / `adaptive_score_pct`
-    columns (reliability-weighted nascent leg); `adaptive_anchor` selects the
-    reliability anchor (`"de"` default or `labeling_anchor()` / callable / array);
-    diagnostics in `meta["adaptive"]`.
-  Both default off (existing behavior unchanged), operate additively on
-  `all_results` (core `active_score` untouched), and **fail soft** — if an add-on
-  cannot be computed the core result is still returned and the reason recorded
-  under the matching `meta` key. An invalid `bias_method` value raises upfront.
-- **Configurable reliability anchor for adaptive weighting** (`scatrans.tl.adaptive`).
-  `add_adaptive_score` / `adaptive_active_score` now accept `anchor=` — `"de"`
-  (default, unchanged behavior) or a callable / array / Series naming the induced
-  gene set the proxy's reliability is scored against. New helper
-  `scat.labeling_anchor(column="new_log2fc", threshold=1.0)` anchors reliability on
-  metabolic-labeling truth. Validated on scNT-seq (GSE141851, KCl time course):
-  the DE anchor under-estimates reliability there (it is dominated by fast IEGs
-  whose unspliced-excess is depleted) and disables the proxy at every timepoint
-  (`w_proxy=0`), whereas the labeling anchor recovers the correct graded
-  down-weighting `w=0.79→0.60→0.10→0.00` for 15/30/60/120 min post-stimulus —
-  matching the proxy's measured reliability (labeling-truth AUC 0.70→0.48).
-  Diagnostics gain `anchor` and `n_anchor_induced` (with `n_anchor_de_induced`
-  kept as a back-compat alias).
+- **`scatrans.tl.nascent_activity_score(...)` and
+  `partition_de_by_mechanism(add_nascent_score=True)`** — optional active-transcription
+  **detection** columns, kept **decoupled** from the mechanism partition.
+  - Score: pseudobulk (target vs reference) variance-stabilized Poisson-z of the
+    nascent increase (`nascent_poisson_z`), without length/intron residualization
+    (unlike the default `unspliced_excess_residual` used for mechanism).
+  - Also: `dlog_unspliced` / `dlog_spliced`, and spliced-side DE-reproducibility
+    flags `de_reproducible` / `de_repro_frac` (annotation only; do not gate
+    membership). The flag cannot distinguish a DE false positive from a genuine
+    stabilization-driven gene (both can show near-zero nascent excess).
+  - **Decoupling:** the Poisson-z is an absolute, induction-coupled nascent
+    increase. It is **never** used for transcription-vs-stabilization labels or
+    program-level mechanism calls (those remain residual-based). Using it as
+    `residual_col` would mis-label highly induced stabilization targets as
+    transcription-driven.
+  - `add_nascent_score=True` only **appends** columns; it does not change
+    `transcription_support`, `mechanism_class`, or program directions. Fail-soft
+    via `meta["nascent_score"]`. Layers auto-resolve (`spliced`/`unspliced` or
+    `mature`/`nascent`). Exported top-level and from `tl`. Tests:
+    `tests/test_nascent.py`.
+
+## [0.10.6] - 2026-07-20
+
+### Added
+- **`scatrans.partition_de_by_mechanism(...)`** — primary DE → mechanism workflow.
+  (1) a pluggable **DE step selects** changed genes; (2) scATrans **partitions**
+  them into transcription-driven vs stabilization-driven classes using the nascent
+  residual. `de=` accepts `"builtin"`, a `de_method` name / kwargs dict routed to
+  `differential_expression`, a precomputed DataFrame (`de_logfc_col` /
+  `de_padj_col`), or a callable `adata -> DataFrame`. Always runs a reliability
+  pre-flight (`regime_diagnosis`, scales `mechanism_confidence`), soft per-gene
+  annotation (never gates membership), and optional program-level table when
+  `gene_sets=` is provided. Returns `PartitionResult` (`adata`, `regime`,
+  `gene_table`, `selected`, `programs`, `enrichment`, `meta`). Down-regulation is
+  not yet mechanism-resolved (`unclassified_down`). Exported top-level and from
+  `tl`. Tests: `tests/test_partition.py`.
+- **`scatrans.qc.regime_diagnosis`** — maps global unspliced fraction to a
+  dataset-level `reliability` in [0, 1] (U-shaped: high in a normal band, lower
+  at low- or high-unspliced extremes) plus `regime` (`ok` / `low_unspliced` /
+  `high_unspliced`) and a message. `run_default_pipeline` records `meta["regime"]`
+  (fail-soft) and, when `annotate_mechanism=True`, scales mechanism confidence by
+  `reliability`. This is a data-quality / gamma check only; dynamic-vs-steady-state
+  detection is not implemented.
+- **Mechanism annotation module `scatrans.tl.mechanism`** (annotation-only; never
+  gates membership):
+  - `annotate_mechanism_class(...)` — `transcription_support`, `mechanism_class`,
+    `mechanism_confidence` (scaled by dataset `reliability`). Per-gene labels are
+    intentionally low-confidence; prefer program-level pooling.
+  - `program_mechanism(results, gene_sets, ...)` — threshold-free program-level
+    inference (competitive Mann–Whitney + BH FDR on pooled support).
+  - `threshold_sensitivity(results, ...)` — DE list size and Jaccard vs reference
+    across a (padj, logFC) grid.
+  - `run_default_pipeline(..., annotate_mechanism=True)` — fail-soft add-on;
+    diagnostics in `meta["mechanism"]` (default off).
+- **`select_by="de"`** on `filter_active_genes` and `run_default_pipeline` —
+  membership from DE gates only (`p_adj` / `logFC` + direction; defaults
+  `padj<0.05` and `|log2FC|>1` when cutoffs omitted); nascent/composite gates are
+  skipped (columns remain as annotations). Sort by `p_adj` then `logFC`. Default
+  `select_by="composite"` preserves prior behavior; mode recorded in
+  `meta["select_by"]`. Incompatible with `preset="significant"`.
+- **First-class pipeline options** `bias_method=` and `adaptive_weighting=` /
+  `adaptive_anchor=` on `run_default_pipeline` (additive, fail-soft, default off):
+  - `bias_method="abundance"` / `"abundance_length"` →
+    `unspliced_excess_residual_abnorm` (`meta["bias"]`).
+  - `adaptive_weighting=True` → `adaptive_score` / `adaptive_score_pct`
+    (`meta["adaptive"]`).
+- **Configurable reliability anchor** for adaptive weighting (`anchor=` on
+  `add_adaptive_score` / `adaptive_active_score`): `"de"` (default) or a callable /
+  array / Series. Helper `scat.labeling_anchor(column="new_log2fc", threshold=1.0)`
+  anchors reliability on a metabolic-labeling truth column when available.
+  Diagnostics include `anchor` and `n_anchor_induced` (`n_anchor_de_induced`
+  retained as a back-compat alias).
+
+### Deprecated
+- **`run_default_pipeline(select_by="composite")`** as a gene-discovery path —
+  composite ranking mixes DE and nascent legs and is not recommended for production
+  discovery. Still available (default unchanged) but emits `DeprecationWarning`;
+  prefer `partition_de_by_mechanism(...)` or
+  `run_default_pipeline(..., select_by="de", annotate_mechanism=True)`.
+
+### Fixed
+- **External DE path of `partition_de_by_mechanism`**: reported `logFC` / `p_adj`
+  / `p_val` and mechanism direction now come from the *selecting* DE (not the
+  builtin `active_score` DE). Missing external raw p clears `p_val` to NaN so a
+  stale builtin p does not sit next to external stats.
+- **`run_default_pipeline`**: invalid `select_by` raises; add-on columns
+  (mechanism / bias / adaptive) are re-attached to `candidates` after annotate
+  (with an explicit copy); regime pre-flight failure uses cautious
+  `reliability=0.5` instead of implying full confidence.
+- **`filter_active_genes`**: residual cutoff of `-inf` truly disables the residual
+  gate (no longer drops genes with missing residual).
+- **`annotate_mechanism_class`**: missing/NaN `logFC` is `unknown`, not
+  `unclassified_down`.
+- **`program_mechanism`**: empty generic background falls back to competitive
+  background with a warning; equal mean support is `ns` (not a directional call).
+- **Enrichment**: `expand_enrichment_genes` accepts GSEA `leading_edge` /
+  `Lead_genes` and warns when no gene-list column is present; Entrez-style
+  numeric `Series` indexes are treated as gene IDs (aligned with DataFrame path).
+- **Adaptive DE anchor** uses strict `logFC > 1` to match `filter_active_genes`
+  / partition DE gates.
 
 ## [0.10.5] - 2026-07-18
 

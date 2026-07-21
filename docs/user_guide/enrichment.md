@@ -1,6 +1,6 @@
 # Functional Enrichment
 
-Over-representation analysis is available via `run_enrichment`:
+Over-representation analysis with `run_enrichment`:
 
 ```python
 enrich_res = scat.run_enrichment(
@@ -110,13 +110,11 @@ go = scat.run_enrichment(
 
 ## Using original Enrichr versions
 
-To use a specific historical Enrichr/gseapy version, **just write the exact
-gene set name** (the one that includes the year/version). The system will
-detect that it is an Enrichr-style versioned library and load it directly
-via gseapy.
+To use a specific historical Enrichr/gseapy library, pass the full versioned
+name (including the year). Versioned Enrichr-style names load through gseapy.
 
 ```python
-# Specific Enrichr version for KEGG — just write the name
+# Specific Enrichr version for KEGG
 kegg_2021 = scat.run_kegg(
     genes, organism="mouse",
     kegg_library="KEGG_2021"     # or KEGG_2019, KEGG_2016, etc.
@@ -210,8 +208,6 @@ installed).
 
 ## Exporting results
 
-The following helpers export results:
-
 ```python
 res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # or "human"
 
@@ -227,7 +223,7 @@ saved = scat.save_enrichment_report(
 
 # saved -> {'results_csv': ..., 'results_tsv': ..., 'term_gene_table_csv': ..., 'metadata_json': ..., 'results_xlsx': ...}
 
-# Long-format term–gene table (one row per gene; perfect for networks, follow-up stats, etc.)
+# Long-format term–gene table (one row per gene)
 long_table = scat.expand_enrichment_genes(res)
 # If the input was from run_go(ontology="ALL"), long_table will have an "Ontology" column first.
 ```
@@ -240,9 +236,8 @@ long_table = scat.expand_enrichment_genes(res)
 - `universe_info` (effective N, dropped genes, restrict behavior, etc.)
 - Full `.attrs` from the enrichment call (including per-ontology details for GO ALL)
 
-All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`,
-`universe_info`, etc.) so you never lose information when a call returns no
-terms.
+Empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`,
+`universe_info`, and related fields).
 
 ## Additional enrichment plot options
 

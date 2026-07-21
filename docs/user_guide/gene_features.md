@@ -1,19 +1,19 @@
-# Gene Feature Attachment & CLI
+# Gene Feature Attachment and CLI
 
-Gene length and intron count are used for optional bias correction inside
+Gene length and intron count support optional Huber bias correction in
 `active_score`.
 
 ```python
-# Use bundled tables
+# Bundled mouse/human tables
 adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
-# or provide your own table
+# Custom table
 adata = scat.add_gene_features(adata, gene_features_path="my_features.parquet")
 ```
 
-The package includes tables for mouse and human. Use `organism="mouse"`
-(default) or `organism="human"` when calling `add_gene_features`. For other
-species or custom annotations use the gene feature generator CLI.
+Bundled tables cover mouse and human (`organism="mouse"` default or
+`"human"`). For other species or custom annotations, use the gene-feature
+generator CLI.
 
 ## Command-line interface
 
@@ -48,11 +48,11 @@ adata = scat.add_gene_features(
     gene_features_path="human_GRCh38_2024A_gene_features.parquet"
 )
 
-# bias correction will now be able to use length + intron_number
+# Bias correction can now use length and intron_number
 adata_res, significant, all_results = scat.active_score(adata, ...)
 ```
 
-You can also call the generator programmatically:
+Programmatic generation:
 
 ```python
 from scatrans import generate_gene_features_from_gtf
@@ -67,12 +67,11 @@ df = generate_gene_features_from_gtf(
 See also `scat.list_available_gene_features()` (for bundled tables) and the
 full signature of `add_gene_features` in the {doc}`../api/index`.
 
-**Tip**: The generated parquet must contain a `gene_name` column (plus
-`gene_length` and `intron_number`). `add_gene_features` does a `reindex` on
-your `adata.var_names`.
+The generated parquet must contain a `gene_name` column (plus `gene_length`
+and `intron_number`). `add_gene_features` reindexes on `adata.var_names`.
 
-**GTF notes**: Exon lines need a `transcript_id` attribute (slim GFF3
-conversions often drop it — you will get a clear error). Genes without a
-usable exon union get **NaN** length (not 0). Huber bias correction in
-`active_score` only fits genes with `gene_length > 0`; missing-length genes
-use median residual centering when expressed.
+**GTF notes.** Exon lines need a `transcript_id` attribute (slim GFF3
+conversions often drop it and raise a clear error). Genes without a usable
+exon union receive **NaN** length (not 0). Huber bias correction fits only
+genes with `gene_length > 0`; missing-length genes use median residual
+centering when expressed.

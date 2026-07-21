@@ -1929,3 +1929,19 @@ def test_shuffle_condition_labels_paired_preserves_within_sample_counts():
         m = samples == s
         assert (shuffled[m] == "T").sum() == 5
         assert (shuffled[m] == "R").sum() == 5
+
+
+def test_expand_gene_list_series_entrez_index_uses_ids():
+    """Regression: an all-numeric (Entrez) Series index must be treated as gene IDs,
+    matching the DataFrame path — not fall through to returning the values (scores)."""
+    from scatrans.enrich._data import _expand_gene_list_input
+
+    idx = ["7157", "2597", "60"]
+    ser = pd.Series([1.2, 0.5, -0.3], index=idx)
+    assert _expand_gene_list_input(ser) == idx
+    # DataFrame with the same index behaves identically (parity)
+    df = pd.DataFrame({"logFC": [1.2, 0.5, -0.3]}, index=idx)
+    assert _expand_gene_list_input(df) == idx
+    # a plain RangeIndex Series of gene names still uses the values
+    ser2 = pd.Series(["TP53", "EGFR"])
+    assert _expand_gene_list_input(ser2) == ["TP53", "EGFR"]

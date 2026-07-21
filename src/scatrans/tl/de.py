@@ -253,6 +253,7 @@ def store_raw_counts(
     normalization, or log1p.
 
     This is critical for scATrans because:
+
     - Memento and PyDESeq2 need raw counts for proper modeling.
     - Velocity / active transcription analysis (active_score) needs the original
       spliced/unspliced matrices on as many genes as possible.
@@ -286,8 +287,10 @@ def store_raw_counts(
 
     If you need the full-gene raw velocity data after HVG-based visualization,
     either:
+
       - rely on the sidecar snapshot and restore_raw_counts(full_genes=True)
         (recommended), or
+
       - call store_raw_counts() on the full object and keep the full object for
         DE / active_score / enrichment while using a copy for visualization.
 

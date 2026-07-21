@@ -1,10 +1,9 @@
-# Domain Assumptions (explicit)
+# Domain Assumptions
 
-scATrans implements several **domain conventions**. The code does exactly what
-these rules say; confusion arises when they stay implicit. This page lists them
-so users (and future maintainers) can check expectations against reality.
+Domain conventions enforced by the implementation. Use this page to check
+expectations against behavior.
 
-Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (symptoms).
+Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (scope).
 
 ---
 
@@ -14,7 +13,10 @@ Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (symptoms).
 |------------|-------------|----------------------------|
 | **Active transcription ranking is upregulation-oriented** | Built-in `significant` requires positive `logFC` (and positive residual). Default `filter_active_genes` direction is `"up"`. | `logfc_direction="down"` / `"both"` on pure DE tables; or use `differential_expression` alone |
 | **Composite `active_score` DE legs (s1 logFC, s3 −log p) are upregulation-gated** | Negative logFC → s1 = 0 and s3 = 0 (`mixedlm_coef > 0` when MixedLM). Strongly down genes do not get mid-rank scores from p-values alone. | Pass residual-only mode: `ranking_mode="nascent_excess"` |
-| **Residual leg s2 is independent of DE direction and DE significance** | Positive unspliced excess can score even if DE is weak, untested, or `p_adj` filled to 1 (e.g. PyDESeq2 independent filtering). **Top-N by `active_score` is not a DE-significant list.** | `filter_active_genes` with `padj_cutoff` / `logfc_cutoff`, or `significant` conjunction |
+| **Residual leg s2 is independent of DE direction and DE significance** | Positive unspliced excess can score even if DE is weak, untested, or `p_adj` filled to 1 (e.g. PyDESeq2 independent filtering). **Top-N by `active_score` is not a DE-significant list.** | `filter_active_genes(..., select_by="de")` or explicit `padj_cutoff` / `logfc_cutoff`, or `significant` conjunction |
+| **`select_by="de"` decouples membership from the proxy** | DE gates define the list; nascent / composite gates are skipped; sorting is by `p_adj` then `logFC`. | Default `select_by="composite"` keeps prior proxy-aware filtering |
+| **`qc.regime_diagnosis` reliability is U-shaped in unspliced fraction** | Full reliability in a normal band (~10–45%); degrades at low (noise) and high (nuclear/gDNA, gamma mis-fit) extremes. Scales `mechanism_confidence` in `partition_de_by_mechanism` and when `annotate_mechanism=True`. | This is data-quality only — not dynamic vs steady-state |
+| **Detection ≠ mechanism** | `nascent_poisson_z` / `add_nascent_score=True` is an absolute nascent-increase **detection** score (induction-coupled). Mechanism labels always use the induction-normalized residual. | Do not pass `nascent_poisson_z` as `residual_col` for `annotate_mechanism_class` if you want transcription-vs-stabilization |
 | **Residual is one-sided (positive excess)** | Negative excess does not contribute to s2 soft-scale. Permutation FDR on residual is one-sided for positive excess. | Do not interpret low residual FDR as “repression” |
 | **`active_score` 0–100 is within-run relative (λ is data-adaptive)** | Each leg uses soft-scale `1 − exp(−x/λ)` with `λ ≈ median(positive x) / ln(2)` estimated **from the genes in that run** (plus floors). The same gene with the same raw logFC/residual/p can map to **different** scores if the background gene set or subset changes (other genes shift the median → λ → all soft-scaled values). | Compare **ranks within one `active_score` call** only. For cross-subset or cross-dataset claims use transportable quantities: `logFC`, `p_adj`, residual magnitude, or re-run on a **shared gene universe** with the understanding scores are still not absolute. Inspect `diagnostics["scoring"]` (`lambda_fc`, `lambda_res`, `lambda_pval`). |
 

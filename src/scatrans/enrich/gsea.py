@@ -288,17 +288,21 @@ def run_gsea(
     Parameters
     ----------
     ranked_genes : pd.Series, dict, DataFrame, or list-like
+
         - Preferred: pd.Series with gene names as index and numeric scores as values.
           Higher score = more "up" in target group (e.g. logFC).
           The function will sort internally if needed.
+
         - pd.DataFrame from ``active_score`` / ``differential_expression`` ``all_results``:
           gene symbols in the **index**, numeric score in a column (auto-prefers signed
           ``logFC`` / t-stat style columns). Non-negative metrics such as
           ``active_score`` are **not** auto-selected (GSEA needs signed ranks for
           bidirectional NES); pass ``score_column=`` to force them (emits a warning).
+
         - Legacy DataFrame: two columns ``[gene_names, scores]`` with a default RangeIndex.
         - dict: gene -> score
         - list of genes: treated as pre-sorted from high to low (scores assigned decreasing).
+
         Gene names will be cleaned according to gene_case.
     score_column : str, optional
         When ``ranked_genes`` is a DataFrame, which column holds the ranking metric.
@@ -337,24 +341,30 @@ def run_gsea(
     -------
     pd.DataFrame
         GSEA results with columns including Term, Description, ES, NES, pvalue, p.adjust,
-        neg_log10_padj, leading_edge, etc. Sorted by |NES| (absolute value) descending
+        neg_log10_padj, leading_edge, etc. Sorted by ``|NES|`` (absolute value) descending
         so that the strongest magnitude effects (positive or negative) appear first.
         Rich metadata in .attrs (method="gsea_prerank", gene_set_info, nperm, gsea_info, analysis_info).
 
     Notes
     -----
+
     - Unlike ORA, GSEA does not use an explicit "universe" in the same way; the ranked
       list itself defines the background. min_size/max_size still apply.
+
     - **Mapping check (same as ORA):** after loading gene sets, ranked genes are
       intersected with gene-set members. Mapping rate &lt; 20% emits a UserWarning
       with symbol examples; zero overlap returns an empty frame with
       ``reason="no_ranked_genes_mapped"`` (avoids opaque gseapy filter failures from
       case/ID mismatches). Prefer ``gene_case="upper"`` for Enrichr libraries.
+
     - Prefer **signed** ranking metrics (logFC). Non-negative columns such as
       ``active_score`` are not auto-selected and trigger a warning if forced.
+
     - Requires gseapy. Install via `pip install gseapy` or `pip install "scatrans[gsea]"`.
     - ``all_results`` from active_score can be passed directly::
+
         res = scat.run_gsea(all_results, gene_sets="GO_Biological_Process", score_column="logFC")
+
       or as a Series: ``all_results["logFC"]`` (index = gene names).
     """
     try:

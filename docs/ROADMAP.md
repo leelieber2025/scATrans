@@ -1,17 +1,17 @@
 # Roadmap
 
-**Strategy (locked):** finish **testing** → finish the **paper** → then
-**1.0** + **preprint**. Stay on **0.10.x (Beta)** until the manuscript is
-done. Not a calendar commitment.
+**Sequence:** testing → manuscript → **1.0** and preprint. Stay on **0.10.x
+(Beta)** until the manuscript is complete. This is not a calendar commitment.
 
-**Positioning:** a focused method package for active-transcription scoring
-under spliced/unspliced (or nascent/mature) layers—not a multi-omics
-platform. Prefer depth, reportability, and reproducibility over feature
-breadth.
+**Scope:** a method package whose primary workflow is DE selection followed by
+mechanism partition (transcription-driven versus stabilization-driven via
+`partition_de_by_mechanism` / `PartitionResult`) from spliced/unspliced or
+nascent/mature layers—not a multi-omics platform. Composite `active_score`
+ranking remains as a lower-level scoring engine but is **deprecated** as the
+primary gene-discovery path.
 
-**Non-goals (until well after 1.0):** LLM agents / MCP productization,
-vendoring a zoo of third-party methods, becoming a general DE replacement
-for scanpy.
+**Non-goals (until well after 1.0):** LLM/MCP productization, bundling large
+numbers of third-party methods, or replacing general DE tools such as scanpy.
 
 ---
 

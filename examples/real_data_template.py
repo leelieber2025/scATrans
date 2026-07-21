@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-Real-data workflow template for scATrans (recommended practice as of 2026-06).
+Real-data template for the lower-level scATrans scoring path (active_score).
 
-This is NOT a runnable script out of the box — it shows the full recommended
-workflow with heavy comments for users who have their own spliced/unspliced data
-(from velocyto, kb_python --lamanno/velocity mode, etc.).
+NOTE: the recommended primary workflow is `scat.partition_de_by_mechanism(...)`
+(DE selects the changed genes → scATrans partitions them into transcription- vs
+stabilization-driven; see examples/partition_de_by_mechanism_example.py and the
+Quickstart). This template instead demonstrates the **lower-level** `active_score`
+scorer and its diagnostics in detail, for users who want the residual / gamma /
+bias internals. It is NOT runnable out of the box — adapt paths / column names.
 
-Typical real-data steps covered:
-  1. Load AnnData with layers
+Steps covered:
+  1. Load AnnData with spliced/unspliced layers (velocyto, kb_python velocity, …)
   2. (Optional but recommended) Standalone QC
   3. Attach gene features for bias correction
-  4. Run active_score with diagnostics-friendly settings (permutation on, advanced when appropriate)
-  5. Inspect the rich new diagnostics in adata.uns["scatrans"]
-  6. Generate publication figures (comet, bias diagnostic) using ax= where helpful
-  7. Run enrichment on significant genes
+  4. Run active_score with diagnostics-friendly settings
+  5. Inspect the diagnostics in adata.uns["scatrans"]
+  6. Generate figures (comet, bias diagnostic) using ax= where helpful
+  7. Filter (prefer filter_active_genes(select_by="de")) → enrichment
 
 Copy this file, adapt the paths / column names, and run cell-by-cell in a notebook.
 
 See also:
-  - README.md "Choosing mode" section and "Quick data quality check"
+  - examples/partition_de_by_mechanism_example.py — the recommended workflow
+  - the Quickstart and User Guide for the DE→mechanism path and DE backends
   - synthetic_active_transcription.py for a fully runnable (but synthetic) demo
 """
 
@@ -75,7 +79,7 @@ print("\nRunning active_score with diagnostics enabled (permutation + heuristic 
 
 # Heuristic is robust for most real case/control or stimulus experiments.
 # Switch to mode="advanced" only when you have sufficient cells and want moments smoothing.
-# See the "Choosing mode" section in the README for the full decision guide.
+# See the User Guide (advanced options) and recommend_workflow() for a decision guide.
 
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
@@ -172,7 +176,7 @@ if len(significant) > 0:
     # or scat.pl.enrich_dotplot(enrich, show_terms=["specific term desc", "another GO term"])
 
 print("\n=== Recommended next steps ===")
-print("- Look at adata_res.var for 'active_score', 'velocity_residual', 'effective_gamma', logFC, p_adj, ...")
+print("- Look at adata_res.var for 'active_score', 'unspliced_excess_residual', 'effective_gamma', logFC, p_adj, ...")
 print("- Check the full diagnostics dict for any red flags (small bias fit n, very high unspliced frac, etc.).")
 print("- For top genes, you may want to manually inspect their phase portraits (U vs S colored by group).")
 print("- Consider running the same contrast with mode='advanced' (if cell number permits) and comparing the resulting significant lists.")

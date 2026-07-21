@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -13,6 +14,7 @@ import pandas as pd
 from .._utils import (
     _normalize_group_label,
 )
+from ..qc import regime_diagnosis
 from ._common import (
     _PERM_FDR_MIN_SUCCESS,
     VERSION,
@@ -22,6 +24,7 @@ from .adaptive import add_adaptive_score
 from .bias import add_abundance_normalized_residual
 from .de import differential_expression
 from .filter import filter_active_genes
+from .mechanism import annotate_mechanism_class
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -191,8 +194,10 @@ def active_score_simple(
     Recommended entry point for new users (minimal parameters).
 
     Wraps :func:`active_score` with sensible defaults:
+
     - Uses "Disease"/"Control" as group defaults (unlike core active_score which defaults
       to the historical "GA"/"Ctrl").
+
     - heuristic mode, no permutation (inspect ``all_results`` + ``filter_active_genes``)
     - auto-attaches bundled gene features when missing
     - pseudobulk + PyDESeq2 when ``sample_col`` has >=3 replicates per group;
@@ -451,9 +456,19 @@ def run_default_pipeline(
     bias_method: str | None = None,
     adaptive_weighting: bool = False,
     adaptive_anchor: Any = "de",
+    select_by: str = "composite",
+    annotate_mechanism: bool = False,
 ) -> PipelineResult:
     """
     End-to-end recommended workflow for first-time users.
+
+    .. note::
+       The tool's **primary workflow is now**
+       :func:`~scatrans.tl.partition_de_by_mechanism` — DE selects the changed
+       genes, scATrans partitions them into transcription- vs stabilization-driven.
+       The composite ``select_by="composite"`` ranking here is **deprecated** (it
+       mixes the DE and proxy legs and does not out-discover DE); prefer
+       ``partition_de_by_mechanism`` or ``select_by="de", annotate_mechanism=True``.
 
     Steps: active scoring → ``filter_active_genes`` → optional GO enrichment.
     Uses "Disease"/"Control" convenience defaults for target/reference.
@@ -486,6 +501,31 @@ def run_default_pipeline(
     columns) the core result is still returned and the reason is logged and
     recorded under the corresponding ``meta`` key.
 
+    - ``select_by``: which axis defines ``candidates`` membership.
+      ``"composite"`` (default) keeps the current behavior (proxy participates in
+      selection via ``filter_preset``). ``"de"`` switches to **DE SELECTS, proxy
+      ANNOTATES**: ``candidates`` are chosen by the DE gates only (padj<0.05 &
+      ``|log2FC|``>1 by default) via ``filter_active_genes(select_by="de")``, and the
+      nascent-proxy columns remain on ``all_results`` as annotations rather than
+      gating membership. ``significant`` (the built-in composite list) is
+      unchanged; use ``candidates`` for the DE-selected list. Recorded in
+      ``meta["select_by"]``.
+    - ``annotate_mechanism``: ``True`` runs
+      :func:`~scatrans.tl.mechanism.annotate_mechanism_class`, adding
+      ``transcription_support`` / ``mechanism_class`` / ``mechanism_confidence``
+      columns to ``all_results`` (static transcription-vs-stabilization label; a
+      LOW-confidence per-gene annotation — pool with
+      :func:`~scatrans.tl.mechanism.program_mechanism` for decisive calls).
+      Diagnostics in ``meta["mechanism"]``. The confidence is scaled by the
+      dataset ``reliability`` from the regime pre-flight (see below).
+
+    ``meta`` always includes a ``regime`` block from
+    :func:`~scatrans.qc.regime_diagnosis` (a cheap, fail-soft proxy-reliability
+    pre-flight from the global unspliced fraction: ``reliability`` in [0, 1],
+    ``regime`` = ok / low_unspliced / high_unspliced, plus a message). It scales
+    the mechanism-annotation confidence and tells the user how far to trust the
+    proxy annotations on this dataset.
+
     Returns a :class:`PipelineResult` (mapping-compatible) with fields:
       - ``adata``, ``significant``, ``all_results``, ``candidates``
       - ``enrichment`` (DataFrame or None)
@@ -500,6 +540,26 @@ def run_default_pipeline(
     _BIAS_METHODS = ("abundance", "abundance_length")
     if bias_method is not None and bias_method not in _BIAS_METHODS:
         raise ValueError(f"bias_method must be None or one of {_BIAS_METHODS}, got {bias_method!r}")
+
+    _select_by = str(select_by).lower()
+    if _select_by not in ("composite", "de"):
+        raise ValueError(f"select_by must be 'composite' or 'de', got {select_by!r}")
+
+    # The composite active_score conflates the DE leg and the (weaker) proxy leg;
+    # its wins are carried by DE. The tool's primary identity is now DE-selects /
+    # scATrans-partitions-by-mechanism. Steer callers to the new entry, but keep
+    # the composite path working (backward-compat) — validation labelling data
+    # showed the proxy never beats DE, so composite ranking is legacy.
+    if _select_by == "composite":
+        warnings.warn(
+            "run_default_pipeline(select_by='composite') is deprecated: the composite "
+            "active_score mixes the DE and proxy legs and does not out-discover DE. "
+            "Use scatrans.partition_de_by_mechanism(...) (DE selects, scATrans partitions "
+            "by transcription- vs stabilization-driven mechanism), or "
+            "run_default_pipeline(..., select_by='de', annotate_mechanism=True).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # Resolve once so we can pick a matching filter_preset (addresses mismatch
     # between auto-pseudobulk in active_score_simple and hardcoded "heuristic").
@@ -518,7 +578,13 @@ def run_default_pipeline(
         organism=organism,
         show_plot=show_plot,
     )
-    candidates = filter_active_genes(all_results, preset=filter_preset)
+    if _select_by == "de":
+        # DE SELECTS, proxy ANNOTATES: membership from p_adj/logFC only (DE defaults
+        # padj<0.05 & |log2FC|>1); the composite filter_preset is not applied so the
+        # proxy columns ride along on all_results as annotations, not gates.
+        candidates = filter_active_genes(all_results, select_by="de")
+    else:
+        candidates = filter_active_genes(all_results, preset=filter_preset)
 
     # active_score writes rich run metadata under .uns["scatrans"] (diagnostics,
     # gamma_method, use_permutation, …). Keep this separate from the result
@@ -565,6 +631,7 @@ def run_default_pipeline(
     result_meta: dict[str, Any] = {
         "scatrans_version": VERSION,
         "organism": organism,
+        "select_by": _select_by,
     }
     diag = scatrans_uns.get("diagnostics")
     if diag is not None:
@@ -602,6 +669,31 @@ def run_default_pipeline(
         except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
             logger.warning("adaptive_weighting skipped: %s", exc)
             result_meta["adaptive"] = {"error": str(exc)}
+    # Regime / proxy-reliability pre-flight (unspliced-fraction QC; cheap, always
+    # run, fail-soft). Feeds mechanism-annotation confidence below.
+    try:
+        result_meta["regime"] = regime_diagnosis(adata_res)
+    except Exception as exc:  # noqa: BLE001 — diagnostic is optional
+        logger.info("regime_diagnosis skipped: %s", exc)
+        # A failed mandatory pre-flight must not imply full confidence.
+        result_meta["regime"] = {"reliability": 0.5, "regime": "unknown", "error": str(exc)}
+    if annotate_mechanism:
+        try:
+            reliability = float(result_meta.get("regime", {}).get("reliability", 0.5))
+            _, mech_diag = annotate_mechanism_class(
+                all_results, reliability=reliability, inplace=True
+            )
+            result_meta["mechanism"] = mech_diag
+        except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
+            logger.warning("annotate_mechanism skipped: %s", exc)
+            result_meta["mechanism"] = {"error": str(exc)}
+
+    # The optional add-ons above mutate all_results in place (bias / adaptive /
+    # mechanism columns). candidates was sliced before them, so refresh it from the
+    # annotated all_results — same membership and order — so those annotation
+    # columns ride along on result.candidates too.
+    if len(candidates):
+        candidates = all_results.loc[candidates.index].copy()
 
     # We already resolved backend above (avoids calling the resolver a second time
     # just to "guess" what active_score_simple decided internally).

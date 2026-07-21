@@ -1,6 +1,6 @@
-# Visualization
+# Plotting
 
-Worked gallery (synthetic data, nearly all `scat.pl.*` functions):
+Gallery covering most `scat.pl.*` helpers:
 {doc}`../tutorials/t_synthetic_visualization`.
 
 ```python
@@ -85,10 +85,10 @@ so multipanel layouts do not clip an exterior legend.
 ## Main plotting functions
 
 - `scat.pl.comet_plot(results_df, top_n=8, point_scale=1.0, min_size=2, max_size=180, s=None, ...)`
-  Plots log fold change vs. bias-corrected unspliced excess residual
+  log fold change versus bias-corrected unspliced excess residual
   (`unspliced_excess_residual`), sized and colored by `active_score`.
-  - `s=3` (or 1-5): force **fixed** small point size for everything (direct, simple control).
-  - `point_scale=0.2` + `min_size=1`: for variable sizing, make tiniest background points truly small.
+  - `s=3` (or 1–5): fixed small point size.
+  - `point_scale=0.2` + `min_size=1`: smaller background points under variable sizing.
 
 - `scat.pl.volcano_plot(results_df, top_n=6, label_genes=None, style="auto", ...)`
   2D volcano (logFC vs. -log10(p_adj)).
