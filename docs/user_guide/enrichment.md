@@ -1,6 +1,6 @@
 # Functional Enrichment
 
-Over-representation analysis is available via `run_enrichment`:
+Over-representation analysis with `run_enrichment`:
 
 ```python
 enrich_res = scat.run_enrichment(
@@ -26,8 +26,8 @@ For ranked-list enrichment (classic preranked GSEA; Subramanian et al. 2005 —
 see {doc}`../references`), via [GSEApy](https://github.com/zqfang/GSEApy):
 
 ```python
-# Prefer a *signed* ranking metric (logFC). Non-negative scores such as
-# active_score cannot produce negative NES (depletion) and are not auto-selected.
+# Prefer a *signed* ranking metric (logFC). One-sided non-negative score
+# columns cannot produce negative NES (depletion) and are not auto-selected.
 ranked = all_results["logFC"].sort_values(ascending=False)
 
 gsea_res = scat.run_gsea(
@@ -47,8 +47,8 @@ scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
 ```
 
 GSEA needs **signed** ranks. Passing a full `all_results` table auto-prefers
-`logFC` (and similar t-stat columns); `active_score` is never auto-selected.
-If you force `score_column="active_score"` (or pass a one-sided Series), a
+`logFC` (and similar t-stat columns); one-sided non-negative score columns are
+never auto-selected. If you force such a column (or pass a one-sided Series), a
 warning is emitted.
 
 **Low mapping rate and ID cleanup (same gate as ORA):** after loading gene
@@ -110,13 +110,11 @@ go = scat.run_enrichment(
 
 ## Using original Enrichr versions
 
-To use a specific historical Enrichr/gseapy version, **just write the exact
-gene set name** (the one that includes the year/version). The system will
-detect that it is an Enrichr-style versioned library and load it directly
-via gseapy.
+To use a specific historical Enrichr/gseapy library, pass the full versioned
+name (including the year). Versioned Enrichr-style names load through gseapy.
 
 ```python
-# Specific Enrichr version for KEGG — just write the name
+# Specific Enrichr version for KEGG
 kegg_2021 = scat.run_kegg(
     genes, organism="mouse",
     kegg_library="KEGG_2021"     # or KEGG_2019, KEGG_2016, etc.
@@ -210,8 +208,6 @@ installed).
 
 ## Exporting results
 
-The following helpers export results:
-
 ```python
 res = scat.run_kegg(genes, organism="mouse", return_all=True, include_gene_list=True)  # or "human"
 
@@ -227,7 +223,7 @@ saved = scat.save_enrichment_report(
 
 # saved -> {'results_csv': ..., 'results_tsv': ..., 'term_gene_table_csv': ..., 'metadata_json': ..., 'results_xlsx': ...}
 
-# Long-format term–gene table (one row per gene; perfect for networks, follow-up stats, etc.)
+# Long-format term–gene table (one row per gene)
 long_table = scat.expand_enrichment_genes(res)
 # If the input was from run_go(ontology="ALL"), long_table will have an "Ontology" column first.
 ```
@@ -240,9 +236,8 @@ long_table = scat.expand_enrichment_genes(res)
 - `universe_info` (effective N, dropped genes, restrict behavior, etc.)
 - Full `.attrs` from the enrichment call (including per-ontology details for GO ALL)
 
-All empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`,
-`universe_info`, etc.) so you never lose information when a call returns no
-terms.
+Empty results still carry diagnostic `.attrs` (`reason`, `gene_set_info`,
+`universe_info`, and related fields).
 
 ## Additional enrichment plot options
 

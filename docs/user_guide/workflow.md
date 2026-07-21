@@ -1,29 +1,67 @@
 # Core Workflow
 
-## Recommended entry: `partition_de_by_mechanism`
+## Primary entry point
 
-The recommended workflow is {func}`~scatrans.partition_de_by_mechanism` — DE
-selects the changed genes, scATrans partitions them into transcription- vs
-stabilization-driven, with a mandatory reliability pre-flight and a decisive
-program-level call. It composes the lower-level pieces documented below
-(`active_score` → `filter_active_genes(select_by="de")` →
-`annotate_mechanism_class` / `program_mechanism`).
+{func}`~scatrans.partition_de_by_mechanism` is the recommended entry point:
+
+1. DE selects changed genes  
+2. residual-based annotation assigns transcription-driven versus stabilization-driven labels  
+3. reliability pre-flight scales confidence  
+4. optional program-level table when `gene_sets=` is supplied  
+
+It composes lower-level pieces documented below (`active_score`,
+`filter_active_genes(select_by="de")`, `annotate_mechanism_class` /
+`program_mechanism`).
 
 ```python
 res = scat.partition_de_by_mechanism(
     adata, groupby="condition", target_group="Disease", reference_group="Control",
     organism="mouse",
     de="builtin",            # or a DE method name / precomputed DE table / callable
+    # add_nascent_score=True,  # optional detection columns (not used for mechanism)
     gene_sets=my_pathways,   # optional -> program-level mechanism table
 )
 res.regime          # reliability pre-flight
 res.selected        # DE-selected genes + per-gene mechanism annotation
-res.programs        # decisive program-level transcription-vs-stabilization calls
+res.programs        # program-level transcription-vs-stabilization table (if gene_sets=)
+res.meta.get("nascent_score")  # if add_nascent_score=True: enabled / status / …
 ```
 
-The rest of this page documents the lower-level building blocks. Note the
-composite `run_default_pipeline(select_by="composite")` ranking is **deprecated**
-in favor of the above; use `select_by="de"` for a pure DE gene list.
+### Detection columns: `add_nascent_score`
+
+Mechanism labels **always** use the induction-normalized residual
+(`unspliced_excess_residual` / abnorm residual when present). Separately, you can
+opt in to **active-transcription detection** columns:
+
+| Parameter | Effect |
+|-----------|--------|
+| `add_nascent_score=False` (default) | No extra columns |
+| `add_nascent_score=True` | Append output of {func}`~scatrans.nascent_activity_score` to the gene table |
+
+| Column | Meaning |
+|--------|---------|
+| `nascent_poisson_z` | Pseudobulk variance-stabilized nascent increase (length-robust **detection** score) |
+| `dlog_unspliced` / `dlog_spliced` | CPM log fold-changes (diagnostic) |
+| `de_reproducible` / `de_repro_frac` | Spliced-side DE-reproducibility flag (annotation only — never gates membership) |
+
+The Poisson-z is **not** fed into `annotate_mechanism_class` / `program_mechanism`
+(it is induction-coupled and would collapse the stabilization signal). Fail-soft:
+errors land in `meta["nascent_score"]` without breaking the residual mechanism path.
+
+Standalone scoring:
+
+```python
+nz = scat.nascent_activity_score(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    sample_col="sample",  # optional; missing name raises (no silent random folds)
+)
+# columns: nascent_poisson_z, dlog_unspliced, dlog_spliced, de_reproducible, de_repro_frac
+```
+
+Layers auto-resolve (`spliced`/`unspliced` or kb_python `mature`/`nascent`).
+
+The rest of this page documents lower-level building blocks. Deprecated composite
+ranking and pure-DE alternatives: {doc}`../faq`.
 
 ## Run `active_score` (default parameters)
 
@@ -39,14 +77,12 @@ adata_res, significant, all_results = scat.active_score(
 
 This computes differential expression, reference-group gamma excess for the
 unspliced layer, optional Huber bias correction on gene length and intron
-number, a composite active score, and stores diagnostics in
-`adata_res.uns["scatrans"]["diagnostics"]`.
+number (the bias-corrected `unspliced_excess_residual`), and stores diagnostics
+in `adata_res.uns["scatrans"]["diagnostics"]`.
 
-### Common basic switches: pseudobulk and DE test method
+### Pseudobulk and DE method
 
-These are standard options available for most analyses.
-
-**Pseudobulk mode** (use when you have multiple biological replicates per condition):
+**Pseudobulk mode** (multiple biological replicates per condition):
 
 ```python
 adata_res, significant, all_results = scat.active_score(
@@ -101,53 +137,51 @@ Always run `recommend_workflow(...)` first; inspect
 `adata.uns["scatrans"]["diagnostics"]` (bias, gamma, permutation
 `disabled_reason`) before publication claims.
 
-## Gene filtering with `filter_active_genes` (core output tool)
+## Gene filtering with `filter_active_genes`
 
-The internal `significant` list is strict. Users typically filter the full
-table returned in `all_results` with `filter_active_genes`.
+The built-in `significant` list is strict and often empty on modestly powered
+designs. Filter the full `all_results` table with `filter_active_genes`:
 
 ```python
-# Start permissive, then tighten based on your data
+# Explicit cutoffs (tighten for your design)
 candidates = scat.filter_active_genes(
     all_results,
-    active_score_cutoff=30,
     unspliced_excess_residual_cutoff=0.5,
     unspliced_excess_fdr_cutoff=0.05,
     logfc_cutoff=0.3,
     padj_cutoff=0.05,  # preferred over legacy pval_cutoff=
 )
 
-# Or use presets that choose reasonable defaults for common analysis styles
+# Presets for common analysis styles
 candidates = scat.filter_active_genes(all_results, preset="heuristic")
 
-# DE selects, proxy annotates: membership from DE only (padj/logFC defaults
-# padj<0.05 & |log2FC|>1 when no cutoffs given). Nascent columns stay as
-# annotations and do not gate the list. Prefer this when treating composite
-# scoring as experimental / exploratory.
+# DE-only membership (padj/logFC defaults padj<0.05 & |log2FC|>1 when cutoffs
+# are omitted). Nascent columns remain annotations and do not gate the list.
 de_list = scat.filter_active_genes(all_results, select_by="de")
 
-# Reproduce the built-in `significant` list exactly (requires use_permutation=True upstream)
+# Replay the built-in significant mask (requires use_permutation=True upstream)
 builtin_again = scat.filter_active_genes(all_results, preset="significant")
 assert builtin_again.index.tolist() == significant.index.tolist()
 
-# Advanced usage
-mask = scat.filter_active_genes(all_results, return_mask=True)  # boolean Series
-filtered_inplace = scat.filter_active_genes(all_results, preset="heuristic", inplace=True)
-# or preset="pseudobulk" after aggregation, or preset="permissive"
+mask = scat.filter_active_genes(all_results, return_mask=True)
+filtered_inplace = scat.filter_active_genes(
+    all_results, preset="heuristic", inplace=True
+)
+# Also: preset="pseudobulk" after aggregation, or preset="permissive"
 ```
 
 **`select_by="composite"` (default)** vs **`select_by="de"`**
 
-| Mode | Who decides membership | Proxy / composite gates | Sort |
-|------|------------------------|-------------------------|------|
-| `"composite"` | DE **and** nascent/composite cutoffs | Applied | Prefer `active_score` when present |
+| Mode | Who decides membership | Proxy gates | Sort |
+|------|------------------------|-------------|------|
+| `"composite"` | DE **and** nascent-proxy cutoffs | Applied | `p_adj` then `logFC` |
 | `"de"` | DE only (`p_adj`, `logFC`, optional MixedLM coef direction) | **Skipped** (columns remain) | `p_adj` then `logFC` |
 
 `select_by="de"` is incompatible with `preset="significant"`. The same flag is
 accepted by `run_default_pipeline(..., select_by="de")` and recorded in
 `meta["select_by"]`.
 
-**`preset="significant"`** (aliases: `"builtin"`, `"active_score_significant"`)
+**`preset="significant"`** (alias: `"builtin"`)
 replays the built-in `significant` mask from `active_score` using metadata in
 `all_results.attrs["scatrans_filter_context"]`. It requires
 `use_permutation=True` on the upstream run. When permutation FDR was
@@ -200,28 +234,57 @@ for r in diag["recommendations"]:
 print("\nSuggested preset for filter_active_genes:", diag.get("suggested_preset"))
 ```
 
-**What it returns**, a dictionary containing:
+Returns a dictionary with:
 
 - `n_cells_target`, `n_cells_reference`
 - `n_samples_target`, `n_samples_reference` (when `sample_col` is provided)
 - `unspliced_global_fraction`
-- `warnings`: list of strings (e.g. low power warnings)
+- `warnings`: list of strings (e.g., low-power warnings)
 - `recommendations`: list of strings
 - `suggested_preset`: `"heuristic"`, `"pseudobulk"`, or `None`
 
-`diagnose_design` is automatically called inside `active_score(...)`
-whenever you pass `sample_col` or set `use_pseudobulk=True`. You will see its
-output in the log.
+`active_score` calls `diagnose_design` automatically when `sample_col` or
+`use_pseudobulk=True` is set; warnings appear in the log and under
+`adata.uns["scatrans"]["diagnostics"]["design"]`.
 
-## Layer names
+## Input data and layers
 
-The package auto-detects `mature`/`nascent` (kb_python) and remaps them
-internally. You can also pass `spliced_layer=...` and `unspliced_layer=...`
-explicitly.
+What you need depends on the path you take:
 
-## Regime pre-flight (velocity layers)
+| Goal | Required in AnnData | Entry point |
+|------|---------------------|-------------|
+| Mechanism partition (transcription vs stabilization) | Spliced and unspliced counts as layers, **or** kb-python `mature` / `nascent` | {func}`~scatrans.partition_de_by_mechanism` |
+| DE + enrichment only | Count matrix in `.X` or a counts layer (no velocity layers) | {func}`~scatrans.differential_expression` — {doc}`standalone_de` |
+| Residual / diagnostics only | Same layers as mechanism | {func}`~scatrans.active_score` / {func}`~scatrans.active_score_simple` |
 
-When spliced/unspliced layers are present, run a cheap proxy data-quality check
+### Layer names
+
+By default scATrans looks for `spliced` and `unspliced`. Layers named
+`mature` / `nascent` (kb-python) are remapped internally. Override with
+`spliced_layer=` and `unspliced_layer=` when your names differ.
+
+### Raw counts and preprocessing
+
+Pseudobulk PyDESeq2 and several DE backends need **integer raw counts**. Call
+this early, before HVG filtering or log-normalization overwrites the matrix:
+
+```python
+scat.store_raw_counts(adata, layer="counts")  # or mode="auto"
+```
+
+Gene length / intron tables for optional bias correction:
+
+```python
+adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
+```
+
+Group labels must live in `adata.obs` (`groupby`, `target_group`,
+`reference_group`). For pseudobulk, also set `sample_col` to a biological
+replicate / individual column.
+
+### Regime pre-flight (velocity layers)
+
+When spliced/unspliced layers are present, run a cheap capture-quality check
 before interpreting residual or mechanism annotations:
 
 ```python
@@ -229,10 +292,12 @@ r = scat.qc.regime_diagnosis(adata)
 print(r["regime"], r["reliability"], r["message"])
 ```
 
-`run_default_pipeline` always writes this block to `result.meta["regime"]`
+`partition_de_by_mechanism` always runs this check (`result.regime`).
+`run_default_pipeline` writes the same block to `result.meta["regime"]`
 (fail-soft). See {doc}`advanced` for how reliability scales
 `mechanism_confidence`.
 
-Runnable end-to-end demo of this workflow (`select_by="de"`, `annotate_mechanism`,
-`threshold_sensitivity`, `program_mechanism`, `regime_diagnosis`) on synthetic and
-real data: `examples/select_annotate_workflow_example.py`.
+Runnable end-to-end demo (`select_by="de"`, `annotate_mechanism`,
+`threshold_sensitivity`, `program_mechanism`, `regime_diagnosis`) on synthetic
+and optional real data: `examples/select_annotate_workflow_example.py`.
+

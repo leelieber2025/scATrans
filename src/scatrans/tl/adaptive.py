@@ -79,13 +79,12 @@ def labeling_anchor(
 ) -> Callable[[pd.DataFrame], np.ndarray]:
     """Build a labeling-truth anchor callable ``expr -> {0,1}`` from a column.
 
-    Use with metabolic-labeling data (e.g. scNT-seq / sci-fate) where a per-gene
-    newly-transcribed-RNA log2FC is available (default column ``new_log2fc``):
+    Use when a per-gene newly-transcribed-RNA log2FC (or similar) is available
+    (default column ``new_log2fc``):
     ``add_adaptive_score(df, anchor=labeling_anchor())``. Unlike the DE anchor,
-    this credits the proxy for tracking genuinely newly-transcribed genes that
-    plain DE misses — the empirically correct reliability signal on labeling data
-    (see the scNT-seq gating result). The named column must be present on the
-    ``valid_expr`` rows; missing/NaN values count as not-induced.
+    this scores reliability against labeling truth rather than DE-induced genes.
+    The named column must be present on the ``valid_expr`` rows; missing/NaN
+    values count as not-induced.
     """
 
     def _anchor(expr: pd.DataFrame) -> np.ndarray:

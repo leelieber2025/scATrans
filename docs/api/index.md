@@ -1,32 +1,26 @@
 # API Reference
 
-Import scATrans as:
-
 ```python
 import scatrans as scat
 ```
 
-Submodules `scat.pl` (plotting) and `scat.qc` (quality control) are
-intentionally exposed (scanpy-style convention). Other internal modules are
-not part of the stable public surface. Functions are grouped by task below;
-each group lists its key tunable parameters before the full autosummary
-table. See {doc}`../user_guide/index` for narrative usage and
-{doc}`../statistical_guidance` for what each result column means.
-
-**Stability:** which imports are guaranteed vs implementation detail is
-defined in {doc}`../api_stability` (read this before depending on
-`scatrans.tl.*` leaf modules in production code).
+Public surface: top-level names in `scatrans.__all__`, plus `scat.pl` and
+`scat.qc` (scanpy-style submodules). Other internal modules are not part of the
+stable API. Narrative usage: {doc}`../user_guide/index`. Output semantics:
+{doc}`../statistical_guidance`. Import stability: {doc}`../api_stability`.
 
 ## Core: scoring, filtering, DE
 
-`partition_de_by_mechanism` is the **recommended primary entry point** — a DE
-step selects the changed genes and scATrans partitions them by transcription- vs
-stabilization-driven mechanism (returns a {class}`~scatrans.PartitionResult`).
-`active_score` is the lower-level velocity-aware scorer;
-`differential_expression` is the no-velocity DE equivalent. All return / feed the
-same `filter_active_genes` / mechanism / enrichment / plotting tools. The
-composite `run_default_pipeline(select_by="composite")` is **deprecated** (see
-{func}`~scatrans.run_default_pipeline`).
+`partition_de_by_mechanism` is the recommended primary entry point (returns
+{class}`~scatrans.PartitionResult`). `active_score` is the lower-level residual
+and scoring engine; `differential_expression` is the DE path without nascent
+layers. Scope and deprecated composite ranking: {doc}`../faq`.
+
+**Optional detection columns (`partition_de_by_mechanism` only):**
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `add_nascent_score` | `False` | When `True`, append **detection** columns from {func}`~scatrans.nascent_activity_score` (`nascent_poisson_z`, `dlog_*`, `de_reproducible` / `de_repro_frac`) to the gene table. **Decoupled from mechanism:** the transcription-vs-stabilization call always uses the induction-normalized residual. Fail-soft (error recorded in `meta["nascent_score"]`). |
 
 In the table below "both" means `active_score` and `differential_expression` (the
 low-level scorers). The convenience entry points `partition_de_by_mechanism` /
@@ -69,6 +63,7 @@ inspects cell/sample counts and suggests a preset.
    add_abundance_normalized_residual
    annotate_mechanism_class
    program_mechanism
+   nascent_activity_score
    threshold_sensitivity
    differential_expression
    differential_expression_simple
@@ -80,6 +75,13 @@ inspects cell/sample counts and suggests a preset.
    ensure_raw_counts
    restore_raw_counts
 ```
+
+**`PartitionResult` fields:** `adata`, `regime`, `gene_table`, `selected`,
+`programs`, `enrichment`, `meta`. Useful `meta` keys include `de_source`,
+`select` (cutoffs + `n_selected`), `regime`, `mechanism`, `programs`, and
+`nascent_score` (`enabled` / `status` when `add_nascent_score` was used).
+Default `run_go_enrichment=False` on partition (unlike
+`run_default_pipeline`, which defaults to `True`).
 
 `filter_active_genes(results_df, preset=..., select_by=..., logfc_direction=...,
 return_mask=...)` accepts `preset="heuristic"` (standard cutoffs), `"pseudobulk"`
@@ -119,6 +121,7 @@ unspliced fraction). Add-ons fail soft when columns are missing; invalid
 | `add_adaptive_score` / `adaptive_active_score` | `adaptive_score`, `adaptive_score_pct` | Reliability-weighted nascent leg; `anchor=` (`"de"` or `labeling_anchor(...)`) chooses the induced-gene set used for reliability AUC |
 | `labeling_anchor` | callable for `anchor=` | Metabolic-labeling truth (e.g. `new_log2fc`) instead of DE-induced genes |
 | `add_abundance_normalized_residual` | `unspliced_excess_residual_abnorm` | Demote abundance / nuclear-retention artifacts (e.g. *MALAT1*) |
+| `nascent_activity_score` | `nascent_poisson_z`, `dlog_unspliced` / `dlog_spliced`, `de_reproducible` / `de_repro_frac` | Pseudobulk variance-stabilized nascent **detection** score + spliced-side DE-reproducibility flag; opt-in on partition via `add_nascent_score=True` (**not** the mechanism residual) |
 | `annotate_mechanism_class` | `transcription_support`, `mechanism_class`, `mechanism_confidence` | Low-confidence per-gene transcription vs stabilization label (**annotation only**) |
 | `program_mechanism` | program-level DataFrame | Threshold-free gene-set pooling of support (stronger than per-gene) |
 | `threshold_sensitivity` | padj×logFC grid table | Report DE-list robustness instead of defending one cutoff |
@@ -197,14 +200,14 @@ ranked list instead of a candidate gene list.
 | Function | Returns | When to use |
 |----------|---------|-------------|
 | `qc.unspliced_global` | float in [0, 1] | Raw global unspliced fraction; logs a warning if high |
-| `qc.regime_diagnosis` | dict: `unspliced_fraction`, `reliability` [0, 1], `regime` (`ok` / `low_unspliced` / `high_unspliced`), `basis`, `message` | Pre-flight proxy **data-quality** reliability (U-shaped map of fraction → reliability). Pass `reliability` into `annotate_mechanism_class`; `run_default_pipeline` stores it in `meta["regime"]` and uses it when `annotate_mechanism=True` |
+| `qc.regime_diagnosis` | dict: `unspliced_fraction`, `reliability` [0, 1], `regime` (`ok` / `low_unspliced` / `high_unspliced`), `basis`, `message` | Pre-flight proxy **data-quality** reliability (U-shaped map of fraction → reliability). Pass `reliability` into `annotate_mechanism_class`; `partition_de_by_mechanism` always runs it; `run_default_pipeline` stores it in `meta["regime"]` and uses it when `annotate_mechanism=True` |
 
 **Scope:** `regime_diagnosis` is the **data-quality / gamma** half of a regime
 check (too little nascent signal, or too much ≈ nuclear/gDNA → gamma mis-fit).
 It does **not** yet distinguish dynamic vs steady-state transcription (that
 needs a velocity-magnitude signal such as `velocity_length`, pending
-validation). High `reliability` means “proxy not obviously corrupted”, not
-“proxy beats DE on this dataset”.
+validation). High `reliability` means the proxy is not clearly corrupted, not
+that it outperforms DE.
 
 ```{eval-rst}
 .. autosummary::
@@ -223,7 +226,7 @@ Every `scat.pl.*` function accepts `ax=`/`axes=` (multi-panel embedding),
 
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|
-| `style` | `volcano_plot` | `"auto"` (legacy `active_score` colormap), `"ggvolcano"` (3-color classic), `"gradual"` (FDR gradient) |
+| `style` | `volcano_plot` | `"auto"` (default; colors by `unspliced_excess_residual` when present), `"ggvolcano"` (3-color classic), `"gradual"` (FDR gradient) |
 | `context` | major plotters | `"notebook"` defaults vs `"paper"` (larger figsize/fonts, dpi=300); aliases include `"print"` / `"publication"` |
 | `x` / `size_by` / `color_by` | `enrich_dotplot`, `enrich_barplot` | `x="GeneRatio"` (ORA) or `"NES"` (GSEA, auto-detected); `color_by` defaults to adjusted p-value |
 | `show_terms` | `enrich_dotplot`, `compare_dotplot` | `int` (top N), `"auto"` (significance + count heuristic), or an explicit term list |

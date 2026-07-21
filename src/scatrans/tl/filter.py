@@ -18,6 +18,7 @@ from ._common import (
     _NOT_PROVIDED,
     HEURISTIC_FILTER_DEFAULTS,
     PSEUDOBULK_FILTER_DEFAULTS,
+    _de_first_sort_keys,
 )
 
 logger = logging.getLogger(__name__)
@@ -297,19 +298,20 @@ def filter_active_genes(
             if return_mask:
                 return mask
             filtered = df.loc[mask].copy()
-            if "active_score" in filtered.columns:
-                filtered = filtered.sort_values("active_score", ascending=False)
-            elif "p_adj" in filtered.columns:
-                filtered = filtered.sort_values("p_adj", ascending=True)
+            # DE-first ordering to match the built-in ``significant`` list from
+            # active_score (same membership AND same order — the documented
+            # "exactly reproduces" contract). The composite active_score is legacy.
+            _sc, _sa = _de_first_sort_keys(filtered.columns)
+            if _sc:
+                filtered = filtered.sort_values(_sc, ascending=_sa)
             if inplace:
                 # Drop non-passing rows; re-sort surviving rows (preserves identity + attrs)
                 to_drop = results.index.difference(filtered.index)
                 if len(to_drop) > 0:
                     results.drop(index=to_drop, inplace=True)
-                if "active_score" in results.columns:
-                    results.sort_values("active_score", ascending=False, inplace=True)
-                elif "p_adj" in results.columns:
-                    results.sort_values("p_adj", ascending=True, inplace=True)
+                _rc, _ra = _de_first_sort_keys(results.columns)
+                if _rc:
+                    results.sort_values(_rc, ascending=_ra, inplace=True)
                 return results
             return filtered
         if p in ("heuristic", "single_cell", "default"):

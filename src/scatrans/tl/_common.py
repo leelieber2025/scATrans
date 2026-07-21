@@ -110,6 +110,20 @@ def _resolve_velocity_layer_keys(adata: ad.AnnData) -> tuple[str, str] | None:
     return None
 
 
+def _de_first_sort_keys(columns: Any) -> tuple[list[str], list[bool]]:
+    """Sort spec for DE-first ordering: ``p_adj`` ascending, then ``logFC`` descending.
+
+    Each key is paired with its own direction, so a missing ``p_adj`` cannot flip
+    ``logFC`` to ascending. Falls back to the legacy composite ``active_score``
+    (descending) only when neither DE column is present. Returns ``([], [])`` if
+    none of the keys exist (caller should then leave the order untouched).
+    """
+    spec = [(c, asc) for c, asc in (("p_adj", True), ("logFC", False)) if c in columns]
+    if not spec and "active_score" in columns:
+        spec = [("active_score", False)]
+    return [c for c, _ in spec], [asc for _, asc in spec]
+
+
 def _validate_de_common_options(
     *,
     de_preprocess: str,

@@ -39,6 +39,7 @@ from .mechanism import (
     program_mechanism,
     threshold_sensitivity,
 )
+from .nascent import nascent_activity_score
 from .partition import PartitionResult, partition_de_by_mechanism
 from .pipeline import (
     PipelineResult,
@@ -60,6 +61,7 @@ __all__ = [
     "annotate_mechanism_class",
     "threshold_sensitivity",
     "program_mechanism",
+    "nascent_activity_score",
     "partition_de_by_mechanism",
     "PartitionResult",
     "active_score_simple",

@@ -54,11 +54,11 @@ def _reliability_from_unspliced_fraction(
 ) -> float:
     """Map the global unspliced fraction to a proxy-reliability scalar in [0, 1].
 
-    U-shaped: the nascent proxy / gamma fit is trustworthy in a normal unspliced
-    band and degrades at both extremes — too LOW (little nascent signal, noise
-    dominated) and too HIGH (nuclear/gDNA contamination -> gamma mis-fit; e.g.
-    HTEC 67.7% unspliced where the proxy failed, AUC 0.49). Full reliability on
-    ``[low_ok, high_ok]``, linear ramps to 0 at ``low_floor`` / ``high_ceil``.
+    U-shaped: the nascent proxy / gamma fit is more trustworthy in a normal
+    unspliced band and degrades at both extremes — too LOW (little nascent
+    signal) and too HIGH (possible nuclear/gDNA contamination and gamma mis-fit).
+    Full reliability on ``[low_ok, high_ok]``; linear ramps to 0 at
+    ``low_floor`` / ``high_ceil``.
     """
     if not (low_floor < low_ok <= high_ok < high_ceil):
         raise ValueError("require low_floor < low_ok <= high_ok < high_ceil")
@@ -86,16 +86,10 @@ def regime_diagnosis(
     to pass to :func:`scatrans.tl.annotate_mechanism_class` (``reliability=``) so
     the per-gene mechanism confidence reflects data quality.
 
-    NOTE — scope: this is the DATA-QUALITY / gamma-reliability half of the regime
-    check (unspliced-fraction QC). It does NOT distinguish *dynamic vs
-    steady-state* transcription, which is what actually governs whether the proxy
-    beats DE. The candidate signal for that half — per-timepoint RNA-velocity
-    ``velocity_length`` — was cross-validated on sci-fate and REJECTED (it tracked
-    true proxy reliability on scNT at +0.80 but not across platforms, -0.50 on
-    sci-fate: its absolute magnitude is not comparable across depth/chemistry), so
-    no dynamic-vs-steady signal is provided; a validated label-free one is an open
-    problem. Treat a high ``reliability`` here as "the proxy is not obviously
-    corrupted", not as "the proxy is in its winning regime".
+    NOTE — scope: data-quality / gamma reliability from the global unspliced
+    fraction only. This does **not** classify dynamic versus steady-state regimes,
+    and high reliability means the proxy is not obviously corrupted — not that it
+    outperforms DE. Dynamic-vs-steady labeling is not implemented.
 
     Returns
     -------

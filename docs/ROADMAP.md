@@ -1,20 +1,17 @@
 # Roadmap
 
-**Strategy (locked):** finish **testing** → finish the **paper** → then
-**1.0** + **preprint**. Stay on **0.10.x (Beta)** until the manuscript is
-done. Not a calendar commitment.
+**Sequence:** testing → manuscript → **1.0** and preprint. Stay on **0.10.x
+(Beta)** until the manuscript is complete. This is not a calendar commitment.
 
-**Positioning:** a focused method package whose primary workflow is
-**DE selects → scATrans partitions by mechanism** (transcription-driven vs
-stabilization-driven, via `partition_de_by_mechanism` / `PartitionResult`) from
-spliced/unspliced (or nascent/mature) layers — not a multi-omics platform. The
-composite `active_score` ranking is a lower-level scoring engine, retained but
-**deprecated** as the primary gene-discovery path. Prefer depth, reportability,
-and reproducibility over feature breadth.
+**Scope:** a method package whose primary workflow is DE selection followed by
+mechanism partition (transcription-driven versus stabilization-driven via
+`partition_de_by_mechanism` / `PartitionResult`) from spliced/unspliced or
+nascent/mature layers—not a multi-omics platform. The lower-level nascent
+scoring engine (`active_score`) remains available but is **not** the primary
+gene-discovery path.
 
-**Non-goals (until well after 1.0):** LLM agents / MCP productization,
-vendoring a zoo of third-party methods, becoming a general DE replacement
-for scanpy.
+**Non-goals (until well after 1.0):** LLM/MCP productization, bundling large
+numbers of third-party methods, or replacing general DE tools such as scanpy.
 
 ---
 
@@ -53,7 +50,7 @@ defensible**, not maximal coverage for its own sake.
 
 | Area | Why for the paper | Acceptance |
 |------|-------------------|------------|
-| **Active score core** | Central method | Synthetic / fixture paths for residual, composite score, key columns; regression on column names used in figures |
+| **Active score core** | Central method | Synthetic / fixture paths for residual and key columns; regression on column names used in figures |
 | **DE backends used in paper** | Backend choice appears in Methods | Cover every backend the manuscript reports (e.g. scanpy, PyDESeq2, …) with mocks or small fixtures; CI `_de` gate stays green **with pydeseq2 installed** |
 | **Filter presets / cutoffs** | Numbers appear in text | Preset names + semantics stable; document that *numeric* defaults may change pre-1.0 but paper must report installed version + values used |
 | **Pipeline / `PipelineResult`** | One-liner workflow | Keys used in tutorials/paper (`candidates`, `enrichment`, `meta`, …) stable; pickle/deepcopy if you serialize results for figures |
@@ -160,7 +157,7 @@ Science-led, not platform-led:
 
 - Stronger design diagnostics / backend recommendation narrative
 - Multi-sample / multi-condition reporting patterns
-- Systematic comparison notebooks (active score vs DE-only / velocity context)
+- Systematic comparison notebooks (nascent residual vs DE-only / velocity context)
 - Species / custom gene-set ergonomics as users demand
 
 Still non-goals unless strategy changes: agent stack, method zoo, GPU-first

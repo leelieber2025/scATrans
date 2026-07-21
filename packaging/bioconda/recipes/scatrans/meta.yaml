@@ -1,13 +1,13 @@
 {% set name = "scatrans" %}
-{% set version = "0.10.6" %}
+{% set version = "0.10.7" %}
 
 package:
   name: {{ name }}
   version: {{ version }}
 
 source:
-  # After uploading scatrans-0.10.6 to PyPI, replace sha256 with the sdist
-  # SHA256 from https://pypi.org/project/scatrans/0.10.6/#files (not BLAKE2b).
+  # After uploading scatrans-0.10.7 to PyPI, replace sha256 with the sdist
+  # SHA256 from https://pypi.org/project/scatrans/0.10.7/#files (not BLAKE2b).
   url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
   sha256: "PLEASE_UPDATE_AFTER_PYPI_UPLOAD"
 

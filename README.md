@@ -8,19 +8,31 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21365873.svg)](https://doi.org/10.5281/zenodo.21365873)
 
-scATrans is a single-cell differential-analysis toolkit with an RNA-velocity
-twist: standard DE **selects** the changed genes, then scATrans **partitions**
-them by mechanism — *transcription-driven* vs *stabilization-driven* — from the
-nascent (unspliced) signal, a call a fold-change alone cannot make.
+**scATrans** is a Python package for mechanism-aware single-cell differential
+analysis. A standard differential expression (DE) step defines which genes
+changed; scATrans partitions those genes into *transcription-driven* versus
+*stabilization-driven* classes using the nascent (unspliced) RNA residual—a
+distinction that total-count fold change alone cannot resolve.
 
-It also supports conventional differential expression workflows (no velocity
-data required) using scanpy, PyDESeq2 pseudobulk, linear mixed models, or
-optional Memento. Functional enrichment (ORA, GSEA, GO, KEGG) uses bundled gene
-sets with consistent universe handling, and a set of visualization functions is
-provided.
+| Component | Role |
+|-----------|------|
+| DE | Gene-list membership |
+| Mechanism annotation | Residual-based transcription vs. stabilization labels |
+| Detection (optional) | `add_nascent_score=True` adds active-transcription scores; does not drive mechanism labels |
 
-**📚 Documentation, tutorials, and API reference:
-[Read the Docs](https://scatrans.readthedocs.io/en/latest/).**
+The primary workflow requires spliced and unspliced layers (or mature and
+nascent layers, e.g. from kb-python) and is most informative at the pathway or
+program level. The package also supports conventional DE without nascent layers
+(scanpy, PyDESeq2 pseudobulk, linear mixed models, optional Memento), enrichment
+(ORA, GSEA, GO, KEGG), and plotting.
+
+Full documentation: [Read the Docs](https://scatrans.readthedocs.io/en/latest/).
+
+## Requirements
+
+- Python 3.10+
+- AnnData object with a condition column in `.obs`
+- For mechanism analysis: `spliced`/`unspliced` or `mature`/`nascent` layers
 
 ## Installation
 
@@ -29,40 +41,55 @@ pip install scatrans
 # or: conda install -c conda-forge -c bioconda scatrans
 ```
 
-Optional extras (scVelo, gene features, PyDESeq2, Memento, GSEA) and a source /
-editable dev setup are covered in the
-[Installation guide](https://scatrans.readthedocs.io/en/latest/installation.html).
+Optional extras (scVelo, gene-feature CLI, PyDESeq2, Memento, GSEA) and
+development installs:
+[installation guide](https://scatrans.readthedocs.io/en/latest/installation.html).
 
 ## Quickstart
 
 ```python
 import scatrans as scat
 
-# DE selects the changed genes; scATrans partitions them by MECHANISM.
 result = scat.partition_de_by_mechanism(
-    adata,
-    groupby="condition", target_group="Disease", reference_group="Control",
+    adata,  # AnnData with spliced/unspliced or mature/nascent layers
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
     organism="mouse",
-    de="builtin",            # or a DE method name / precomputed DE table / callable
-    gene_sets=my_pathways,   # optional -> program-level mechanism table
+    de="builtin",  # method name, kwargs dict, DataFrame, or callable
+    # add_nascent_score=True,  # optional detection columns
+    gene_sets=my_pathways,  # optional program-level table
 )
-result.regime      # reliability pre-flight
-result.selected    # DE-selected genes + per-gene mechanism annotation
-result.programs    # decisive program-level transcription-vs-stabilization calls
+result.regime    # reliability pre-flight (global unspliced fraction)
+result.selected  # DE-selected genes with mechanism annotation
+result.programs  # program-level table when gene_sets is provided
 ```
 
-See the [Quickstart](https://scatrans.readthedocs.io/en/latest/quickstart.html),
-[Tutorials](https://scatrans.readthedocs.io/en/latest/tutorials/index.html), and
-[User Guide](https://scatrans.readthedocs.io/en/latest/user_guide/index.html) for
-the full workflow, DE backends, enrichment, plotting, and reporting guidance
-([Statistical Guidance](https://scatrans.readthedocs.io/en/latest/statistical_guidance.html)).
+Further reading:
+
+- [Quickstart](https://scatrans.readthedocs.io/en/latest/quickstart.html)
+- [Tutorials](https://scatrans.readthedocs.io/en/latest/tutorials/index.html)
+- [User Guide](https://scatrans.readthedocs.io/en/latest/user_guide/index.html)
+- [FAQ](https://scatrans.readthedocs.io/en/latest/faq.html) (scope and limitations)
+- [Statistical Guidance](https://scatrans.readthedocs.io/en/latest/statistical_guidance.html)
+
+## Status
+
+scATrans is **0.10.x (Beta)**. Prefer `import scatrans as scat` and names in
+`scatrans.__all__`, `scat.pl`, and `scat.qc`. See
+[API stability](https://scatrans.readthedocs.io/en/latest/api_stability.html).
+
+## Citation
+
+If you use scATrans in published work, cite the software via the Zenodo DOI
+above and the manuscript when available. See `CITATION.cff`.
 
 ## License
 
-Software (Python source) is licensed under [Apache License 2.0](LICENSE).
-Bundled gene-set data (GO, KEGG) carries its own licensing terms — see
-[License](https://scatrans.readthedocs.io/en/latest/license.html) before
-commercial use.
+Software: [Apache License 2.0](LICENSE). Bundled gene-set data (GO, KEGG) may
+carry separate terms; see the
+[license page](https://scatrans.readthedocs.io/en/latest/license.html) before
+commercial redistribution.
 
 ## Author
 

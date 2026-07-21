@@ -1,22 +1,18 @@
 """scatrans.tl.mechanism — transcription-vs-stabilization mechanism annotation.
 
 Additive helpers for the "DE selects, proxy annotates" workflow (see
-``run_default_pipeline(select_by="de")``). All three operate on an ``active_score``
-/ ``run_default_pipeline`` results table and never gate gene-list membership:
+``run_default_pipeline(select_by="de")``). All operate on an ``active_score`` /
+pipeline results table and never gate gene-list membership:
 
-  * :func:`annotate_mechanism_class` — per-gene STATIC mechanism label
+  * :func:`annotate_mechanism_class` — per-gene static mechanism label
     (transcription-driven / stabilization-driven / ambiguous) from the nascent
-    unspliced-excess residual. Validated on scEU-seq (RPE1): the proxy separates
-    synthesis- from stabilization-driven up-genes at matched abundance (modest,
-    AUC ~0.63), while total expression is at chance. The per-gene call is therefore
-    LOW-confidence by design — pair it with :func:`program_mechanism`.
-  * :func:`threshold_sensitivity` — tabulate how the DE-selected list size (and its
-    overlap with a reference cut) responds to the padj / logFC thresholds, so a
-    report can show sensitivity instead of defending one cutoff.
-  * :func:`program_mechanism` — THRESHOLD-FREE program-level mechanism inference:
-    pool the per-gene transcription support over each gene set and test it against
-    the background (competitive Mann-Whitney). Exploits "weak per-gene, strong in
-    aggregate" — the per-gene signal (~0.63) becomes a decisive program-level call.
+    residual. Per-gene accuracy is modest by design; pair with
+    :func:`program_mechanism`.
+  * :func:`threshold_sensitivity` — DE-selected list size and overlap versus a
+    reference cut across padj / logFC grids.
+  * :func:`program_mechanism` — threshold-free program-level inference: pool
+    per-gene transcription support over each gene set and test against background
+    (competitive Mann–Whitney + BH FDR).
 """
 
 from __future__ import annotations
@@ -231,8 +227,8 @@ def program_mechanism(
 
     For each gene set, pool the per-gene ``transcription_support`` and test it
     against the background (all other tested genes) with a competitive
-    Mann-Whitney U. No per-gene hard cutoff — this is where the weak per-gene
-    proxy (~AUC 0.63) becomes a decisive program-level mechanism call.
+    Mann–Whitney U. No per-gene hard cutoff — program-level pooling is preferred
+    over single-gene mechanism claims.
 
     Parameters
     ----------

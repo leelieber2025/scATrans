@@ -1,9 +1,7 @@
-# Standalone Differential Expression (no velocity data required)
+# Standalone Differential Expression
 
-While scATrans can compute composite active transcription scores from
-spliced/unspliced (velocity) data via `active_score`, that path is still
-**experimental**. For production analyses that do not need velocity layers,
-use this **stable** general-purpose differential expression entry point.
+Use this path when nascent (spliced/unspliced) layers are unavailable or when
+only conventional DE is required.
 
 ```python
 import scatrans as scat
@@ -13,7 +11,7 @@ import scatrans as scat
 # survive later HVG/cell subsetting.
 scat.store_raw_counts(adata, layer="counts")
 
-# Works on regular count AnnData (no spliced/unspliced needed)
+# Standard count AnnData (no spliced/unspliced layers required)
 adata, de_results = scat.differential_expression(
     adata,
     groupby="condition",
@@ -51,15 +49,12 @@ exclusive. With MixedLM, reported `logFC` is sample-mean-of-means log2FC
 with `filter_active_genes`, enrichment functions, and all `scat.pl.*`
 plotting helpers.
 
-The package therefore supports both velocity-based active transcription
-analysis and conventional DE + enrichment workflows. See
-`examples/memento_de_example.py` for a complete demonstration of the
-pure-DE path.
+Example script: `examples/memento_de_example.py`.
 
-## Important: raw counts requirement
+## Raw counts requirement
 
-Count-based backends (Memento, PyDESeq2) expect raw integer counts. A
-common pattern that leaves unsuitable data is:
+Count-based backends (Memento, PyDESeq2) expect raw integer counts. The following
+pattern leaves unsuitable data:
 
 ```python
 sc.pp.highly_variable_genes(adata, ...)

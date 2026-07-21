@@ -1,7 +1,6 @@
 # Optional Advanced Features
 
-The following flags are disabled by default and should be enabled only when
-required by the experimental design:
+These options are off by default; enable them only when the design requires them:
 
 - `use_permutation=True`
 - `bias_correction="none"`
@@ -10,12 +9,10 @@ required by the experimental design:
 - `use_mixed_model=True`
 - `prioritize_velocity=True` (**deprecated** — prefer `ranking_mode="nascent_excess"`)
 
-`diagnose_design` summarizes cell and sample counts plus global unspliced
-fraction and returns warnings and a suggested `filter_active_genes` preset.
-It runs automatically when `sample_col` or `use_pseudobulk=True` is
-supplied.
-
-Inspect the corresponding diagnostics after enabling any advanced option.
+`diagnose_design` summarizes cell and sample counts and the global unspliced
+fraction, and returns warnings plus a suggested `filter_active_genes` preset.
+It runs automatically when `sample_col` or `use_pseudobulk=True` is set.
+Inspect diagnostics after enabling any advanced option.
 
 ## `use_permutation=True`
 
@@ -26,9 +23,6 @@ Adds:
 - `unspliced_excess_pval` / `unspliced_excess_fdr` — permutation significance
   on the bias-corrected unspliced excess residual (one-sided, positive
   direction). **Use these for active-gene calls.**
-- `active_score_pval` / `active_score_fdr` — permutation on the composite
-  heuristic score (**ranking aid only; do not report as primary
-  significance**).
 
 The permutation shuffles only group labels; unspliced/spliced layers and the
 reference gamma are fixed from the original labeling for speed. **This is a
@@ -44,7 +38,7 @@ the permutation null:
 | Value | Behavior | When to use |
 |-------|----------|-------------|
 | `"same"` (**default**) | Each permutation uses the **same** DE backend as the main analysis: scanpy `de_method` / pseudobulk backend, **and MixedLM** when `use_mixed_model=True` (same `sample_col`, `mixed_model_pval`, `paired_replicates`) | **Recommended for manuscripts** — null and observed statistics match |
-| `"fast"` | Always uses scanpy `t-test_overestim_var` inside permutations (faster) | Large screens / exploration only; **may bias FDR** if main analysis uses Wilcoxon, Memento, PyDESeq2, or **MixedLM**. With MixedLM, composite `active_score_pval`/`active_score_fdr` are **not valid** under `'fast'` (residual/`unspliced_excess_fdr` still are). Under `ranking_mode="nascent_excess"` the composite active_score FDR is residual-only and is **not** affected by DE-null mismatch |
+| `"fast"` | Always uses scanpy `t-test_overestim_var` inside permutations (faster) | Large screens / exploration only; **may bias FDR** if main analysis uses Wilcoxon, Memento, PyDESeq2, or **MixedLM**. The residual FDR (`unspliced_excess_fdr`) is unaffected by the DE-null mismatch |
 
 ```python
 adata_res, significant, all_results = scat.active_score(
@@ -127,8 +121,8 @@ kinetically uninformative nascent proxy on steady-state snapshots.
 ## Reliability-adaptive nascent weight (post-hoc)
 
 When the residual anti-correlates with induction (common on late /
-steady-state velocity snapshots), a fixed nascent weight can pull the
-composite below plain DE. `add_adaptive_score` estimates reliability as the
+steady-state velocity snapshots), a fixed nascent weight can pull a
+combined ranking below plain DE. `add_adaptive_score` estimates reliability as the
 AUC of `unspliced_excess_residual` recovering an **anchor** gene set and
 builds `adaptive_score` with weight
 `w = clip(k * (reliability - 0.5), 0, w_max)` (defaults `k=4`, `w_max=2`):
@@ -165,13 +159,14 @@ print(result.meta.get("adaptive"))
 ```
 
 `adaptive_score` is still a **heuristic rank**, not FDR. Report the
-diagnostics when you use it. Core `active_score` columns and defaults are
-unchanged.
+diagnostics when you use it. Core `active_score()` residual/DE outputs and
+defaults are unchanged.
 
 ## DE selects, proxy annotates
 
-When you want a **production-ready gene list** from DE while still computing
-nascent columns for exploration, use `select_by="de"`:
+**Preferred:** {func}`~scatrans.partition_de_by_mechanism` already selects by DE
+and annotates mechanism (optionally `add_nascent_score=True` for detection
+columns). For the legacy pipeline path, use `select_by="de"`:
 
 ```python
 result = scat.run_default_pipeline(
@@ -215,27 +210,58 @@ r = scat.qc.regime_diagnosis(adata)
 `run_default_pipeline` always stores this in `meta["regime"]` (fail-soft if
 layers are missing). Scope: **data-quality / gamma** only — not yet
 dynamic-vs-steady-state (that needs a velocity-magnitude signal, pending
-validation). Treat high reliability as “not obviously corrupted”, not
-“proxy wins over DE”.
+validation). High reliability means the proxy is not clearly corrupted; it is
+not evidence that the residual outperforms DE.
 
-## Mechanism annotation (experimental nascent path)
+## Mechanism annotation
 
-**Annotation only — never changes who is on the gene list.** Prefer
-`select_by="de"` for membership, then annotate. Scale confidence by the
-regime reliability when you have velocity layers:
+Annotation only — does not change gene-list membership. Scale confidence with
+regime reliability when velocity layers are present. Product rules: {doc}`../faq`.
+
+### Preferred: primary workflow (+ optional detection columns)
+
+```python
+# Mechanism always uses the induction-normalized residual
+res = scat.partition_de_by_mechanism(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    de="builtin", gene_sets=my_pathways,
+)
+
+# Same mechanism path, plus additive DETECTION columns (decoupled from mechanism)
+res = scat.partition_de_by_mechanism(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    de="builtin",
+    add_nascent_score=True,
+    gene_sets=my_pathways,
+)
+# gene_table gains: nascent_poisson_z, de_reproducible, de_repro_frac, …
+# meta["nascent_score"] records enabled / status / n_reproducible
+# transcription_support / program directions are unchanged vs residual-only run
+```
+
+### Manual building blocks
 
 ```python
 r = scat.qc.regime_diagnosis(adata)
-# Per-gene (LOW confidence by design; AUC ~0.63 on static validation)
+# Optional: detection score (do NOT pass as residual_col for mechanism)
+nz = scat.nascent_activity_score(
+    adata, groupby="condition", target_group="Disease", reference_group="Control",
+    sample_col="sample",
+)
+all_results = all_results.join(nz, how="left")
+
+# Per-gene mechanism (low confidence by design; prefer program-level pooling)
+# omit residual_col to auto-pick unspliced_excess_residual / abnorm residual
 all_results, mdiag = scat.annotate_mechanism_class(
-    all_results, reliability=r["reliability"]
+    all_results,
+    reliability=r["reliability"],
 )
 # columns: transcription_support, mechanism_class, mechanism_confidence
 # classes: transcription-driven | stabilization-driven | ambiguous |
 #          unclassified_down | unknown
 
 # Or via the pipeline (uses meta["regime"]["reliability"] automatically):
-# result = scat.run_default_pipeline(..., annotate_mechanism=True)
+# result = scat.run_default_pipeline(..., select_by="de", annotate_mechanism=True)
 # result.meta["regime"], result.meta["mechanism"]
 
 # Program-level (threshold-free competitive Mann–Whitney on support)
@@ -245,9 +271,9 @@ prog = scat.program_mechanism(all_results, gene_sets={"IEG": ieg_list, "inflam":
 sens = scat.threshold_sensitivity(all_results)  # padj × logFC grid + Jaccard vs reference
 ```
 
-Per-gene labels are exploratory. Pool with `program_mechanism` for stronger
-program-level transcription-vs-stabilization calls, and report
-`threshold_sensitivity` rather than defending a single DE cutoff.
+Per-gene labels are exploratory. Prefer `program_mechanism` for
+program-level transcription-versus-stabilization calls, and report
+`threshold_sensitivity` rather than relying on a single DE cutoff.
 
 ## `gamma_method` and reference gamma robustness
 
@@ -324,19 +350,18 @@ Requires `sample_col` (the column identifying biological replicates/individuals)
   where sample-mean logFC sign disagrees with the MixedLM coef), and
   `failed_fit_rate`. When the discordant count is &gt; 0, a **logger
   warning** is emitted and those genes are excluded from the built-in
-  `significant` path / active_score significance leg (`mixedlm_coef > 0`
-  required). Inspect these before publication.
+  `significant` path (`mixedlm_coef > 0` required). Inspect these before
+  publication.
 - **Incompatible with `use_memento_de=True`** — both are cell-level DE
   backends; enabling both raises `ValueError` (choose one).
 - **With `use_permutation=True`:** default `perm_de_backend="same"` refits
-  MixedLM under each shuffle so `active_score_pval`/`active_score_fdr` match
-  the observed estimator. Labels are shuffled at the **sample /
+  MixedLM under each shuffle. Labels are shuffled at the **sample /
   random-effect cluster** level (not per cell): a biological sample is never
   split across conditions under the null, which is required for
   hierarchical exchangeability of `(1|sample)`. Paired designs shuffle
-  within subject. `perm_de_backend="fast"` deliberately uses a t-test null
-  and **invalidates** those active_score FDRs (a warning is logged);
-  `unspliced_excess_fdr` is unaffected. MixedLM×n_perm can be slow;
+  within subject. `perm_de_backend="fast"` deliberately uses a t-test null for
+  speed; the residual FDR (`unspliced_excess_fdr`) is DE-backend-independent
+  and unaffected either way. MixedLM×n_perm can be slow;
   `auto_adjust_n_perm` caps `n_perm` by the sample-level permutation space.
 
 **Small-sample guidance:** The mixed-model path requires **≥4 biological
@@ -374,17 +399,13 @@ diagnostics.
 
 When ranking is residual-only, custom `weight_fc` / `weight_pval` /
 `weight_unspliced` are **ignored** and forced to `(0, 0, 1)` (with a
-warning). This keeps the mode name honest: composite DE weights cannot
-silently alter a residual-only ranking.
+warning), so the run ranks by `unspliced_excess_residual` alone.
 
-**Impact on DE / permutation mismatches:** because `active_score` then
-depends only on `unspliced_excess_residual`, **DE-null mismatches do not
-affect** `active_score_pval` / `active_score_fdr` under this mode — including
-historical cell-level vs sample-level MixedLM shuffle issues, or
-`perm_de_backend="fast"` with MixedLM/Memento/PyDESeq2 observed DE. Those
-mismatches matter only under default `ranking_mode="composite"` (non-zero
-`weight_fc` / `weight_pval`). Residual-only columns
-(`unspliced_excess_pval` / `unspliced_excess_fdr`) never use the DE backend.
+**Impact on DE / permutation mismatches:** the residual-only significance
+columns (`unspliced_excess_pval` / `unspliced_excess_fdr`) never use the DE
+backend, so DE-null mismatches — historical cell-level vs sample-level MixedLM
+shuffle issues, or `perm_de_backend="fast"` with MixedLM/Memento/PyDESeq2
+observed DE — do not affect them under any ranking mode.
 
 ## `mode="advanced"`
 
