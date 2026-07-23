@@ -158,7 +158,8 @@ changes that affect scientific interpretation should be called out in
 ## How to stay safe as a user
 
 1. Depend on `scatrans.__all__` / documented functions, not internal modules.
-2. Pin a minor version range in papers and production
-   (`scatrans>=0.10.7,<0.11` or `==0.10.7` for exact reproducibility).
+2. Pin a minor version range in papers and production. For analyses matching
+   the scATrans manuscript pin **0.10.8**, use ``scatrans==0.10.8`` (or
+   ``scatrans>=0.10.8,<0.11`` if you accept later 0.10.x patches).
 3. Record `scatrans.__version__` (and backend versions such as PyDESeq2) in
    Methods / session logs.

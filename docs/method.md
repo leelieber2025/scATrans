@@ -1,16 +1,25 @@
-# Method: Active Transcription Framework
+# Method: Nascent residual and mechanism annotation
 
 ```{admonition} Scope of this page
 :class: note
 
-Mathematical definition of the scATrans nascent residual computed by
-{func}`~scatrans.active_score`: the default replicate-aware configuration,
-optional routes and estimators, and the induction-normalized unspliced residual
-used for mechanism annotation (adapted from the scATrans manuscript).
+**Software mathematics** for the reference-corrected unspliced residual (and
+optional sample-level residual permutation), as implemented in
+{func}`~scatrans.active_score` and used by
+{func}`~scatrans.partition_de_by_mechanism`.
 
-The recommended software entry point is
-{func}`~scatrans.partition_de_by_mechanism`. Product scope and deprecated
-paths: {doc}`faq`.
+This page is **not** a substitute for the manuscript Results (figure numbers
+such as “Figure S1” in the paper refer to GR / design checks there, not to the
+mode diagram below). Equation numbers here are local to this documentation
+page; the residual core matches the manuscript Methods (reference-corrected
+excess and Huber gene-structure residualization).
+
+**Primary software path (manuscript-aligned):** DE defines gene-list membership;
+the residual annotates transcription vs. stabilization support; program-level
+calls (and optional induction-matched tests) are preferred over hard per-gene
+claims; optional `add_nascent_score` is a **detection** axis and never rewrites
+mechanism labels. Sample-level residual permutation is **optional** (Mode A),
+not required for mechanism partition. Product scope: {doc}`faq`.
 
 - Output columns and reporting: {doc}`statistical_guidance`
 - Domain conventions: {doc}`domain_assumptions`
@@ -43,16 +52,17 @@ Two consequences motivate scATrans. First, the *observable* steady-state
 unspliced-to-spliced ratio identifies only the compound quantity
 $\gamma/\beta$, not any individual kinetic rate; a ratio estimated from data
 must be treated as an empirical calibration constant, not as a transcription or
-degradation rate. Second, away from steady state—for example during cell-state
-transitions, stimulus responses, or disease onset—the unspliced abundance can
-deviate from the value predicted by the reference ratio, and this *excess* is an
-early signal of transcriptional activation before total mRNA has fully changed.
+degradation rate. Second, when conditions differ, unspliced abundance can
+deviate from the value predicted by a reference unspliced-to-spliced
+relationship; the *excess* is a static, condition-comparative signal used for
+mechanism annotation among DE genes (not a substitute DE discovery score).
 
-Relative to steady-state DE alone, the nascent-versus-mature contrast can
-(i) highlight early transcriptional responses, (ii) help separate transcriptional
-from post-transcriptional regulation, and (iii) flag inducible genes before
-mature mRNA abundance has fully changed. These properties are limited by capture
-quality, kinetic regime, and power; product scope is summarized in {doc}`faq`.
+Relative to mature-abundance DE alone, the residual can help separate
+transcription-weighted from stabilization-weighted changes among genes DE has
+already nominated, especially when pooled at the program level. Early after a
+stimulus the residual can also carry nascent signal that decays as mature mRNA
+accumulates. These properties are limited by intron-capture quality, kinetic
+regime, and power; product scope is summarized in {doc}`faq`.
 
 Single-cell DE is also subject to pseudoreplication when cells from one
 biological replicate are treated as independent observations. Pseudobulk
@@ -60,19 +70,37 @@ methods improve type-I error control by making the replicate the unit of
 inference, yet raw unspliced counts remain confounded by gene length and intron
 number.
 
-**scATrans** combines replicate-aware DE evidence with a reference-corrected,
-bias-adjusted unspliced residual; significance for the residual is obtained by
-sample-level permutation when requested. In software, the recommended entry
-point is mechanism partition of DE-selected genes
-({func}`~scatrans.partition_de_by_mechanism`).
+**scATrans** combines a pluggable DE step (membership) with a
+reference-corrected, bias-adjusted unspliced residual (annotation). Optional
+sample-level permutation calibrates residual significance when biological
+replicates exist. The recommended entry point is mechanism partition of
+DE-selected genes ({func}`~scatrans.partition_de_by_mechanism`).
 
 ## Methods
 
 ### Overview and default configuration
 
-All results reported here were generated with the recommended, replicate-aware configuration of scATrans, which is described in full below: cells are aggregated into pseudobulk profiles per biological sample, differential expression is estimated with PyDESeq2, the unspliced excess is calibrated against a shrunken reference unspliced-to-spliced ratio, gene-structure bias is removed by weighted Huber regression, and significance is obtained by permuting condition labels **at the sample level**. Alternative observational units, ratio estimators and DE backends are implemented in the software; they share the same mathematical core and are specified in the Supplementary Methods (Supplementary Figure S1, Supplementary Table S1).
+**Mechanism partition (recommended software path).**
+{func}`~scatrans.partition_de_by_mechanism` (i) runs regime diagnosis, (ii)
+selects genes by DE (builtin, external table, or backend kwargs; prefer
+pseudobulk when `sample_col` provides replicates), (iii) computes the
+reference-corrected unspliced excess and optional Huber gene-structure
+residualization below, (iv) forms soft mechanism labels and optional
+program-level / induction-matched tables, and (v) optionally appends a
+**decoupled** nascent detection score (`add_nascent_score=True`). Sample-level
+residual permutation is **not** required for that path.
 
-For each gene, the pipeline (i) estimates a shrunken reference unspliced-to-spliced ratio, (ii) uses it to compute a target-group unspliced excess, (iii) regresses out gene-structure-associated technical bias to obtain the residual, and (iv) calibrates the residual against an empirical null obtained by sample-level label permutation.
+**Optional residual permutation path (Mode A).** When biological sample
+structure exists, the lower-level scorer can recompute the residual under
+sample-level label permutation to obtain residual FDR. That configuration is
+described in the steps below for users who request it; it is a separate
+calibration of the residual, not the definition of DE membership.
+
+For each gene the residual core is: (i) a shrunken reference
+unspliced-to-spliced ratio, (ii) target-group unspliced excess, (iii) optional
+gene-structure bias residualization. Alternative observational units, ratio
+estimators, and DE backends share the same mathematical core (analysis routes /
+Modes A–C below; package documentation, not manuscript figure numbers).
 
 ### Notation and pseudobulk construction
 
@@ -118,14 +146,21 @@ Two limitations follow directly from the construction. First, the residual scale
 
 ### S1. Analysis routes implemented in scATrans
 
-The main text describes **Mode A**, the recommended replicate-aware route. The software additionally implements a cell-level route (**Mode B**) and a moment-smoothed cell-level route (**Mode C**). All three share the same mathematical core — Eqs. 2–5 of the main text — and differ only in (i) the definition of the observational unit $i$ used to form the group means $\bar{U}$ and $\bar{S}$, and (ii) the DE backend supplying ${logFC}_{g}$ and $p_{g}^{adj}$. Supplementary Figure S1 makes this shared structure explicit.
+**Mode A** is the recommended replicate-aware residual route when biological
+samples exist. The software also implements a cell-level route (**Mode B**) and
+a moment-smoothed cell-level route (**Mode C**). All three share the residual
+core (reference-corrected excess and Huber bias correction) and differ in
+(i) the observational unit $i$ used for group means $\bar{U}$ and $\bar{S}$,
+and (ii) the DE backend supplying ${logFC}_{g}$ and $p_{g}^{adj}$. The diagram
+below is a **documentation schematic** (analysis routes), not manuscript
+Figure S1.
 
 ```{figure} _static/method_routes_s1.png
 :name: fig-method-routes
 :width: 88%
 :align: center
 
-**Supplementary Figure S1. Analysis routes in scATrans.** Modes A, B and C differ only in the observational unit and the DE backend; the reference-corrected excess (Eqs. 2–3) and the Huber bias correction (Eq. 4) are identical across routes. Only Mode A permits sample-level permutation and therefore replicate-aware significance (Eq. 5).
+**Analysis routes in scATrans (Modes A–C).** Modes differ in the observational unit and the DE backend; the reference-corrected excess and Huber bias correction are shared. Only Mode A permits sample-level residual permutation for residual FDR.
 ```
 
 #### Mode A — Pseudobulk (main text; recommended)

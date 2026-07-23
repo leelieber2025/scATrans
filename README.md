@@ -30,7 +30,7 @@ Full documentation: [Read the Docs](https://scatrans.readthedocs.io/en/latest/).
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+ (tested on 3.9–3.12)
 - AnnData object with a condition column in `.obs`
 - For mechanism analysis: `spliced`/`unspliced` or `mature`/`nascent` layers
 
@@ -85,7 +85,9 @@ scATrans is **0.10.x (Beta)**. Prefer `import scatrans as scat` and names in
 ## Citation
 
 If you use scATrans in published work, cite the software via the Zenodo DOI
-above and the manuscript when available. See `CITATION.cff`.
+above and the manuscript when available. For exact reproducibility of analyses
+described with package version **0.10.8**, pin `scatrans==0.10.8`. See
+`CITATION.cff`.
 
 ## License
 

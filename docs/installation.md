@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python ≥ 3.10
+- Python ≥ 3.9 (CI covers 3.9–3.12)
 - A scientific Python environment (NumPy, SciPy, pandas, AnnData, scanpy)
 
 ## Bioconda

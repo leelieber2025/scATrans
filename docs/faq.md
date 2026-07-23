@@ -10,7 +10,8 @@ checks on steady-state and labeling-style designs indicate that the nascent
 residual does not systematically recover more true positives than DE. Its role
 is to annotate **mechanism** among DE genes (*transcription-driven* versus
 *stabilization-driven*). Per-gene labels are modest in accuracy; prefer
-program-level pooling. Check nascent-signal reliability with
+program-level pooling (and induction-matched program tests when induction
+varies). Effect size scales with intron-capture quality; check reliability with
 {func}`~scatrans.qc.regime_diagnosis` (often uninformative under low capture or
 strong 3′ bias).
 
