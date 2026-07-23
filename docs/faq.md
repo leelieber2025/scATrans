@@ -17,11 +17,11 @@ strong 3′ bias).
 | Topic | Practice |
 |-------|----------|
 | Gene-list membership | DE only (`partition_de_by_mechanism`, `filter_active_genes(..., select_by="de")`, or `differential_expression`). The residual does not remove DE hits. |
-| Mechanism | Residual-based `transcription_support` / `mechanism_class`; soft per-gene labels. Use `gene_sets=` / `program_mechanism` for program-level inference. |
+| Mechanism | Residual-based `transcription_support` / soft `mechanism_class`. Prefer `gene_sets=` + `program_mechanism`, and induction-matched tests (`program_mechanism_induction_matched` or `induction_matched=True`) when induction varies. |
 | Detection | Optional `add_nascent_score=True` → `nascent_poisson_z`, `de_reproducible`. Does not drive mechanism labels. |
+| Enrichment | ORA on the DE-selected list (or detection-filtered list). Do **not** split genes by `mechanism_class` for ORA (package warns). |
 | Primary entry point | {func}`~scatrans.partition_de_by_mechanism` |
 | DE without mechanism | {doc}`user_guide/standalone_de` or `run_default_pipeline(..., select_by="de")` |
-| Composite ranking | `run_default_pipeline(select_by="composite")` is deprecated as a discovery path (`DeprecationWarning`). `active_score` remains the residual/scoring engine. |
 
 ## Is nascent-layer scoring suitable for production gene discovery?
 
@@ -33,38 +33,21 @@ routine use.
 ## Why is the built-in `significant` list empty?
 
 The built-in `significant` mask requires conjunction of thresholds on logFC,
-`p_adj`, `unspliced_excess_residual`, `active_score`, and `unspliced_excess_fdr`
+`p_adj`, `unspliced_excess_residual`, and `unspliced_excess_fdr`
 ({doc}`statistical_guidance`). On modestly powered designs it is often empty by
 design. Filter the full `all_results` table with
 `filter_active_genes(preset="heuristic")` or explicit cutoffs
 ({doc}`user_guide/workflow`).
 
-## Why does top-N by `active_score` include genes with `p_adj ≈ 1`?
+## Why does the nascent residual rank genes with `p_adj ≈ 1`?
 
-The residual leg of `active_score` is **independent of DE significance**. Genes
+The `unspliced_excess_residual` is **independent of DE significance**. Genes
 that DE backends did not test or filled as neutral (e.g. PyDESeq2 independent
-filtering → `padj` set to 1) can still rank highly from positive unspliced
-excess. Top-N by `active_score` is therefore not a DE-significant gene list.
-Use `filter_active_genes(..., select_by="de")`, explicit
-`padj_cutoff` / `logfc_cutoff`, or the built-in `significant` conjunction.
-Default cutoffs: {doc}`statistical_guidance`.
-
-## Can I compare `active_score` across cell types or datasets?
-
-**Not as absolute numbers.** Soft-scale λ is estimated from the genes present
-in **that** run (`median(positive)/ln(2)`). The same gene with the same raw
-logFC can score ~40 in one subset and ~70 in another if the background gene
-pool (or HVG filter) differs. Safe uses: rank genes **within one**
-`active_score` call. For cross-group claims use `logFC` / `p_adj` / residual
-on a shared analysis design, or re-run with a **shared gene universe** knowing
-scores still are not absolute units. Inspect the within-run λ scale via:
-
-```python
-print(adata.uns["scatrans"]["diagnostics"]["scoring"])
-# typically: lambda_fc, lambda_res, lambda_pval, …
-```
-
-See {doc}`domain_assumptions` and {doc}`statistical_guidance`.
+filtering → `padj` set to 1) can still show positive unspliced excess. Ranking
+by the residual is therefore not a DE-significant gene list. Use
+`filter_active_genes(..., select_by="de")`, explicit `padj_cutoff` /
+`logfc_cutoff`, or the built-in `significant` conjunction. Default cutoffs:
+{doc}`statistical_guidance`.
 
 ## Should I use `padj_cutoff` or `pval_cutoff`?
 
@@ -76,8 +59,8 @@ reporting clearer.
 
 ## `run_gsea` returns empty / warns about mapping rate or `gene_case`
 
-Preranked GSEA needs **signed** ranks (prefer `logFC`; `active_score` is
-not auto-selected). It also checks symbol overlap with gene sets (same
+Preranked GSEA needs **signed** ranks (prefer `logFC`; one-sided score
+columns are not auto-selected). It also checks symbol overlap with gene sets (same
 `_check_gene_set_mapping_rate` gate as ORA): below **20%** mapping rate you
 get a warning with input vs gene-set examples; at **0%** the result is empty
 with `reason="no_ranked_genes_mapped"`. Duplicate gene IDs (e.g. after

@@ -9,7 +9,7 @@ apply SemVer (breaking changes only with a major version bump). Until 1.0, minor
 versions may refine behavior with deprecation warnings where practical.
 
 **Scientific heuristic defaults** (e.g. `HEURISTIC_FILTER_DEFAULTS` values
-such as `logfc_cutoff`, `active_score_cutoff`, residual/FDR gates) are
+such as `logfc_cutoff`, residual/FDR gates) are
 **not frozen API**. They may change in a minor release when domain
 feedback warrants it; the public guarantee is the **parameter names and
 filter semantics**, not the numeric defaults. Always report the installed
@@ -41,13 +41,15 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
    - primary workflow: `partition_de_by_mechanism` (DE selects → mechanism
      partition; the recommended entry point) and its result `PartitionResult`
      (fields `adata`, `regime`, `gene_table`, `selected`, `programs`,
-     `enrichment`, `meta`, parallel to `PipelineResult`). The composite
+     `enrichment`, `meta`, optional `programs_induction_matched`; parallel to
+     `PipelineResult`). The composite
      `run_default_pipeline(select_by="composite")` path is deprecated as a
      discovery entry (see {doc}`faq`).
    - scoring / DE / pipeline: `active_score`, `active_score_simple`,
      `adaptive_active_score`, `add_adaptive_score`, `adaptive_weight`,
      `labeling_anchor`, `add_abundance_normalized_residual`,
      `annotate_mechanism_class`, `program_mechanism`,
+     `program_mechanism_induction_matched`,
      `nascent_activity_score` (active-transcription detection score; opt-in
      detection columns via `partition_de_by_mechanism(add_nascent_score=True)`,
      decoupled from the mechanism partition),
@@ -67,9 +69,9 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 **Scientific maturity (not the same as import stability):** differential
 expression, enrichment, and plotting that do **not** depend on
-spliced/unspliced layers are suitable for routine use. Composite
-nascent-transcription scoring (`active_score` and its velocity-dependent
-add-ons) remains **experimental**; see {doc}`faq` and the README.
+spliced/unspliced layers are suitable for routine use. Nascent-transcription
+scoring (`active_score` and its velocity-dependent add-ons) remains
+**experimental**; see {doc}`faq` and the README.
 2. **`scatrans.pl`** — names in `scatrans.pl.__all__` (plotting helpers).
 3. **`scatrans.qc`** — names in `scatrans.qc.__all__`
    (`unspliced_global`, `regime_diagnosis`).
@@ -80,18 +82,24 @@ add-ons) remains **experimental**; see {doc}`faq` and the README.
 
 `partition_de_by_mechanism` returns a dataclass with fields:
 
-`adata`, `regime`, `gene_table`, `selected`, `programs`, `enrichment`, `meta`.
+`adata`, `regime`, `gene_table`, `selected`, `programs`, `enrichment`, `meta`,
+and `programs_induction_matched` (default `None`).
 
 - **`selected` / `gene_table`:** DE membership is only in `selected`; mechanism
   columns live on both when annotation ran. Detection columns
   (`nascent_poisson_z`, `de_reproducible`, …) appear only if
   `add_nascent_score=True`.
+- **`programs` / `programs_induction_matched`:** competitive program table when
+  `gene_sets=` is set; induction-matched table when `induction_matched=True`.
 - **`regime`:** copy of the reliability pre-flight dict (also under
   `meta["regime"]`).
 - **`meta` keys:** always `scatrans_version`, `organism`, `de_source`, `de`,
   `select`, `regime`, `mechanism`, `programs`, `nascent_score`
-  (`enabled` / `status` / …). Mechanism is **always** residual-based;
-  `nascent_score` never drives `transcription_support` / program directions.
+  (`enabled` / `status` / …); plus `programs_induction_matched` and
+  `pseudoreplication_warning` when applicable. Mechanism is **always**
+  residual-based; `nascent_score` never drives `transcription_support` /
+  program directions.
+- **`summary()`:** compact program-first counts; marks per-gene classes as soft.
 
 ### `PipelineResult`
 

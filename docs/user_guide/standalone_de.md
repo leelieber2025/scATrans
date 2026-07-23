@@ -1,8 +1,7 @@
 # Standalone Differential Expression
 
 Use this path when nascent (spliced/unspliced) layers are unavailable or when
-only conventional DE is required. Composite scoring via `active_score` remains
-experimental as a gene-discovery path.
+only conventional DE is required.
 
 ```python
 import scatrans as scat

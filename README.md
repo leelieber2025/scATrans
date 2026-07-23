@@ -57,12 +57,15 @@ result = scat.partition_de_by_mechanism(
     reference_group="Control",
     organism="mouse",
     de="builtin",  # method name, kwargs dict, DataFrame, or callable
+    # sample_col="sample",  # preferred when biological replicates exist
     # add_nascent_score=True,  # optional detection columns
     gene_sets=my_pathways,  # optional program-level table
+    # induction_matched=True,  # induction-controlled program tests
 )
 result.regime    # reliability pre-flight (global unspliced fraction)
-result.selected  # DE-selected genes with mechanism annotation
+result.selected  # DE-selected genes with soft mechanism annotation
 result.programs  # program-level table when gene_sets is provided
+result.summary() # program-first overview
 ```
 
 Further reading:

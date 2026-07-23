@@ -37,8 +37,10 @@ from .de import differential_expression
 from .filter import filter_active_genes
 from .mechanism import (
     CLASS_COL,
+    INDUCTION_CONFOUND_COL,
     annotate_mechanism_class,
     program_mechanism,
+    program_mechanism_induction_matched,
 )
 from .nascent import (
     REPRO_COL,
@@ -76,12 +78,20 @@ class PartitionResult:
     programs
         Program-level transcription-vs-stabilization table
         (:func:`~scatrans.tl.program_mechanism`) when ``gene_sets`` was given,
-        else ``None``. This is where the decisive calls live.
+        else ``None``. This is where the decisive calls live (prefer over
+        per-gene ``mechanism_class``).
     enrichment
-        Optional GO/pathway enrichment on ``selected`` (or ``None``).
+        Optional GO/pathway enrichment on ``selected`` (or ``None``). Do **not**
+        enrich gene lists split by per-gene ``mechanism_class`` (induction trap).
     meta
         Run metadata: version, organism, DE source, thresholds, regime, and the
         mechanism-annotation diagnostics.
+    programs_induction_matched
+        Induction-controlled program table
+        (:func:`~scatrans.tl.program_mechanism_induction_matched`) when requested,
+        else ``None``. Prefer this for claims when induction strength varies.
+        Placed after ``meta`` so existing positional ``PartitionResult``
+        constructions keep working.
     """
 
     adata: Any
@@ -91,20 +101,74 @@ class PartitionResult:
     programs: pd.DataFrame | None = None
     enrichment: pd.DataFrame | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    programs_induction_matched: pd.DataFrame | None = None
 
     def summary(self) -> dict[str, Any]:
-        """Compact counts for logging / quick inspection."""
+        """Compact counts for logging / quick inspection.
+
+        Program-level fields are listed first: per-gene ``mechanism_class`` counts
+        are soft hints only (do not use them for ORA / hard claims).
+        """
+        soft_counts = {
+            k: int((self.selected.get(CLASS_COL) == k).sum())
+            for k in (
+                "transcription-driven",
+                "stabilization-driven",
+                "ambiguous",
+                "unclassified_down",
+                "unknown",
+            )
+            if CLASS_COL in self.selected.columns
+        }
+        n_prog = None if self.programs is None else int(len(self.programs))
+        n_prog_sig = None
+        if self.programs is not None and len(self.programs) and "significant" in self.programs:
+            n_prog_sig = int(self.programs["significant"].fillna(False).sum())
+        n_im = (
+            None
+            if self.programs_induction_matched is None
+            else int(len(self.programs_induction_matched))
+        )
+        n_im_sig = None
+        if (
+            self.programs_induction_matched is not None
+            and len(self.programs_induction_matched)
+            and "significant" in self.programs_induction_matched
+        ):
+            n_im_sig = int(self.programs_induction_matched["significant"].fillna(False).sum())
         return {
+            # --- program-first (decisive unit) ---
+            "n_programs": n_prog,
+            "n_programs_significant": n_prog_sig,
+            "n_programs_induction_matched": n_im,
+            "n_programs_induction_matched_significant": n_im_sig,
+            # --- design / reliability ---
             "n_selected": int(len(self.selected)),
             "n_gene_table": int(len(self.gene_table)),
             "regime": self.regime.get("regime"),
             "reliability": self.regime.get("reliability"),
+            "hard_labels_suppressed": bool(
+                (self.meta.get("mechanism") or {}).get("hard_labels_suppressed", False)
+            ),
+            # --- soft per-gene hints (NOT for ORA-by-class) ---
+            "per_gene_labels_are_soft": True,
+            "per_gene_class_counts_selected": soft_counts,
+            # backward-compatible alias
             "class_counts_selected": {
-                k: int((self.selected.get(CLASS_COL) == k).sum())
+                k: soft_counts[k]
                 for k in ("transcription-driven", "stabilization-driven", "ambiguous")
-                if CLASS_COL in self.selected.columns
+                if k in soft_counts
             },
-            "n_programs": None if self.programs is None else int(len(self.programs)),
+            "n_induction_confounded_selected": (
+                int(self.selected[INDUCTION_CONFOUND_COL].sum())
+                if INDUCTION_CONFOUND_COL in self.selected.columns
+                else 0
+            ),
+            "note": (
+                "Prefer program_mechanism / program_mechanism_induction_matched over "
+                "per-gene mechanism_class. Do not run ORA on genes split by "
+                "mechanism_class (induction-confounded at single snapshots)."
+            ),
         }
 
 
@@ -251,10 +315,17 @@ def partition_de_by_mechanism(
     logfc_cutoff: float = 1.0,
     logfc_direction: str = "up",
     add_nascent_score: bool = False,
-    class_threshold: float = 0.5,
+    class_threshold: float | None = None,
+    mechanism_preset: str | None = None,
+    flag_induction_confound: bool = True,
+    induction_confound_penalty: str = "graded",
+    suppress_hard_labels_when_unreliable: bool = True,
+    min_reliability_for_hard_labels: float = 0.05,
     gene_sets: Mapping[str, Sequence[str]] | None = None,
     program_min_genes: int = 5,
     program_restrict_to_selected: bool = True,
+    induction_matched: bool = False,
+    induction_matched_methods: Sequence[str] = ("regression", "nearest"),
     run_go_enrichment: bool = False,
     go_gene_sets: str = "GO_Biological_Process",
     show_plot: bool = False,
@@ -307,19 +378,58 @@ def partition_de_by_mechanism(
         :func:`~scatrans.qc.regime_diagnosis` on low-capture data.
     class_threshold
         Soft-label boundary (robust-z units) for the per-gene 3-way call.
+        Defaults to the ``mechanism_preset`` value, or ``0.5``.
+    mechanism_preset
+        Passed to :func:`~scatrans.tl.annotate_mechanism_class` as ``preset=``.
+        ``"high_precision"`` raises the threshold to 1.0 (lower transcription-driven
+        false-positive rate at the same precision).
+    flag_induction_confound, induction_confound_penalty
+        Passed to :func:`~scatrans.tl.annotate_mechanism_class`. Mark and down-weight
+        per-gene stabilization calls in the high-induction (single-snapshot
+        non-identifiable) regime; adds an ``induction_confounded`` column and discounts
+        ``mechanism_confidence`` without relabeling or touching program-level calls.
+        ``penalty="graded"`` (default) or ``"smooth"``.
+    suppress_hard_labels_when_unreliable, min_reliability_for_hard_labels
+        Passed to :func:`~scatrans.tl.annotate_mechanism_class`. When regime
+        reliability is near zero, hard per-gene classes become ``ambiguous``
+        (default on).
     gene_sets
         ``{program: [gene, ...]}`` — when given, adds the program-level
         mechanism table (restricted to selected genes by default).
     program_restrict_to_selected
         Pool the program test over the DE-selected genes only (default) vs all
         tested genes.
+    induction_matched
+        When True and ``gene_sets`` is given, also run
+        :func:`~scatrans.tl.program_mechanism_induction_matched` (OLS + nearest
+        logFC controls). Recommended for claims when induction varies widely.
+    induction_matched_methods
+        Methods for the induction-matched table (default ``("regression", "nearest")``).
     run_go_enrichment, go_gene_sets
-        Optional GO/pathway ORA on the selected genes.
+        Optional GO/pathway ORA on the **DE-selected** genes (not by
+        ``mechanism_class``). Enriching genes split by per-gene mechanism labels
+        is induction-confounded — use program tables instead.
 
     Returns
     -------
     PartitionResult
     """
+    # Pseudoreplication guard (P0): cell-level DE without sample_col inflates p-values.
+    if sample_col is None:
+        logger.warning(
+            "partition_de_by_mechanism: sample_col is None — DE is cell-level and "
+            "subject to pseudoreplication (inflated significance). Prefer "
+            "pseudobulk / mixed models with sample_col when biological replicates "
+            "exist. Effect sizes (logFC) are more robust than p-values under "
+            "pseudoreplication; mechanism labels use support ranks, not DE p."
+        )
+    elif sample_col not in getattr(adata, "obs", {}):
+        logger.warning(
+            "partition_de_by_mechanism: sample_col=%r not found in adata.obs — "
+            "pseudobulk/sample-aware DE cannot use it.",
+            sample_col,
+        )
+
     # 1. score (this is the single active_score pass; also gives the builtin DE)
     adata_res, _significant, all_results = active_score_simple(
         adata,
@@ -399,7 +509,12 @@ def partition_de_by_mechanism(
     _, mech_diag = annotate_mechanism_class(
         all_results,
         class_threshold=class_threshold,
+        preset=mechanism_preset,
         reliability=reliability,
+        suppress_hard_labels_when_unreliable=suppress_hard_labels_when_unreliable,
+        min_reliability_for_hard_labels=min_reliability_for_hard_labels,
+        flag_induction_confound=flag_induction_confound,
+        induction_confound_penalty=induction_confound_penalty,
         inplace=True,
     )
     selected = all_results.loc[selected_idx].copy()
@@ -417,6 +532,8 @@ def partition_de_by_mechanism(
     # 5. Program-level mechanism table (threshold-free pooling).
     programs = None
     programs_meta: dict[str, Any] = {"status": "not_requested"}
+    programs_im = None
+    programs_im_meta: dict[str, Any] = {"status": "not_requested"}
     if gene_sets:
         restrict = list(selected_idx) if program_restrict_to_selected else None
         try:
@@ -440,7 +557,29 @@ def partition_de_by_mechanism(
             logger.warning("program_mechanism skipped: %s", exc)
             programs_meta = {"status": "error", "error": str(exc)}
 
-    # 6. optional GO enrichment on the SELECTED genes
+        if induction_matched:
+            try:
+                # Induction-matched tests target the induced (up) universe; curated
+                # mechanism programs are up-regulated. logfc_min stays 0.0 (logFC > 0);
+                # down-regulated programs are out of scope (see limitations).
+                programs_im = program_mechanism_induction_matched(
+                    all_results,
+                    gene_sets,
+                    min_genes=program_min_genes,
+                    methods=induction_matched_methods,
+                    padj_cutoff=padj_cutoff,
+                    logfc_min=0.0,
+                )
+                programs_im_meta = {
+                    "status": "ok" if programs_im is not None and len(programs_im) else "empty",
+                    "n_programs": 0 if programs_im is None else int(len(programs_im)),
+                    "methods": list(induction_matched_methods),
+                }
+            except Exception as exc:  # noqa: BLE001 — add-on
+                logger.warning("program_mechanism_induction_matched skipped: %s", exc)
+                programs_im_meta = {"status": "error", "error": str(exc)}
+
+    # 6. optional GO enrichment on the SELECTED genes (DE list — never by class)
     enrichment = None
     if run_go_enrichment and len(selected) > 0:
         from ..enrich import run_enrichment
@@ -458,6 +597,8 @@ def partition_de_by_mechanism(
         "organism": organism,
         "de_source": de_source,
         "de": de_diag,
+        "sample_col": sample_col,
+        "pseudoreplication_warning": sample_col is None,
         "select": {
             "padj_cutoff": padj_cutoff,
             "logfc_cutoff": logfc_cutoff,
@@ -468,15 +609,18 @@ def partition_de_by_mechanism(
         "nascent_score": nascent_meta,
         "mechanism": mech_diag,
         "programs": programs_meta,
+        "programs_induction_matched": programs_im_meta,
     }
     logger.info(
         "partition_de_by_mechanism: de=%s selected=%d regime=%s reliability=%.2f "
-        "class_counts(all)=%s",
+        "class_counts(all)=%s programs=%s induction_matched=%s",
         de_source,
         len(selected),
         regime.get("regime"),
         reliability,
         mech_diag.get("class_counts"),
+        programs_meta.get("status"),
+        programs_im_meta.get("status"),
     )
     return PartitionResult(
         adata=adata_res,
@@ -484,6 +628,7 @@ def partition_de_by_mechanism(
         gene_table=all_results,
         selected=selected,
         programs=programs,
+        programs_induction_matched=programs_im,
         enrichment=enrichment,
         meta=meta,
     )

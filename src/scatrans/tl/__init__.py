@@ -37,6 +37,7 @@ from .filter import filter_active_genes
 from .mechanism import (
     annotate_mechanism_class,
     program_mechanism,
+    program_mechanism_induction_matched,
     threshold_sensitivity,
 )
 from .nascent import nascent_activity_score
@@ -61,6 +62,7 @@ __all__ = [
     "annotate_mechanism_class",
     "threshold_sensitivity",
     "program_mechanism",
+    "program_mechanism_induction_matched",
     "nascent_activity_score",
     "partition_de_by_mechanism",
     "PartitionResult",

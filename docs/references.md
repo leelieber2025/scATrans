@@ -36,8 +36,8 @@ mixed-model / permutation options and the {doc}`statistical_guidance` page.
 
 ### GA (`GA_test.h5ad` — GA vs Ctrl)
 
-The higher-power active-transcription tutorial uses `GA_test.h5ad`, a bundled
-mouse scRNA-seq test object (GA vs. Ctrl, three individuals per group, with
+The higher-power mechanism-partition tutorial uses `GA_test.h5ad`, a mouse
+scRNA-seq test object (GA vs. Ctrl, three individuals per group, with
 `spliced` / `unspliced` layers). The underlying experiment is public
 single-cell RNA-seq of cells from a mouse calvarial bone defect after TrkA
 agonism with gambogic amide (**GA**) versus vehicle control:
@@ -55,6 +55,45 @@ agonism with gambogic amide (**GA**) versus vehicle control:
 - Raw data: GEO accession
   [GSE266598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266598)
   (NCBI GEO).
+
+### LPS-PBMC (`GSE226488_PBMC_tutorial_subset.h5ad` — resting vs LPS 4 h)
+
+The primary mechanism-partition tutorial uses a **downsampled** human PBMC
+object (~4.4k cells) with `spliced` / `unspliced` layers, comparing resting
+cells to LPS stimulation at 4 h. The full public study is high-depth 10x 3′
+scRNA-seq of human PBMCs under resting and stimulated conditions:
+
+> Derbois, C., Palomares, M.A., et al. (2023).
+> **Single cell transcriptome sequencing of stimulated and frozen human
+> peripheral blood mononuclear cells.**
+> *Scientific Data* 10, 433.
+> DOI: [10.1038/s41597-023-02348-z](https://doi.org/10.1038/s41597-023-02348-z)
+> · PubMed: [37414801](https://pubmed.ncbi.nlm.nih.gov/37414801/)
+
+- Raw data: GEO accession
+  [GSE226488](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE226488)
+  (BioProject [PRJNA940428](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA940428)).
+  Tutorial contrast: resting (e.g. GSM7077865) vs LPS 4 h (e.g. GSM7077866),
+  10x Genomics 3′ v3.1.
+- Tutorial object: `GSE226488_PBMC_tutorial_subset.h5ad` at the repository
+  root (not shipped in the PyPI sdist). Build it by quantifying spliced and
+  unspliced counts (for example STARsolo with Velocyto-style output, or an
+  equivalent pipeline), assembling an AnnData with those layers, then
+  downsampling to a few thousand cells while keeping both conditions. Exact
+  steps depend on your aligner setup; the notebook **Reproduce** section
+  outlines the stages without assuming a fixed local path.
+
+### How tutorial data is distributed
+
+| Object | In git / PyPI? | Typical size |
+|--------|----------------|--------------|
+| Pre-rendered notebook HTML | Yes (docs build) | small |
+| `EC.h5ad`, `GA_test.h5ad`, GSE subset | Often **local only** (too large for default packaging) | tens–hundreds of MB |
+
+If you only need figures and tables, use the online tutorials. To re-run
+notebooks, place each `.h5ad` where the notebook loads it (paths are relative
+to `docs/tutorials/`, usually `../../<file>.h5ad`). See
+{doc}`tutorials/index` for which notebook uses which file.
 
 ---
 

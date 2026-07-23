@@ -1813,6 +1813,14 @@ def compare_dotplot(
             ax.set_xticklabels([f"{cl}\n({shown[cl]})" for cl in clusters], fontsize=fontsize)
         else:
             ax.set_xticklabels(clusters, fontsize=fontsize)
+        # Horizontal cluster labels collide once names are long or numerous (e.g.
+        # "DE_pseudobulk", "pseudobulk_unique"). Auto-rotate so labels stay legible;
+        # short, few labels are left horizontal.
+        if max((len(str(cl)) for cl in clusters), default=0) > 6 or len(clusters) > 4:
+            for lab in ax.get_xticklabels():
+                lab.set_rotation(30)
+                lab.set_ha("right")
+                lab.set_rotation_mode("anchor")
 
         def _clean(t):
             t = str(t).split(" (GO:")[0].split(" (KEGG")[0]
@@ -3210,7 +3218,7 @@ def volcano_plot(
     cmap="coolwarm",
     logfc_cutoff=0.5,
     pval_cutoff=0.05,
-    color_by="active_score",
+    color_by="unspliced_excess_residual",
     style: str = "auto",
     legend_position: str = "UL",
     fills: tuple[str, str, str] | None = None,
@@ -3233,10 +3241,12 @@ def volcano_plot(
     - `label_genes`: iterable of gene names to *force* label (manual specification,
       even if not in top_n). This + top_n gives the common ggVolcano usage
       pattern (label_number + explicit genes). Duplicates are handled automatically.
-    - `color_by`: if set to "active_score" (default) and the column exists, uses continuous
-      colormap. If set to any other column present in the data, that column is used for
-      continuous coloring (after numeric coercion). Otherwise falls back to classic
-      up/down/ns significance categories (red/blue/gray) based on logfc_cutoff / pval_cutoff.
+    - `color_by`: default ``"unspliced_excess_residual"`` — colors by the nascent
+      excess residual (legacy alias ``velocity_residual`` also accepted) with a
+      continuous colormap when present. Set to any other column present in the data
+      (e.g. the legacy ``"active_score"``) to color by that column instead (after
+      numeric coercion). Otherwise falls back to classic up/down/ns significance
+      categories (red/blue/gray) based on logfc_cutoff / pval_cutoff.
     - Cutoff lines are drawn with labels.
     - Supports `ax` for embedding.
 
@@ -3245,10 +3255,11 @@ def volcano_plot(
         This bypasses score-based variable sizing entirely — simplest for clean small-point volcanos.
       - `point_scale`: global multiplier.
       - `min_size` / `max_size`: bounds for the variable sizing case.
-      - When no "active_score" (pure DE volcano), uses small p-value based base so points start small.
+      - When no residual column is present (pure DE volcano), uses small p-value based base so points start small.
 
     style : {"auto", "ggvolcano", "gradual"}, default "auto"
-        - ``"auto"``: legacy scATrans behavior (active_score colormap when present).
+        - ``"auto"``: legacy scATrans behavior (continuous colormap by the nascent
+          excess residual when present).
         - ``"ggvolcano"``: classic three-color volcano from
           `ggVolcano <https://github.com/BioSenior/ggVolcano>`_ (teal Down /
           gray Normal / orange Up, ``theme_bw``, dashed cutoffs, labels by FDR).
@@ -3267,8 +3278,8 @@ def volcano_plot(
     Display defaults are notebook-oriented (``dpi=150``, modest figsize/fonts).
     Pass ``context="paper"`` for larger journal-style defaults, or set kwargs
     explicitly. ``save_path`` always writes at least 300 dpi. Default ``style``
-    remains ``"auto"`` (active_score coloring when present); use ``"ggvolcano"``
-    for a classic two-sided teal/orange look.
+    remains ``"auto"`` (nascent excess residual coloring when present); use
+    ``"ggvolcano"`` for a classic two-sided teal/orange look.
     """
     style_norm = str(style).lower().strip()
     if style_norm not in ("auto", "ggvolcano", "gradual"):
@@ -3489,8 +3500,21 @@ def volcano_plot(
                 return fig, ax, plot_df
             return fig, ax
 
-        # auto style: legacy scATrans coloring
-        if color_by == "active_score" and "active_score" in plot_df.columns:
+        # auto style: legacy scATrans coloring. Default colors by the nascent
+        # excess residual; explicit color_by="active_score" is still honored.
+        _residual_col = next(
+            (c for c in ("unspliced_excess_residual", "velocity_residual") if c in plot_df.columns),
+            None,
+        )
+        if (
+            color_by in ("unspliced_excess_residual", "velocity_residual")
+            and _residual_col is not None
+        ):
+            plot_df[_residual_col] = pd.to_numeric(plot_df[_residual_col], errors="coerce")
+            color_values = plot_df[_residual_col]
+            cbar_label = "Nascent excess residual"
+            colors_for_scatter = None
+        elif color_by == "active_score" and "active_score" in plot_df.columns:
             color_values = plot_df["active_score"]
             cbar_label = "Active Score"
             colors_for_scatter = None
@@ -3513,7 +3537,7 @@ def volcano_plot(
                 cbar_label = None
                 colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]
         else:
-            if color_by != "active_score":
+            if color_by not in ("active_score", "unspliced_excess_residual", "velocity_residual"):
                 logger.warning(
                     "color_by=%s not found in data. Falling back to up/down/ns significance categories.",
                     color_by,
@@ -3539,10 +3563,10 @@ def volcano_plot(
             sizes = np.clip(sizes, effective_min, max_size)
         else:
             # variable
-            # Defensively clip active_score (or fallback) to >=0 before exponentiation.
-            if "active_score" in plot_df.columns:
+            # Defensively clip the size signal to >=0 before exponentiation.
+            if _residual_col is not None:
                 size_val = np.clip(
-                    pd.to_numeric(plot_df["active_score"], errors="coerce").fillna(0), 0, None
+                    pd.to_numeric(plot_df[_residual_col], errors="coerce").fillna(0), 0, None
                 )
             else:
                 size_val = plot_df.get("neg_log_pval", pd.Series(4, index=plot_df.index))
@@ -3629,7 +3653,7 @@ def volcano_plot(
         if title:
             ax.set_title(title, fontsize=fontsize + 1, pad=10)
 
-        if color_by == "active_score" and "active_score" in plot_df.columns:
+        if colors_for_scatter is None and cbar_label is not None:
             cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.02, aspect=20)
             cbar.set_label(
                 cbar_label,
@@ -3837,17 +3861,25 @@ def enrich_barplot(
             return fig, ax0
 
         df = enrich_df.copy()
-        # Term labels. Prefer Description only when it actually carries non-empty
-        # text: bundled GO/KEGG libraries ship an empty Description (the readable
-        # name and ID both live in Term), and empty strings pass notna(), which
-        # would otherwise blank out every bar label. Fall back to Term in that case
-        # (matching enrich_dotplot, which prefers Term first).
-        if "Description" in df.columns and df["Description"].astype(str).str.strip().ne("").any():
-            term_col = "Description"
-        elif "Term" in df.columns:
-            term_col = "Term"
-        else:
+        # Term labels. Prefer Description per row, but only where it carries real
+        # text. Bundled GO/KEGG libraries ship Description as an empty string OR as
+        # NaN (the readable name and ID both live in Term). A bare ``.ne("")`` guard
+        # is not enough: ``NaN`` becomes the literal string ``"nan"`` under
+        # ``astype(str)`` and slips through, blanking every bar with "nan". Coalesce
+        # to Term wherever Description is missing/empty (matching enrich_dotplot,
+        # which prefers Term first).
+        if "Description" not in df.columns and "Term" not in df.columns:
             raise ValueError("enrich_barplot requires a 'Term' or 'Description' column.")
+        if "Description" in df.columns:
+            desc = df["Description"].astype(str).str.strip()
+            desc_missing = desc.eq("") | desc.str.lower().isin(("nan", "none", "null"))
+            if "Term" in df.columns:
+                df["_term_label"] = desc.where(~desc_missing, df["Term"].astype(str).str.strip())
+            else:
+                df["_term_label"] = desc.mask(desc_missing, "")
+        else:
+            df["_term_label"] = df["Term"].astype(str).str.strip()
+        term_col = "_term_label"
 
         padj_col = None
         for c in ("p.adjust", "padj", "Adjusted P-value", "FDR q-val"):

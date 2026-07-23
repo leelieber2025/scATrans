@@ -45,6 +45,7 @@ from ._common import (
     PSEUDOBULK_FILTER_DEFAULTS,
     VERSION,
     _coerce_memento_de_preprocess,
+    _de_first_sort_keys,
     _materialize_if_view,
     _require_explicit_groups,
     _resolve_deprecated_active_score_kwargs,
@@ -1481,8 +1482,19 @@ def _finalize_active_score_results(
             )
 
     var_df = _as_var_dataframe(adata)
-    significant = var_df.loc[mask, cols].copy().sort_values("active_score", ascending=False)
-    all_results = var_df.loc[:, cols].copy().sort_values("active_score", ascending=False)
+    # DE-first default ordering. The composite ``active_score`` is legacy (its
+    # ranking wins are all carried by the DE leg; see docs/quickstart), so the
+    # returned tables lead with DE, matching the primary partition_de_by_mechanism
+    # workflow's ``selected`` ordering (p_adj asc, logFC desc). The composite
+    # column is still present for backward-compat; filter_active_genes' composite
+    # path re-sorts by it when requested. Fall back to active_score only if the
+    # DE columns are somehow absent.
+    _sort_cols, _sort_asc = _de_first_sort_keys(cols)
+    significant = var_df.loc[mask, cols].copy()
+    all_results = var_df.loc[:, cols].copy()
+    if _sort_cols:
+        significant = significant.sort_values(_sort_cols, ascending=_sort_asc)
+        all_results = all_results.sort_values(_sort_cols, ascending=_sort_asc)
     all_results.attrs["scatrans_filter_context"] = filter_context
 
     logger.info(

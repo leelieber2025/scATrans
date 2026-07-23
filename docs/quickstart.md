@@ -24,12 +24,15 @@ result = scat.partition_de_by_mechanism(
     reference_group="Control",
     organism="mouse",
     de="builtin",  # method name, kwargs dict, DataFrame, or callable
+    # sample_col="sample",
     # add_nascent_score=True,  # optional detection columns (not for mechanism)
     gene_sets=my_pathways,  # optional program-level table
+    # induction_matched=True,
 )
 print(result.regime)
 print(result.selected.head())
 print(result.programs)
+print(result.summary())
 
 # Residual and scoring engine only (lower-level)
 adata_res, significant, all_results = scat.active_score_simple(
@@ -75,7 +78,8 @@ sc.tl.leiden(adata)
 # 4. Gene features for optional bias correction
 adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
 
-# 5. Score (residual + composite active_score)
+# 5. Score: computes the nascent unspliced-excess residual + DE (logFC, p_adj)
+#    on all_results. Read the residual and DE columns for selection and ranking.
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
     groupby="condition",
@@ -84,14 +88,14 @@ adata_res, significant, all_results = scat.active_score(
     show_plot=False,
 )
 
-print(all_results.head())
+print(all_results[["logFC", "p_adj", "unspliced_excess_residual"]].head())
 
-# 6. Filter the full table (built-in significant is often empty by design)
+# 6. Select the gene list by DE (DE selects, the nascent proxy only annotates)
 candidates = scat.filter_active_genes(
     all_results,
-    preset="heuristic",  # or "pseudobulk" / "permissive"
+    select_by="de",  # padj < 0.05 & |log2FC| > 1; composite/proxy gates skipped
     # padj_cutoff=0.05,
-    # logfc_cutoff=0.3,
+    # logfc_cutoff=1.0,
 )
 
 print(f"Filtered genes: {len(candidates)}")
@@ -118,6 +122,10 @@ scat.pl.enrich_dotplot(kegg_res, top_n=10, title="KEGG Pathways")
 # scat.pl.comet_plot(all_results, top_n=12)
 # scat.pl.volcano_plot(all_results, top_n=10)
 ```
+
+Select genes by DE (`filter_active_genes(..., select_by="de")`), and for the
+transcription- vs stabilization-driven mechanism call use the primary
+`partition_de_by_mechanism` workflow shown above.
 
 Further options: {doc}`user_guide/enrichment`. For DE without spliced/unspliced
 layers, replace step 5 with `scat.differential_expression(...)`

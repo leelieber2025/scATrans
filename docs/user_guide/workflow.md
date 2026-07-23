@@ -5,25 +5,30 @@
 {func}`~scatrans.partition_de_by_mechanism` is the recommended entry point:
 
 1. DE selects changed genes  
-2. residual-based annotation assigns transcription-driven versus stabilization-driven labels  
-3. reliability pre-flight scales confidence  
+2. residual-based annotation assigns soft transcription-driven versus stabilization-driven labels  
+3. reliability pre-flight scales confidence (and may suppress hard gene labels at extremes)  
 4. optional program-level table when `gene_sets=` is supplied  
+5. optional induction-matched program tests when `induction_matched=True`  
 
 It composes lower-level pieces documented below (`active_score`,
 `filter_active_genes(select_by="de")`, `annotate_mechanism_class` /
-`program_mechanism`).
+`program_mechanism` / `program_mechanism_induction_matched`).
 
 ```python
 res = scat.partition_de_by_mechanism(
     adata, groupby="condition", target_group="Disease", reference_group="Control",
     organism="mouse",
     de="builtin",            # or a DE method name / precomputed DE table / callable
+    sample_col="sample",     # preferred when biological replicates exist
     # add_nascent_score=True,  # optional detection columns (not used for mechanism)
     gene_sets=my_pathways,   # optional -> program-level mechanism table
+    # induction_matched=True,  # also run induction-controlled program tests
 )
 res.regime          # reliability pre-flight
-res.selected        # DE-selected genes + per-gene mechanism annotation
-res.programs        # program-level transcription-vs-stabilization table (if gene_sets=)
+res.selected        # DE-selected genes + soft per-gene mechanism annotation
+res.programs        # program-level table (if gene_sets=)
+res.programs_induction_matched  # if induction_matched=True
+res.summary()       # program-first overview
 res.meta.get("nascent_score")  # if add_nascent_score=True: enabled / status / …
 ```
 
@@ -77,8 +82,8 @@ adata_res, significant, all_results = scat.active_score(
 
 This computes differential expression, reference-group gamma excess for the
 unspliced layer, optional Huber bias correction on gene length and intron
-number, a composite active score, and stores diagnostics in
-`adata_res.uns["scatrans"]["diagnostics"]`.
+number (the bias-corrected `unspliced_excess_residual`), and stores diagnostics
+in `adata_res.uns["scatrans"]["diagnostics"]`.
 
 ### Pseudobulk and DE method
 
@@ -146,7 +151,6 @@ designs. Filter the full `all_results` table with `filter_active_genes`:
 # Explicit cutoffs (tighten for your design)
 candidates = scat.filter_active_genes(
     all_results,
-    active_score_cutoff=30,
     unspliced_excess_residual_cutoff=0.5,
     unspliced_excess_fdr_cutoff=0.05,
     logfc_cutoff=0.3,
@@ -173,16 +177,16 @@ filtered_inplace = scat.filter_active_genes(
 
 **`select_by="composite"` (default)** vs **`select_by="de"`**
 
-| Mode | Who decides membership | Proxy / composite gates | Sort |
-|------|------------------------|-------------------------|------|
-| `"composite"` | DE **and** nascent/composite cutoffs | Applied | Prefer `active_score` when present |
+| Mode | Who decides membership | Proxy gates | Sort |
+|------|------------------------|-------------|------|
+| `"composite"` | DE **and** nascent-proxy cutoffs | Applied | `p_adj` then `logFC` |
 | `"de"` | DE only (`p_adj`, `logFC`, optional MixedLM coef direction) | **Skipped** (columns remain) | `p_adj` then `logFC` |
 
 `select_by="de"` is incompatible with `preset="significant"`. The same flag is
 accepted by `run_default_pipeline(..., select_by="de")` and recorded in
 `meta["select_by"]`.
 
-**`preset="significant"`** (aliases: `"builtin"`, `"active_score_significant"`)
+**`preset="significant"`** (alias: `"builtin"`)
 replays the built-in `significant` mask from `active_score` using metadata in
 `all_results.attrs["scatrans_filter_context"]`. It requires
 `use_permutation=True` on the upstream run. When permutation FDR was
@@ -248,14 +252,44 @@ Returns a dictionary with:
 `use_pseudobulk=True` is set; warnings appear in the log and under
 `adata.uns["scatrans"]["diagnostics"]["design"]`.
 
-## Layer names
+## Input data and layers
 
-Layers named `mature`/`nascent` (kb-python) are remapped internally. Explicit
-names can be passed with `spliced_layer=` and `unspliced_layer=`.
+What you need depends on the path you take:
 
-## Regime pre-flight (velocity layers)
+| Goal | Required in AnnData | Entry point |
+|------|---------------------|-------------|
+| Mechanism partition (transcription vs stabilization) | Spliced and unspliced counts as layers, **or** kb-python `mature` / `nascent` | {func}`~scatrans.partition_de_by_mechanism` |
+| DE + enrichment only | Count matrix in `.X` or a counts layer (no velocity layers) | {func}`~scatrans.differential_expression` — {doc}`standalone_de` |
+| Residual / diagnostics only | Same layers as mechanism | {func}`~scatrans.active_score` / {func}`~scatrans.active_score_simple` |
 
-When spliced/unspliced layers are present, run a cheap proxy data-quality check
+### Layer names
+
+By default scATrans looks for `spliced` and `unspliced`. Layers named
+`mature` / `nascent` (kb-python) are remapped internally. Override with
+`spliced_layer=` and `unspliced_layer=` when your names differ.
+
+### Raw counts and preprocessing
+
+Pseudobulk PyDESeq2 and several DE backends need **integer raw counts**. Call
+this early, before HVG filtering or log-normalization overwrites the matrix:
+
+```python
+scat.store_raw_counts(adata, layer="counts")  # or mode="auto"
+```
+
+Gene length / intron tables for optional bias correction:
+
+```python
+adata = scat.add_gene_features(adata, organism="mouse")  # or "human"
+```
+
+Group labels must live in `adata.obs` (`groupby`, `target_group`,
+`reference_group`). For pseudobulk, also set `sample_col` to a biological
+replicate / individual column.
+
+### Regime pre-flight (velocity layers)
+
+When spliced/unspliced layers are present, run a cheap capture-quality check
 before interpreting residual or mechanism annotations:
 
 ```python
@@ -263,10 +297,12 @@ r = scat.qc.regime_diagnosis(adata)
 print(r["regime"], r["reliability"], r["message"])
 ```
 
-`run_default_pipeline` always writes this block to `result.meta["regime"]`
+`partition_de_by_mechanism` always runs this check (`result.regime`).
+`run_default_pipeline` writes the same block to `result.meta["regime"]`
 (fail-soft). See {doc}`advanced` for how reliability scales
 `mechanism_confidence`.
 
-Runnable end-to-end demo of this workflow (`select_by="de"`, `annotate_mechanism`,
-`threshold_sensitivity`, `program_mechanism`, `regime_diagnosis`) on synthetic and
-real data: `examples/select_annotate_workflow_example.py`.
+Runnable end-to-end demo (`select_by="de"`, `annotate_mechanism`,
+`threshold_sensitivity`, `program_mechanism`, `regime_diagnosis`) on synthetic
+and optional real data: `examples/select_annotate_workflow_example.py`.
+

@@ -102,7 +102,7 @@ Workflow, backends, enrichment, plotting, and advanced options.
 :link: method
 :link-type: doc
 
-Unspliced excess, bias correction, composite score, and permutation.
+Unspliced excess, bias correction, and permutation calibration.
 :::
 
 :::{grid-item-card} Statistical Guidance {octicon}`alert;1em;`

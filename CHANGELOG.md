@@ -6,7 +6,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+- `program_mechanism_induction_matched`: program-level mechanism tests that
+  control for induction strength (OLS `support ~ logFC + membership`, optional
+  nearest-logFC matching). Exposed as
+  `partition_de_by_mechanism(induction_matched=True)` →
+  `PartitionResult.programs_induction_matched`.
+- `annotate_mechanism_class(..., flag_induction_confound=True)`: marks high-
+  induction stabilization calls in `induction_confounded` and down-weights
+  `mechanism_confidence` (does not relabel or change program tests). Penalty
+  shapes: `graded` (default) or `smooth`.
+- `annotate_mechanism_class(preset="high_precision")`: sets
+  `class_threshold=1.0` (lower hard-call rate; explicit `class_threshold`
+  overrides). Wired as `partition_de_by_mechanism(mechanism_preset=...)`.
+- `annotate_mechanism_class(suppress_hard_labels_when_unreliable=True)`: when
+  regime `reliability` is below `min_reliability_for_hard_labels` (default
+  0.05), hard per-gene classes become `ambiguous` (support unchanged).
+
+### Changed
+- `PartitionResult.summary()`: program-level counts first; documents that
+  per-gene classes are soft (`per_gene_labels_are_soft`).
+- `partition_de_by_mechanism`: warns when `sample_col` is missing
+  (`meta["pseudoreplication_warning"]`).
+- `run_enrichment(..., allow_mechanism_class_ora=False)`: warns if the query
+  table carries a `mechanism_class` column (ORA on mechanism subsets is
+  discouraged). Set `allow_mechanism_class_ora=True` to silence.
+
+### Fixed
+- `pl.enrich_barplot`: prefer non-null `Description`, else `Term` (avoids
+  literal `"nan"` labels on bundled GO/KEGG tables).
+- `pl.compare_dotplot`: rotate long or many cluster x-labels to reduce overlap.
+
+### Documentation
+- `program_mechanism`: docstring notes that arbitrary KEGG/GO screens are
+  confounded by gene length; prefer mechanism-coherent sets.
+- User guide / FAQ / API reference aligned with induction-matched programs,
+  reliability hard-label suppression, and enrichment guards (this release).
+
 ## [0.10.7] - 2026-07-20
+
+### Changed
+- `active_score` / `active_score_simple` outputs now sort DE-first (`p_adj`, then
+  `logFC`) instead of by the composite score. Display-order only — no value or
+  metric changes. The composite `active_score` column is legacy; prefer
+  `partition_de_by_mechanism` (or `filter_active_genes(select_by="de")`).
+- `pl.volcano_plot(style="auto")` now colors and sizes points by the nascent
+  excess residual by default (`color_by="unspliced_excess_residual"`, legacy
+  `velocity_residual` accepted) instead of the composite `active_score`. Pass
+  `color_by="active_score"` to restore the legacy composite coloring. Pure-DE
+  tables (no residual column) fall back silently to up/down/ns categories.
+
+### Documentation
+- Removed the legacy 0–100 composite `active_score` score from the docs
+  (API reference, quickstart, user guide, FAQ, statistical guidance, domain
+  assumptions, method page). Its derived columns/cutoffs
+  (`active_score_pval` / `active_score_fdr` / `active_score_cutoff` /
+  `active_score_fdr_cutoff`) and "rank/color by `active_score`" guidance are no
+  longer documented; docs now direct selection/ranking to DE (`p_adj`, `logFC`)
+  and the nascent residual (`unspliced_excess_residual` / `unspliced_excess_fdr`).
+  The `active_score()` function itself is unchanged and still documented. The
+  method page renumbers the permutation equation (old Eq. 6 → Eq. 5) after
+  dropping the composite-score equation. No code changes: the composite column
+  is still produced by `active_score()`.
+- Tutorials index: **Start here** learning path, comparison of the three
+  partition notebooks, approximate runtimes/extras, and data-file table.
+- `references.md`: GSE226488 / Derbois et al. 2023 citation, tutorial-object
+  notes, and how large `.h5ad` files are distributed.
+- User guide workflow: **Input data and layers** (what AnnData needs, layer
+  names, raw counts, regime pre-flight).
+- Tutorial notebooks: shorter intros (less composite-ranking / migration
+  prose); standalone DE GSEA note points to the changelog instead of a long
+  bug narrative; GSE226488 **Reproduce** section no longer depends on
+  machine-local paths.
 
 ### Added
 - **`scatrans.tl.nascent_activity_score(...)` and

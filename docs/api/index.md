@@ -16,11 +16,15 @@ stable API. Narrative usage: {doc}`../user_guide/index`. Output semantics:
 and scoring engine; `differential_expression` is the DE path without nascent
 layers. Scope and deprecated composite ranking: {doc}`../faq`.
 
-**Optional detection columns (`partition_de_by_mechanism` only):**
+**Optional kwargs (`partition_de_by_mechanism`):**
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `add_nascent_score` | `False` | When `True`, append **detection** columns from {func}`~scatrans.nascent_activity_score` (`nascent_poisson_z`, `dlog_*`, `de_reproducible` / `de_repro_frac`) to the gene table. **Decoupled from mechanism:** the transcription-vs-stabilization call always uses the induction-normalized residual. Fail-soft (error recorded in `meta["nascent_score"]`). |
+| `add_nascent_score` | `False` | When `True`, append **detection** columns from {func}`~scatrans.nascent_activity_score` (`nascent_poisson_z`, `dlog_*`, `de_reproducible` / `de_repro_frac`). **Decoupled from mechanism** (residual-only labels). Fail-soft → `meta["nascent_score"]`. |
+| `induction_matched` | `False` | When `True` and `gene_sets=` is set, also run {func}`~scatrans.program_mechanism_induction_matched` → `result.programs_induction_matched`. |
+| `mechanism_preset` | `None` | Forwarded to {func}`~scatrans.annotate_mechanism_class` (e.g. `"high_precision"`). |
+| `flag_induction_confound` | `True` | Forwarded; high-induction stabilization calls get `induction_confounded` + lower confidence. |
+| `suppress_hard_labels_when_unreliable` | `True` | At low regime reliability, hard gene classes → `ambiguous`. |
 
 In the table below "both" means `active_score` and `differential_expression` (the
 low-level scorers). The convenience entry points `partition_de_by_mechanism` /
@@ -63,6 +67,7 @@ inspects cell/sample counts and suggests a preset.
    add_abundance_normalized_residual
    annotate_mechanism_class
    program_mechanism
+   program_mechanism_induction_matched
    nascent_activity_score
    threshold_sensitivity
    differential_expression
@@ -77,9 +82,11 @@ inspects cell/sample counts and suggests a preset.
 ```
 
 **`PartitionResult` fields:** `adata`, `regime`, `gene_table`, `selected`,
-`programs`, `enrichment`, `meta`. Useful `meta` keys include `de_source`,
-`select` (cutoffs + `n_selected`), `regime`, `mechanism`, `programs`, and
-`nascent_score` (`enabled` / `status` when `add_nascent_score` was used).
+`programs`, `enrichment`, `meta`, and optional `programs_induction_matched`
+(when `induction_matched=True`). Useful `meta` keys: `de_source`, `select`,
+`regime`, `mechanism`, `programs`, `programs_induction_matched`,
+`nascent_score`, `pseudoreplication_warning`. Prefer
+`result.summary()` for a program-first overview (per-gene classes are soft).
 Default `run_go_enrichment=False` on partition (unlike
 `run_default_pipeline`, which defaults to `True`).
 
@@ -122,8 +129,9 @@ unspliced fraction). Add-ons fail soft when columns are missing; invalid
 | `labeling_anchor` | callable for `anchor=` | Metabolic-labeling truth (e.g. `new_log2fc`) instead of DE-induced genes |
 | `add_abundance_normalized_residual` | `unspliced_excess_residual_abnorm` | Demote abundance / nuclear-retention artifacts (e.g. *MALAT1*) |
 | `nascent_activity_score` | `nascent_poisson_z`, `dlog_unspliced` / `dlog_spliced`, `de_reproducible` / `de_repro_frac` | Pseudobulk variance-stabilized nascent **detection** score + spliced-side DE-reproducibility flag; opt-in on partition via `add_nascent_score=True` (**not** the mechanism residual) |
-| `annotate_mechanism_class` | `transcription_support`, `mechanism_class`, `mechanism_confidence` | Low-confidence per-gene transcription vs stabilization label (**annotation only**) |
-| `program_mechanism` | program-level DataFrame | Threshold-free gene-set pooling of support (stronger than per-gene) |
+| `annotate_mechanism_class` | `transcription_support`, `mechanism_class`, `mechanism_confidence`, `induction_confounded` | Soft per-gene labels (**annotation only**); optional high-precision preset; suppresses hard labels at low reliability |
+| `program_mechanism` | program-level DataFrame | Competitive pooling of support vs background |
+| `program_mechanism_induction_matched` | program-level DataFrame | Induction-controlled program tests (preferred for claims when induction varies) |
 | `threshold_sensitivity` | padj×logFC grid table | Report DE-list robustness instead of defending one cutoff |
 
 See {doc}`../user_guide/advanced` and {doc}`../statistical_guidance`.
@@ -226,7 +234,7 @@ Every `scat.pl.*` function accepts `ax=`/`axes=` (multi-panel embedding),
 
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|
-| `style` | `volcano_plot` | `"auto"` (legacy `active_score` colormap), `"ggvolcano"` (3-color classic), `"gradual"` (FDR gradient) |
+| `style` | `volcano_plot` | `"auto"` (default; colors by `unspliced_excess_residual` when present), `"ggvolcano"` (3-color classic), `"gradual"` (FDR gradient) |
 | `context` | major plotters | `"notebook"` defaults vs `"paper"` (larger figsize/fonts, dpi=300); aliases include `"print"` / `"publication"` |
 | `x` / `size_by` / `color_by` | `enrich_dotplot`, `enrich_barplot` | `x="GeneRatio"` (ORA) or `"NES"` (GSEA, auto-detected); `color_by` defaults to adjusted p-value |
 | `show_terms` | `enrich_dotplot`, `compare_dotplot` | `int` (top N), `"auto"` (significance + count heuristic), or an explicit term list |

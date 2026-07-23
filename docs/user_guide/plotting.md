@@ -30,7 +30,7 @@ scat.pl.volcano_plot(
 # Gradient fill + point size by -log10(FDR) (gradual_volcano)
 scat.pl.volcano_plot(all_results, style="gradual", top_n=10)
 
-# Legacy scATrans look (active_score colormap when present) — default
+# Legacy scATrans look (colors by the nascent excess residual when present) — default
 scat.pl.volcano_plot(all_results, style="auto")
 ```
 
@@ -60,8 +60,10 @@ scat.pl.volcano_plot(all_results, context="paper")  # larger fonts / dpi=300
 scat.pl.volcano_plot(all_results, save_path="fig.pdf")  # sharp export
 ```
 
-Default volcano **`style` remains `"auto"`** (color by `active_score` when
-present). For a classic two-sided teal/orange look use `style="ggvolcano"`.
+Default volcano **`style` remains `"auto"`**, coloring by the nascent excess
+residual (`color_by="unspliced_excess_residual"`, legacy `velocity_residual`
+also accepted) when present; pass `color_by="active_score"` for the legacy
+composite coloring. For a classic two-sided teal/orange look use `style="ggvolcano"`.
 Dense tables without `s=` log a warning suggesting fixed small points.
 
 ## Plotting style
@@ -86,16 +88,16 @@ so multipanel layouts do not clip an exterior legend.
 
 - `scat.pl.comet_plot(results_df, top_n=8, point_scale=1.0, min_size=2, max_size=180, s=None, ...)`
   log fold change versus bias-corrected unspliced excess residual
-  (`unspliced_excess_residual`), sized and colored by `active_score`.
+  (`unspliced_excess_residual`), sized and colored by score magnitude.
   - `s=3` (or 1–5): fixed small point size.
   - `point_scale=0.2` + `min_size=1`: smaller background points under variable sizing.
 
 - `scat.pl.volcano_plot(results_df, top_n=6, label_genes=None, style="auto", ...)`
   2D volcano (logFC vs. -log10(p_adj)).
-  - **`style="auto"`** (default): scATrans legacy — `active_score` continuous colormap when present; otherwise up/down/ns.
+  - **`style="auto"`** (default): scATrans legacy — colors by the nascent excess residual (`color_by="unspliced_excess_residual"`) when present; otherwise up/down/ns.
   - **`style="ggvolcano"`**: [ggVolcano](https://github.com/BioSenior/ggVolcano) classic — teal Down / gray Normal / orange Up, `theme_bw` grid, dashed cutoffs, FDR-ranked labels, in-axes legend (`legend_position="UL"`).
   - **`style="gradual"`**: ggVolcano `gradual_volcano` — gradient color and point size by `-log10(FDR)`.
-  - `label_genes=[...]` merges with `top_n` auto-labels; `label_by="p_adj"` (default for ggvolcano) or `"active_score"`.
+  - `label_genes=[...]` merges with `top_n` auto-labels; `label_by="p_adj"` (default for ggvolcano).
   - `s=` / `point_scale` / `min_size` / `max_size` for size; `color_by=` + `cmap=` (auto) or `fills=` / `colors=` (ggvolcano).
 
 - `scat.pl.bias_diagnostic_plot(results_df, point_size=10, ...)`
@@ -163,7 +165,7 @@ so multipanel layouts do not clip an exterior legend.
   highlight specific intersections.
 
 - `scat.pl.active_score_rankplot(results_df, top_n=15, context=None, ...)` —
-  horizontal bar plot of top active scores (gradient fill by magnitude).
+  horizontal bar plot of the top-ranked genes (gradient fill by magnitude).
   Default `top_n` is 15 under notebook display defaults.
 
 - `scat.pl.active_genes_heatmap(adata, genes, groupby=..., ...)` —

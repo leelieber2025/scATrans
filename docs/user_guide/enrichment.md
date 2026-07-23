@@ -26,8 +26,8 @@ For ranked-list enrichment (classic preranked GSEA; Subramanian et al. 2005 —
 see {doc}`../references`), via [GSEApy](https://github.com/zqfang/GSEApy):
 
 ```python
-# Prefer a *signed* ranking metric (logFC). Non-negative scores such as
-# active_score cannot produce negative NES (depletion) and are not auto-selected.
+# Prefer a *signed* ranking metric (logFC). One-sided non-negative score
+# columns cannot produce negative NES (depletion) and are not auto-selected.
 ranked = all_results["logFC"].sort_values(ascending=False)
 
 gsea_res = scat.run_gsea(
@@ -47,8 +47,8 @@ scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
 ```
 
 GSEA needs **signed** ranks. Passing a full `all_results` table auto-prefers
-`logFC` (and similar t-stat columns); `active_score` is never auto-selected.
-If you force `score_column="active_score"` (or pass a one-sided Series), a
+`logFC` (and similar t-stat columns); one-sided non-negative score columns are
+never auto-selected. If you force such a column (or pass a one-sided Series), a
 warning is emitted.
 
 **Low mapping rate and ID cleanup (same gate as ORA):** after loading gene
