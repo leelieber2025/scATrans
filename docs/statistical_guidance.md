@@ -1,7 +1,8 @@
 # Statistical Guidance and Reporting Checklist
 
-Not every output column is a calibrated statistical claim. Domain conventions
-are listed in {doc}`domain_assumptions`; product scope in {doc}`faq`.
+What each output is for when you write methods or figures. Domain conventions:
+{doc}`domain_assumptions`. Product scope: {doc}`faq`. New here? Run
+{doc}`quickstart` first, then return when you need reporting detail.
 
 ## Capability roles
 
@@ -26,30 +27,29 @@ are listed in {doc}`domain_assumptions`; product scope in {doc}`faq`.
 
 ## Reporting checklist
 
-1. Prefer DE-defined gene lists (`partition_de_by_mechanism` / `select_by="de"`).
-   Rank within a list by DE (`p_adj`, `logFC`) or by the nascent residual
-   (`unspliced_excess_residual`), not by a cross-run absolute scale.
-2. For significance, use DE `p_adj` and/or `unspliced_excess_fdr`
-   (permutation). The built-in `significant` list is intentionally strict
-   and often empty.
-3. Describe the unspliced excess term as a **reference-gamma group
-   contrast**, not full stochastic velocity inference (do not equate the
-   default track with scVelo dynamical modeling). Separate **detection**
-   (`nascent_poisson_z`) from **mechanism** residual if both are reported.
-4. When `use_permutation=True`, note the **conditional permutation** (labels
-   shuffled; layers and γ fixed) and the **(1+exceed)/(n+1)** permutation
-   *p*-value convention (Phipson & Smyth — {doc}`references`).
-5. Cite backends and databases you used (scanpy / PyDESeq2 / GSEApy / GO /
-   KEGG, etc.) from {doc}`references`.
-6. Cross-check top hits with raw spliced/unspliced counts, phase portraits,
-   and (when possible) orthogonal DE or replicate-aware models.
+1. Define gene lists with DE (`partition_de_by_mechanism` / `select_by="de"`).
+   You may sort within that list by `p_adj`, `logFC`, or residual for plots —
+   residual rank is not membership.
+2. Report membership with DE `p_adj`. Residual FDR (`unspliced_excess_fdr`) is
+   optional and not required for partition. An empty lower-level `significant`
+   list from `active_score` is often expected, not a crash.
+3. Call the unspliced excess a **reference-gamma group contrast**, not full
+   RNA-velocity inference. Keep **detection** (`nascent_poisson_z`) separate
+   from **mechanism** residual if both appear.
+4. If `use_permutation=True`, note the **conditional** shuffle (labels only;
+   layers and γ fixed) and the **(1+exceed)/(n+1)** p-value convention
+   (Phipson & Smyth — {doc}`references`).
+5. Cite backends and gene-set sources (scanpy / PyDESeq2 / GSEApy / GO / KEGG)
+   from {doc}`references`.
+6. Spot-check top genes against raw spliced/unspliced counts or phase
+   portraits when you can.
 
-`active_score_simple` and `run_default_pipeline` leave permutation off by
-default. Enable `use_permutation=True` when residual FDR is required.
+Residual permutation is off by default. Turn it on only when you need residual
+FDR — not for ordinary DE membership.
 
 ## Quick reference (one page)
 
-**Recommended primary path** (DE selects → mechanism partition):
+**Default path** (DE selects → mechanism partition):
 
 | Step | Function | Key outputs |
 |------|----------|-------------|
@@ -71,18 +71,19 @@ default. Enable `use_permutation=True` when residual FDR is required.
 | 3. Enrich | `run_enrichment(candidates, gene_sets="GO_Biological_Process", adata=adata)` on DE (or detection-filtered) lists — not `mechanism_class` partitions | ORA table; cite `attrs["gene_set_info"]["provenance"]` |
 | 4. Plot | `scat.pl.comet_plot(...)`, `volcano_plot(..., label_repel=True)` | `(fig, ax)`; batch export via `scat.pl.figure_export_context` or `save_all_figures` |
 
-**Workflow presets** (via `recommend_workflow` → `WORKFLOW_PRESETS`):
+**Workflow presets** (via `recommend_workflow` → `WORKFLOW_PRESETS`; these
+tune the lower-level `active_score` kwargs — the primary path is still
+`partition_de_by_mechanism`):
 
 - `explore` — ranking only, no permutation (fast)
 - `report` — `use_permutation=True`, `n_perm=500`, `perm_de_backend="same"`
 - `pseudobulk_report` — multi-replicate pseudobulk + permutation
-- `nascent_focus` — `ranking_mode="nascent_excess"` (residual-only ranking;
-  the residual FDR is DE-backend-independent, so DE-null mismatches cannot
-  affect it — only residual terms matter)
+- `nascent_focus` — `ranking_mode="nascent_excess"` (residual-only **display
+  ranking**; exploratory — not a production DE list)
 
-**Paper checklist (minimal):** DE membership; residual vs detection vs score
-roles as in the table above; cite backends/libraries; regime pre-flight if
-mechanism labels used. Product scope: {doc}`faq`.
+**Minimal paper note:** say membership is DE-defined; distinguish residual
+(mechanism) from detection if both appear; cite backends and libraries; report
+regime when you interpret mechanism labels. Scope: {doc}`faq`.
 
 ## Result interpretation
 
@@ -107,11 +108,12 @@ RNA velocity):
 The `unspliced_excess_residual` is one-sided on positive unspliced excess and
 **independent of DE significance** — genes with `p_adj` filled to 1 after
 backend filters, or with weak DE, can still show positive nascent excess.
-Ranking by the residual is therefore **not** a DE-significant gene list; use
-`filter_active_genes` or the built-in `significant` conjunction when you need
-DE gates. The residual is intended for **ranking and visualization**, not as a
-p-value; use the permutation-derived `unspliced_excess_fdr` (when enabled) or
-your own post-hoc statistics for claims.
+Ranking by the residual is therefore **not** a DE gene list. Prefer
+`partition_de_by_mechanism` / `filter_active_genes(..., select_by="de")` for
+membership. The residual is for **mechanism annotation and visualization**
+within a DE-selected set, not a p-value; optional
+`unspliced_excess_fdr` (when permutation is enabled) calibrates residual
+magnitude under a conditional null.
 
 ### Default filter thresholds (`preset="heuristic"`)
 
@@ -141,7 +143,12 @@ from scatrans.tl import HEURISTIC_FILTER_DEFAULTS, PSEUDOBULK_FILTER_DEFAULTS
 print(HEURISTIC_FILTER_DEFAULTS)
 ```
 
-### Built-in `significant` gene list
+### Built-in `significant` gene list (lower-level `active_score` only)
+
+This subsection applies to the second return value of `active_score` /
+`active_score_simple`. The primary API
+{func}`~scatrans.partition_de_by_mechanism` exposes DE membership as
+`result.selected` and does **not** use this conjunction.
 
 When `use_permutation=True`, the built-in mask uses the same defaults as
 `filter_active_genes(..., preset="heuristic")` (or pseudobulk defaults when
@@ -157,14 +164,13 @@ the gates in the table above, plus:
 - `unspliced_excess_fdr` gate as in the table
 
 Without `use_permutation=True`, the built-in `significant` list is **empty**
-(FDR on unspliced excess cannot be computed). Use `all_results` +
-`filter_active_genes` for custom thresholds.
+(FDR on unspliced excess cannot be computed). That is expected — use
+`filter_active_genes(..., select_by="de")` for production DE lists.
 
-On low-signal data the built-in list may still be small. Use the full table
-in `all_results`, sorted by `p_adj` then `logFC`. If you need different
-cutoffs, pass explicit arguments to `filter_active_genes` rather than
-assuming the built-in list matches a custom `logfc_cutoff` override on
-`active_score()`.
+On low-signal data the built-in list may still be small even with
+permutation. Prefer the full `all_results` table with explicit DE cutoffs
+rather than assuming the built-in list matches a custom `logfc_cutoff`
+override on `active_score()`.
 
 ### MixedLM: `logFC` vs tested coefficient
 

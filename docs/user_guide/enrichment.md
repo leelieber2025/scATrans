@@ -1,23 +1,20 @@
 # Functional Enrichment
 
-Over-representation analysis with `run_enrichment`:
+Pass a **DE-selected** gene list (e.g. `result.selected.index` or
+`filter_active_genes(..., select_by="de")`). Do not split by
+`mechanism_class` for ORA unless you really mean to (the package warns).
 
 ```python
 enrich_res = scat.run_enrichment(
     gene_list=candidates.index.tolist(),
-    gene_sets="GO_Biological_Process",   # or "GO_BP" — automatically resolved to the
-                                         # correct organism-specific built-in (Hs/Mm_GO_..._2026)
+    gene_sets="GO_Biological_Process",  # or "GO_BP" → organism-specific bundled set
     organism="mouse",  # or "human"
-    adata=adata,   # if you called store_raw_counts(adata) earlier, this will
-                   # automatically use the preserved full measured gene list as universe.
-                   # Explicit `universe=` still takes precedence.
-    padj_cutoff=0.05,  # preferred; legacy pval_cutoff= still accepted (filters adjusted p)
+    adata=adata,       # uses full-gene background if you ran store_raw_counts earlier
+    padj_cutoff=0.05,
     min_size=5,
     max_size=500,
 )
-# Additional columns and attrs (clusterProfiler compatibility):
-#   - "neg_log10_padj" column
-#   - res.attrs["universe_info"] with effective_universe_size, dropped_by_annotation_filter, etc.
+# Also available: res["neg_log10_padj"], res.attrs["universe_info"]
 ```
 
 ## `run_gsea` (pre-ranked GSEA)

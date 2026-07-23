@@ -2,34 +2,52 @@
 
 ## Requirements
 
-- Python ≥ 3.9 (CI covers 3.9–3.12)
-- A scientific Python environment (NumPy, SciPy, pandas, AnnData, scanpy)
+- Python 3.9+ (CI covers 3.9–3.12)
+- A normal scientific stack (NumPy, SciPy, pandas, AnnData, scanpy) — pulled in
+  as dependencies
 
-## Bioconda
+## Install
+
+**PyPI (recommended):**
+
+```bash
+pip install scatrans
+```
+
+**Bioconda:**
 
 ```bash
 conda install -c conda-forge -c bioconda scatrans
 ```
 
-This installs core dependencies. Optional extras listed below are distributed as
-PyPI extras; install them with `pip`, or add the corresponding packages to the
-conda environment.
+Conda installs the core package. Optional extras below are PyPI extras; add them
+with `pip` or install the matching conda packages yourself.
 
-## PyPI
+## Optional extras
+
+Install only what you need:
 
 ```bash
-pip install scatrans
-
-# Optional extras
-pip install "scatrans[advanced,gene_features]"  # scVelo mode + GTF feature CLI
-pip install "scatrans[pseudobulk]"              # PyDESeq2
-pip install "scatrans[memento]"                 # Memento DE backend
-pip install "scatrans[gsea]"                    # GSEA (gseapy)
+pip install "scatrans[pseudobulk]"      # PyDESeq2 (replicate-aware DE)
+pip install "scatrans[gsea]"           # GSEA via gseapy
+pip install "scatrans[memento]"        # Memento DE backend
+pip install "scatrans[advanced]"       # scVelo (mode="advanced")
+pip install "scatrans[gene_features]"  # gtfparse for custom GTF tables
 ```
 
-Bundled gene-feature tables (length, intron number) for mouse and human support
-optional Huber bias correction. Custom GTF-derived tables:
-{doc}`user_guide/gene_features`.
+Combine tags as needed, e.g. `"scatrans[pseudobulk,gsea]"`.
+
+Bundled mouse/human gene-feature tables support optional length/intron bias
+correction. Custom GTF tables: {doc}`user_guide/gene_features`.
+
+## Check the install
+
+```python
+import scatrans as scat
+print(scat.__version__)
+```
+
+Next: {doc}`quickstart`.
 
 ## Development install
 
@@ -41,11 +59,10 @@ pip install -e ".[dev]"
 
 ## Versioning
 
-The package version is defined in `src/scatrans/_version.py` (`__version__`).
-Runtime `scatrans.__version__`, packaging metadata, and documentation release
-strings all read that value. For a release: bump `__version__`, update
-`CHANGELOG.md`, then run `python -m build` or
-`python scripts/make_release_zips.py`.
+The single source of truth is `src/scatrans/_version.py`. Runtime
+`scatrans.__version__`, packaging metadata, and docs release strings all read
+it. For a release: bump `__version__`, update `CHANGELOG.md`, then
+`python -m build` or `python scripts/make_release_zips.py`.
 
 ## Logging
 
@@ -54,20 +71,17 @@ import logging
 logging.getLogger("scatrans").setLevel(logging.INFO)
 ```
 
-## Nascent-layer quality check
-
-Before mechanism analysis, inspect the global unspliced fraction:
+## Quick data check (before mechanism analysis)
 
 ```python
 import scatrans as scat
 
-ufrac = scat.qc.unspliced_global(adata)
-regime = scat.qc.regime_diagnosis(adata)
-print(regime["regime"], regime["reliability"], regime["message"])
-# regime in {"ok", "low_unspliced", "high_unspliced"}; reliability in [0, 1]
+print(scat.qc.unspliced_global(adata))
+r = scat.qc.regime_diagnosis(adata)
+print(r["regime"], r["reliability"], r["message"])
+# regime: "ok" | "low_unspliced" | "high_unspliced"
 ```
 
-`partition_de_by_mechanism` always runs this pre-flight
-(`result.regime` / `meta["regime"]`, fail-soft) and scales mechanism confidence
-by `reliability`. `run_default_pipeline` stores the same block and applies the
-scale when `annotate_mechanism=True`.
+`partition_de_by_mechanism` always runs this check and stores it as
+`result.regime`. Low reliability does not stop the run; it down-weights
+mechanism confidence.

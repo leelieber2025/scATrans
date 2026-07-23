@@ -1,12 +1,10 @@
 # API Stability
 
-Stable public API versus implementation detail for the PyPI package and the
-published documentation.
+What is safe to import in scripts and papers versus what may move before 1.0.
 
-scATrans is **0.10.x (Beta)** (`Development Status :: 4 - Beta` in
-`pyproject.toml`). A future **1.0.0** release will move to Production/Stable and
-apply SemVer (breaking changes only with a major version bump). Until 1.0, minor
-versions may refine behavior with deprecation warnings where practical.
+scATrans is **0.10.x (Beta)**. Until 1.0, minor releases may refine behavior
+(with deprecation warnings where practical). After 1.0, breaking changes need a
+major version bump.
 
 **Scientific heuristic defaults** (e.g. `HEURISTIC_FILTER_DEFAULTS` values
 such as `logfc_cutoff`, residual/FDR gates) are
@@ -21,9 +19,10 @@ filter semantics**, not the numeric defaults. Always report the installed
 ```python
 import scatrans as scat
 
-scat.active_score(...)
+scat.partition_de_by_mechanism(...)  # primary entry point
+scat.active_score(...)               # lower-level residual + DE engine
 scat.differential_expression(...)
-scat.run_default_pipeline(...)
+scat.run_default_pipeline(..., select_by="de")
 scat.pl.volcano_plot(...)
 scat.qc.unspliced_global(...)
 scat.qc.regime_diagnosis(...)
@@ -69,9 +68,12 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 **Scientific maturity (not the same as import stability):** differential
 expression, enrichment, and plotting that do **not** depend on
-spliced/unspliced layers are suitable for routine use. Nascent-transcription
-scoring (`active_score` and its velocity-dependent add-ons) remains
-**experimental**; see {doc}`faq` and the README.
+spliced/unspliced layers are suitable for routine use. Mechanism partition
+(DE membership + residual annotation via `partition_de_by_mechanism`) is the
+supported primary workflow. **Composite ranking as gene discovery**
+(`ranking_mode="composite"`, `run_default_pipeline(select_by="composite")`)
+remains experimental / deprecated; residual-only discovery is not
+recommended. See {doc}`faq` and the README.
 2. **`scatrans.pl`** — names in `scatrans.pl.__all__` (plotting helpers).
 3. **`scatrans.qc`** — names in `scatrans.qc.__all__`
    (`unspliced_global`, `regime_diagnosis`).

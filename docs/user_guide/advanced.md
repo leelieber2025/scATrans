@@ -1,6 +1,8 @@
 # Optional Advanced Features
 
-These options are off by default; enable them only when the design requires them:
+Most analyses only need {func}`~scatrans.partition_de_by_mechanism` (see
+{doc}`workflow`). The switches below are off by default — turn them on when
+your design needs them:
 
 - `use_permutation=True`
 - `bias_correction="none"`
@@ -9,20 +11,25 @@ These options are off by default; enable them only when the design requires them
 - `use_mixed_model=True`
 - `prioritize_velocity=True` (**deprecated** — prefer `ranking_mode="nascent_excess"`)
 
-`diagnose_design` summarizes cell and sample counts and the global unspliced
-fraction, and returns warnings plus a suggested `filter_active_genes` preset.
-It runs automatically when `sample_col` or `use_pseudobulk=True` is set.
-Inspect diagnostics after enabling any advanced option.
+`diagnose_design` summarizes cells, samples, and global unspliced fraction,
+and suggests a filter preset. It runs automatically when `sample_col` or
+`use_pseudobulk=True` is set. Read the diagnostics block after changing any
+advanced option.
 
 ## `use_permutation=True`
 
-**Required for the built-in `significant` list** (via `unspliced_excess_fdr`).
+**Required for the built-in `significant` list** on the lower-level
+`active_score` path (via `unspliced_excess_fdr`). The primary
+{func}`~scatrans.partition_de_by_mechanism` path does **not** need residual
+permutation for DE membership or mechanism labels.
 
 Adds:
 
-- `unspliced_excess_pval` / `unspliced_excess_fdr` — permutation significance
-  on the bias-corrected unspliced excess residual (one-sided, positive
-  direction). **Use these for active-gene calls.**
+- `unspliced_excess_pval` / `unspliced_excess_fdr` — optional permutation
+  significance on the bias-corrected unspliced excess residual (one-sided,
+  positive direction). Exploratory residual calibration only — **not** a
+  production gene-list filter. Prefer DE membership
+  (`select_by="de"` / `result.selected`).
 
 The permutation shuffles only group labels; unspliced/spliced layers and the
 reference gamma are fixed from the original labeling for speed. **This is a
@@ -215,42 +222,41 @@ not evidence that the residual outperforms DE.
 
 ## Mechanism annotation
 
-Annotation only — does not change gene-list membership. Scale confidence with
-regime reliability when velocity layers are present. Product rules: {doc}`../faq`.
+Labels only — they do not change who is on the gene list. Prefer
+{func}`~scatrans.partition_de_by_mechanism` over wiring these helpers by hand.
+Rules of thumb: {doc}`../faq`.
 
-### Preferred: primary workflow (+ optional detection columns)
+### Preferred: partition (+ optional detection)
 
 ```python
-# Mechanism always uses the induction-normalized residual
 res = scat.partition_de_by_mechanism(
     adata, groupby="condition", target_group="Disease", reference_group="Control",
     de="builtin", gene_sets=my_pathways,
 )
 
-# Same mechanism path, plus additive DETECTION columns (decoupled from mechanism)
+# Same path, plus optional detection columns (not used for mechanism labels)
 res = scat.partition_de_by_mechanism(
     adata, groupby="condition", target_group="Disease", reference_group="Control",
     de="builtin",
     add_nascent_score=True,
     gene_sets=my_pathways,
 )
-# gene_table gains: nascent_poisson_z, de_reproducible, de_repro_frac, …
-# meta["nascent_score"] records enabled / status / n_reproducible
-# transcription_support / program directions are unchanged vs residual-only run
+# gene_table gains nascent_poisson_z, de_reproducible, …
+# meta["nascent_score"] records status; mechanism columns stay residual-based
 ```
 
 ### Manual building blocks
 
 ```python
 r = scat.qc.regime_diagnosis(adata)
-# Optional: detection score (do NOT pass as residual_col for mechanism)
+# Optional detection score — do not pass as residual_col for mechanism
 nz = scat.nascent_activity_score(
     adata, groupby="condition", target_group="Disease", reference_group="Control",
     sample_col="sample",
 )
 all_results = all_results.join(nz, how="left")
 
-# Per-gene mechanism (low confidence by design; prefer program-level pooling)
+# Per-gene labels (modest accuracy; prefer program-level pooling)
 # omit residual_col to auto-pick unspliced_excess_residual / abnorm residual
 all_results, mdiag = scat.annotate_mechanism_class(
     all_results,

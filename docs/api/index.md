@@ -14,7 +14,7 @@ stable API. Narrative usage: {doc}`../user_guide/index`. Output semantics:
 `partition_de_by_mechanism` is the recommended primary entry point (returns
 {class}`~scatrans.PartitionResult`). `active_score` is the lower-level residual
 and scoring engine; `differential_expression` is the DE path without nascent
-layers. Scope and deprecated composite ranking: {doc}`../faq`.
+layers. Scope and deprecated composite discovery ranking: {doc}`../faq`.
 
 **Optional kwargs (`partition_de_by_mechanism`):**
 
@@ -98,12 +98,14 @@ requires `use_permutation=True` upstream), or `"permissive"`; or pass explicit
 (permissive — only explicitly-passed cutoffs apply); `select_by="de"` additionally
 applies DE defaults (`padj<0.05`, `logFC>1`) when no cutoffs are given.
 
-**`select_by`** (default `"composite"`):
+**`select_by`** (API default `"composite"` for backward compatibility; prefer
+`"de"` for production lists — the primary partition path already uses DE-only
+membership):
 
 | Value | Membership decided by | Proxy columns |
 |-------|----------------------|---------------|
-| `"composite"` | DE gates **and** nascent/composite gates (prior behavior) | Participate in selection |
-| `"de"` | **DE only** (`p_adj` / `logFC`; defaults `padj < 0.05` and `|log2FC| > 1` when no cutoffs given) | Annotation only — never gate membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
+| `"de"` (**recommended**) | **DE only** (`p_adj` / `logFC`; defaults `padj < 0.05` and `|log2FC| > 1` when no cutoffs given) | Annotation only — never gate membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
+| `"composite"` (legacy API default) | DE gates **and** nascent/composite gates | Participate in selection — not recommended for production discovery |
 
 ### Pipeline add-ons (`run_default_pipeline`)
 
