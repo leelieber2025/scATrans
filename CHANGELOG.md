@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   discouraged). Set `allow_mechanism_class_ora=True` to silence.
 
 ### Fixed
+- `program_mechanism_induction_matched`: drop `zip(..., strict=True)` so the
+  function runs on Python 3.9 (CI matrix).
 - `pl.enrich_barplot`: prefer non-null `Description`, else `Term` (avoids
   literal `"nan"` labels on bundled GO/KEGG tables).
 - `pl.compare_dotplot`: rotate long or many cluster x-labels to reduce overlap.

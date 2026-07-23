@@ -748,7 +748,8 @@ def program_mechanism_induction_matched(
                 L_ctrl = L[ctrl_mask]
                 S_ctrl = S[ctrl_mask]
                 deltas = []
-                for lg, sg in zip(L[is_prog], S[is_prog], strict=True):
+                # plain zip for Python 3.9 (strict= is 3.10+); same-length masks
+                for lg, sg in zip(L[is_prog], S[is_prog]):
                     d = np.abs(L_ctrl - lg)
                     k_idx = np.argpartition(d, min(nearest_k - 1, len(d) - 1))[:nearest_k]
                     ctrl = float(np.median(S_ctrl[k_idx]))

@@ -42,6 +42,24 @@ def test_no_shadow_flat_modules_beside_packages():
     )
 
 
+def test_no_zip_strict_keyword_in_package_source():
+    """``zip(..., strict=True)`` is Python 3.10+; package supports 3.9+ (CI matrix)."""
+    import re
+
+    root = Path(scatrans.__file__).resolve().parent
+    pat = re.compile(r"\bzip\s*\([^)]*\bstrict\s*=")
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for i, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if pat.search(code):
+                offenders.append(f"{path.relative_to(root)}:{i}:{line.strip()}")
+    assert not offenders, (
+        "zip(..., strict=) is not valid on Python 3.9; found:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_gsea_mapping_rate_warns_and_empty_on_zero_overlap():
     """GSEA must warn on low/zero symbol overlap (same class of check as ORA)."""
     import importlib.util
