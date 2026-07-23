@@ -55,8 +55,8 @@ def test_no_zip_strict_keyword_in_package_source():
             code = line.split("#", 1)[0]
             if pat.search(code):
                 offenders.append(f"{path.relative_to(root)}:{i}:{line.strip()}")
-    assert not offenders, (
-        "zip(..., strict=) is not valid on Python 3.9; found:\n  " + "\n  ".join(offenders)
+    assert not offenders, "zip(..., strict=) is not valid on Python 3.9; found:\n  " + "\n  ".join(
+        offenders
     )
 
 
