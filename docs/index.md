@@ -1,7 +1,9 @@
 # scATrans Documentation
 
 [![PyPI version](https://img.shields.io/pypi/v/scatrans.svg)](https://pypi.org/project/scatrans/)
+[![PyPI downloads](https://img.shields.io/pepy/dt/scatrans.svg)](https://pepy.tech/project/scatrans)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/scatrans.svg)](https://anaconda.org/bioconda/scatrans)
+[![Conda downloads](https://img.shields.io/conda/dn/bioconda/scatrans.svg)](https://anaconda.org/bioconda/scatrans)
 [![Python versions](https://img.shields.io/pypi/pyversions/scatrans.svg)](https://pypi.org/project/scatrans/)
 [![CI](https://github.com/leelieber2025/scATrans/actions/workflows/ci.yml/badge.svg)](https://github.com/leelieber2025/scATrans/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/leelieber2025/scATrans/blob/main/LICENSE)
