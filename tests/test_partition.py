@@ -261,3 +261,48 @@ def test_select_by_de_not_deprecated(adata_basic):
             select_by="de",
             run_go_enrichment=False,
         )
+
+
+# --------------------------- P0 summary + P1 induction_matched ---------------
+def test_summary_is_program_first_and_marks_soft_labels(adata_basic):
+    r = _run(adata_basic)
+    s = r.summary()
+    assert s["per_gene_labels_are_soft"] is True
+    assert "note" in s and "mechanism_class" in s["note"]
+    assert "per_gene_class_counts_selected" in s
+    # backward-compatible alias still present
+    assert "class_counts_selected" in s
+    assert "n_programs" in s
+
+
+def test_pseudoreplication_warning_without_sample_col(adata_basic, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="scatrans.tl.partition"):
+        r = _run(adata_basic)
+    assert r.meta.get("pseudoreplication_warning") is True
+    assert any("pseudoreplication" in m.message.lower() for m in caplog.records)
+
+
+def test_induction_matched_optional_on_partition(adata_basic):
+    names = list(adata_basic.var_names)
+    # force a few DE genes via external table so gene_sets can hit them
+    de_df = pd.DataFrame(
+        {
+            "logFC": [3.0 if i < 20 else 0.0 for i in range(len(names))],
+            "p_adj": [1e-6 if i < 20 else 1.0 for i in range(len(names))],
+        },
+        index=names,
+    )
+    gene_sets = {"PROG": names[:12], "OTHER": names[12:20]}
+    r = _run(
+        adata_basic,
+        de=de_df,
+        gene_sets=gene_sets,
+        induction_matched=True,
+        program_min_genes=5,
+    )
+    assert r.programs is not None
+    assert r.meta["programs_induction_matched"]["status"] in ("ok", "empty")
+    # attribute always present
+    assert hasattr(r, "programs_induction_matched")

@@ -1,5 +1,7 @@
 """Tests for enrichment public API: compare, extract, bundled sets, kegg."""
 
+import warnings
+
 import pandas as pd
 import pytest
 
@@ -48,6 +50,52 @@ def test_extract_gene_lists_single_df():
     out = scat.extract_gene_lists(df, logfc_cutoff=0.5, pval_cutoff=0.05)
     assert isinstance(out, dict)
     assert len(out) >= 1
+
+
+def test_run_enrichment_warns_on_mechanism_class_table(tiny_gene_sets):
+    """P0: ORA on mechanism_class-partitioned tables must warn (induction trap)."""
+    df = pd.DataFrame(
+        {
+            "logFC": [2.0, 2.0, 2.0, 2.0],
+            "mechanism_class": [
+                "stabilization-driven",
+                "stabilization-driven",
+                "stabilization-driven",
+                "stabilization-driven",
+            ],
+        },
+        index=["GeneA", "GeneB", "GeneC", "GeneD"],
+    )
+    with pytest.warns(UserWarning, match="mechanism_class|induction"):
+        scat.run_enrichment(
+            df,
+            gene_sets=tiny_gene_sets,
+            universe=["GeneA", "GeneB", "GeneC", "GeneD", "GeneE", "GeneX"],
+            verbose=False,
+            min_size=1,
+            max_size=50,
+        )
+
+
+def test_run_enrichment_allow_mechanism_class_ora_silences(tiny_gene_sets):
+    df = pd.DataFrame(
+        {
+            "logFC": [2.0, 2.0, 2.0],
+            "mechanism_class": ["transcription-driven"] * 3,
+        },
+        index=["GeneA", "GeneB", "GeneC"],
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        scat.run_enrichment(
+            df,
+            gene_sets=tiny_gene_sets,
+            universe=["GeneA", "GeneB", "GeneC", "GeneD", "GeneE"],
+            verbose=False,
+            min_size=1,
+            max_size=50,
+            allow_mechanism_class_ora=True,
+        )
 
 
 def test_extract_gene_lists_prefers_gene_column_over_range_index():

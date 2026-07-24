@@ -1813,6 +1813,14 @@ def compare_dotplot(
             ax.set_xticklabels([f"{cl}\n({shown[cl]})" for cl in clusters], fontsize=fontsize)
         else:
             ax.set_xticklabels(clusters, fontsize=fontsize)
+        # Horizontal cluster labels collide once names are long or numerous (e.g.
+        # "DE_pseudobulk", "pseudobulk_unique"). Auto-rotate so labels stay legible;
+        # short, few labels are left horizontal.
+        if max((len(str(cl)) for cl in clusters), default=0) > 6 or len(clusters) > 4:
+            for lab in ax.get_xticklabels():
+                lab.set_rotation(30)
+                lab.set_ha("right")
+                lab.set_rotation_mode("anchor")
 
         def _clean(t):
             t = str(t).split(" (GO:")[0].split(" (KEGG")[0]
@@ -3853,17 +3861,25 @@ def enrich_barplot(
             return fig, ax0
 
         df = enrich_df.copy()
-        # Term labels. Prefer Description only when it actually carries non-empty
-        # text: bundled GO/KEGG libraries ship an empty Description (the readable
-        # name and ID both live in Term), and empty strings pass notna(), which
-        # would otherwise blank out every bar label. Fall back to Term in that case
-        # (matching enrich_dotplot, which prefers Term first).
-        if "Description" in df.columns and df["Description"].astype(str).str.strip().ne("").any():
-            term_col = "Description"
-        elif "Term" in df.columns:
-            term_col = "Term"
-        else:
+        # Term labels. Prefer Description per row, but only where it carries real
+        # text. Bundled GO/KEGG libraries ship Description as an empty string OR as
+        # NaN (the readable name and ID both live in Term). A bare ``.ne("")`` guard
+        # is not enough: ``NaN`` becomes the literal string ``"nan"`` under
+        # ``astype(str)`` and slips through, blanking every bar with "nan". Coalesce
+        # to Term wherever Description is missing/empty (matching enrich_dotplot,
+        # which prefers Term first).
+        if "Description" not in df.columns and "Term" not in df.columns:
             raise ValueError("enrich_barplot requires a 'Term' or 'Description' column.")
+        if "Description" in df.columns:
+            desc = df["Description"].astype(str).str.strip()
+            desc_missing = desc.eq("") | desc.str.lower().isin(("nan", "none", "null"))
+            if "Term" in df.columns:
+                df["_term_label"] = desc.where(~desc_missing, df["Term"].astype(str).str.strip())
+            else:
+                df["_term_label"] = desc.mask(desc_missing, "")
+        else:
+            df["_term_label"] = df["Term"].astype(str).str.strip()
+        term_col = "_term_label"
 
         padj_col = None
         for c in ("p.adjust", "padj", "Adjusted P-value", "FDR q-val"):

@@ -274,3 +274,82 @@ def test_volcano_dense_points_warns_when_s_is_none(results_df, caplog):
 def test_invalid_plot_context_raises(results_df):
     with pytest.raises(ValueError, match="context"):
         scat.pl.volcano_plot(results_df, context="poster", show=False)
+
+
+def test_enrich_barplot_nan_description_falls_back_to_term():
+    """Bundled GO/KEGG ships Description as NaN; the readable name lives in Term.
+    Regression: NaN -> astype(str) == 'nan' must not blank every bar label."""
+    df = pd.DataFrame(
+        {
+            "Term": ["response to virus (GO:0009615)", "defense response (GO:0051607)"],
+            "Description": [np.nan, np.nan],
+            "p.adjust": [1e-30, 1e-20],
+            "Count": [15, 10],
+        }
+    )
+    fig, ax = scat.pl.enrich_barplot(df, top_n=2, show=False)
+    labels = [t.get_text() for t in ax.get_yticklabels()]
+    plt.close(fig)
+    assert labels, "no bar labels produced"
+    assert not any(lab.strip().lower() == "nan" for lab in labels), f"nan labels: {labels}"
+    assert any("virus" in lab for lab in labels)
+
+
+def test_enrich_barplot_mixed_description_coalesces_per_row():
+    """Where Description is real, use it; where empty/NaN, fall back to Term."""
+    df = pd.DataFrame(
+        {
+            "Term": ["T_A", "T_B", "T_C"],
+            "Description": ["Real desc A", "", np.nan],
+            "p.adjust": [1e-9, 1e-8, 1e-7],
+        }
+    )
+    fig, ax = scat.pl.enrich_barplot(df, top_n=3, show=False)
+    labels = [t.get_text() for t in ax.get_yticklabels()]
+    plt.close(fig)
+    assert "Real desc A" in labels
+    assert "T_B" in labels and "T_C" in labels  # empty/NaN fell back to Term
+
+
+def test_compare_dotplot_rotates_long_cluster_labels():
+    """Long/numerous cluster names must rotate to avoid horizontal overlap."""
+    rows = []
+    for cl in ["DE_cell", "DE_pseudobulk", "pseudobulk_unique", "active"]:
+        for term in ["response to virus", "defense response", "cytokine signaling"]:
+            rows.append(
+                {
+                    "cluster": cl,
+                    "Term": term,
+                    "Description": term,
+                    "Count": 10,
+                    "GeneRatio": 0.1,
+                    "p.adjust": 1e-3,
+                }
+            )
+    df = pd.DataFrame(rows)
+    fig, ax = scat.pl.compare_dotplot(df, cluster_col="cluster", top_n=3, show=False)
+    rotations = [t.get_rotation() for t in ax.get_xticklabels()]
+    plt.close(fig)
+    assert rotations and all(r == 30 for r in rotations), rotations
+
+
+def test_compare_dotplot_short_labels_stay_horizontal():
+    """Few short cluster names should not be rotated."""
+    rows = []
+    for cl in ["A", "B"]:
+        for term in ["t1", "t2", "t3"]:
+            rows.append(
+                {
+                    "cluster": cl,
+                    "Term": term,
+                    "Description": term,
+                    "Count": 5,
+                    "GeneRatio": 0.1,
+                    "p.adjust": 1e-3,
+                }
+            )
+    df = pd.DataFrame(rows)
+    fig, ax = scat.pl.compare_dotplot(df, cluster_col="cluster", top_n=3, show=False)
+    rotations = [t.get_rotation() for t in ax.get_xticklabels()]
+    plt.close(fig)
+    assert all(r == 0 for r in rotations), rotations

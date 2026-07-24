@@ -1,188 +1,171 @@
 # FAQ / Troubleshooting
 
-Related pages: {doc}`domain_assumptions` (conventions),
-{doc}`statistical_guidance` (reporting).
+Also see {doc}`domain_assumptions` and {doc}`statistical_guidance`.
 
-## Scope and entry points
+## What should I call?
 
-scATrans does not replace differential expression for gene discovery. Empirical
-checks on steady-state and labeling-style designs indicate that the nascent
-residual does not systematically recover more true positives than DE. Its role
-is to annotate **mechanism** among DE genes (*transcription-driven* versus
-*stabilization-driven*). Per-gene labels are modest in accuracy; prefer
-program-level pooling. Check nascent-signal reliability with
-{func}`~scatrans.qc.regime_diagnosis` (often uninformative under low capture or
-strong 3′ bias).
+| Goal | Function |
+|------|----------|
+| Default analysis (DE + mechanism) | {func}`~scatrans.partition_de_by_mechanism` |
+| DE only, no nascent layers | {func}`~scatrans.differential_expression` — {doc}`user_guide/standalone_de` |
+| Lower-level residual + DE table | {func}`~scatrans.active_score_simple` |
 
-| Topic | Practice |
-|-------|----------|
-| Gene-list membership | DE only (`partition_de_by_mechanism`, `filter_active_genes(..., select_by="de")`, or `differential_expression`). The residual does not remove DE hits. |
-| Mechanism | Residual-based `transcription_support` / `mechanism_class`; soft per-gene labels. Use `gene_sets=` / `program_mechanism` for program-level inference. |
-| Detection | Optional `add_nascent_score=True` → `nascent_poisson_z`, `de_reproducible`. Does not drive mechanism labels. |
-| Primary entry point | {func}`~scatrans.partition_de_by_mechanism` |
-| DE without mechanism | {doc}`user_guide/standalone_de` or `run_default_pipeline(..., select_by="de")` |
+One idea to keep straight: **DE chooses the gene list; the residual labels
+mechanism on that list.** The residual does not drop DE hits and is not meant
+to replace DE for discovery.
 
-## Is nascent-layer scoring suitable for production gene discovery?
+| Topic | Practical rule |
+|-------|----------------|
+| Gene list | DE only (`result.selected`, or `filter_active_genes(..., select_by="de")`) |
+| Mechanism | Soft labels on selected genes; prefer `gene_sets=` for program-level calls |
+| Detection | Optional `add_nascent_score=True` — never drives mechanism labels |
+| Enrichment | Run ORA on the DE list, not on `mechanism_class` splits |
 
-No. Composite ranking that depends on spliced and unspliced layers remains
-experimental. Prefer DE-defined membership (table above). Differential
-expression, enrichment, and plotting without nascent layers are suitable for
-routine use.
+Per-gene mechanism labels are modest; pathway pooling is usually more useful.
+Signal tracks intron capture quality — check {func}`~scatrans.qc.regime_diagnosis`
+when capture looks thin or 3′-biased.
 
-## Why is the built-in `significant` list empty?
+## Do I need spliced/unspliced layers?
 
-The built-in `significant` mask requires conjunction of thresholds on logFC,
-`p_adj`, `unspliced_excess_residual`, and `unspliced_excess_fdr`
-({doc}`statistical_guidance`). On modestly powered designs it is often empty by
-design. Filter the full `all_results` table with
-`filter_active_genes(preset="heuristic")` or explicit cutoffs
-({doc}`user_guide/workflow`).
+**For mechanism partition, yes** (`spliced`/`unspliced` or `mature`/`nascent`).
+**For ordinary DE, no** — use {func}`~scatrans.differential_expression` on a
+count matrix. Enrichment and plotting work the same either way. Tutorial:
+{doc}`tutorials/t_ec_standalone_de_enrichment`.
 
-## Why does the nascent residual rank genes with `p_adj ≈ 1`?
+## Can the residual replace DE?
 
-The `unspliced_excess_residual` is **independent of DE significance**. Genes
-that DE backends did not test or filled as neutral (e.g. PyDESeq2 independent
-filtering → `padj` set to 1) can still show positive unspliced excess. Ranking
-by the residual is therefore not a DE-significant gene list. Use
-`filter_active_genes(..., select_by="de")`, explicit `padj_cutoff` /
-`logfc_cutoff`, or the built-in `significant` conjunction. Default cutoffs:
-{doc}`statistical_guidance`.
+**No.** Membership should come from DE. Older composite ranking
+(`ranking_mode="composite"`, `run_default_pipeline(select_by="composite")`) is
+not a recommended discovery path. Prefer
+{func}`~scatrans.partition_de_by_mechanism` or pure DE.
 
-## Should I use `padj_cutoff` or `pval_cutoff`?
+## Why is `result.selected` empty?
 
-**Prefer `padj_cutoff=`** on `filter_active_genes`, `extract_gene_lists`, and
-enrichment helpers. Legacy `pval_cutoff=` still works but is a misleading
-name: when adjusted p-values exist it filters **`p_adj` / `p.adjust`**, not
-raw `p_val`. Using the modern name avoids deprecation warnings and makes
-reporting clearer.
+Usually DE found no genes at your cutoffs (power, thresholds, or a quiet
+contrast) — not a failed package. Check design and DE settings first. The SCI
+endothelium tutorial shows an underpowered case where an empty list is the
+expected teaching point: {doc}`tutorials/t_ec_active_transcription`.
 
-## `run_gsea` returns empty / warns about mapping rate or `gene_case`
+## `padj_cutoff` or `pval_cutoff`?
 
-Preranked GSEA needs **signed** ranks (prefer `logFC`; one-sided score
-columns are not auto-selected). It also checks symbol overlap with gene sets (same
-`_check_gene_set_mapping_rate` gate as ORA): below **20%** mapping rate you
-get a warning with input vs gene-set examples; at **0%** the result is empty
-with `reason="no_ranked_genes_mapped"`. Duplicate gene IDs (e.g. after
-case-folding) keep the entry with **max |score|**. Enrichr libraries are
-typically **UPPERCASE** — for mixed-case mouse symbols (`Tp53`) pass
-`gene_case="upper"`. See {doc}`user_guide/enrichment`.
+Use **`padj_cutoff=`**. Legacy `pval_cutoff=` still works but, when adjusted
+p-values exist, it filters **`p_adj`**, not raw `p_val`. The modern name
+avoids warnings and makes papers clearer.
 
-## `ValueError` from `use_mixed_model=True`
+## GSEA is empty or warns about mapping / `gene_case`
 
-Two common causes:
+- Rank genes with a **signed** metric (prefer `logFC`).
+- Symbol case must match the gene set (Enrichr libraries are usually
+  **UPPERCASE**). For mixed-case mouse symbols, try `gene_case="upper"`.
+- Mapping rate below ~20% warns; 0% returns empty with
+  `reason="no_ranked_genes_mapped"`.
 
-1. **Sample-size gate:** the mixed-model path requires **≥4 biological
-   samples per group** and **≥6 total random-effect groups**. With fewer
-   replicates (e.g. 3 vs. 3), use `use_pseudobulk=True` +
-   `pseudobulk_de_backend="pydeseq2"` instead.
-2. **Backend clash:** `use_mixed_model=True` and `use_memento_de=True` are
-   mutually exclusive (both are cell-level DE backends). Choose one.
+See {doc}`user_guide/enrichment`.
+
+## `ValueError` with `use_mixed_model=True`
+
+1. **Sample size:** need ≥4 biological samples per group and ≥6 random-effect
+   groups total. With 3 vs 3, use pseudobulk + PyDESeq2 instead.
+2. **Clash:** do not combine `use_mixed_model=True` with `use_memento_de=True`.
 
 See {doc}`user_guide/advanced`.
 
 ## `ImportError` for `pydeseq2` / `scvelo` / `gseapy` / `memento`
 
-These are optional extras, not installed by the base `pip install scatrans`:
+Those are optional extras:
 
 ```bash
 pip install "scatrans[pseudobulk]"        # PyDESeq2
-pip install "scatrans[advanced]"          # scVelo (mode="advanced")
-pip install "scatrans[gene_features]"     # gtfparse (custom gene-feature tables)
-pip install "scatrans[memento]"           # Memento (use_memento_de=True)
-pip install "scatrans[gsea]"              # GSEA (run_gsea), pulls in gseapy
+pip install "scatrans[advanced]"          # scVelo
+pip install "scatrans[gene_features]"     # custom GTF tables
+pip install "scatrans[memento]"           # Memento
+pip install "scatrans[gsea]"              # GSEA (gseapy)
 ```
 
 See {doc}`installation`.
 
-## `differential_expression(..., use_memento_de=True)` or PyDESeq2 raises a data-shape / non-integer-count error
+## PyDESeq2 / Memento complain about counts
 
-Count-based backends need **raw integer counts**. A common mistake is
-running HVG selection + `normalize_total` + `log1p` first, which leaves
-`.X` log-transformed. Call `scat.store_raw_counts(adata, layer="counts")`
-(or `store_raw_counts(adata, mode="auto")` to also recover counts from
-`adata.raw` when `.X` is already normalized) **before** any preprocessing. See
-{doc}`user_guide/standalone_de`.
+They need **raw integer counts**. If you already ran HVG + normalize + log1p,
+`.X` is no longer usable. Before preprocessing:
 
-## After `anndata.concat()`, I get double-log1p / preprocessing warnings
+```python
+scat.store_raw_counts(adata, layer="counts")
+# or: store_raw_counts(adata, mode="auto")  # also try adata.raw
+```
 
-`ad.concat()` drops `.uns` by default, including the `uns["log1p"]` marker
-scATrans uses to detect already-log-normalized data. `de_preprocess="auto"`
-still guards against double-log1p via heuristics on `.X`, but for
-certainty either re-set the marker after concatenating
-(`combined.uns["log1p"] = {"base": None}`) or pass `de_preprocess="none"`
-explicitly. See {doc}`user_guide/standalone_de`.
+See {doc}`user_guide/standalone_de`.
 
-## Some genes show implausibly large `logFC` (e.g. >20)
+## Warnings after `anndata.concat()`
 
-This is a known artifact of scanpy's `rank_genes_groups` log-fold-change
-calculation when a gene's expression is near-zero in the reference group
-(the denominator approaches zero). It is not specific to scATrans. Cross-
-check any such gene against raw spliced/unspliced counts (e.g.
-`scat.pl.velocity_phase_portraits`) before reporting it — see the
-{doc}`tutorials/t_ec_active_transcription` tutorial for a real example, and
-{doc}`statistical_guidance` for the general reporting checklist.
+`ad.concat()` drops `.uns` by default, including the `log1p` marker. Either
+restore it (`combined.uns["log1p"] = {"base": None}`) or set
+`de_preprocess="none"` when you know `.X` is already log-normalized.
 
-## I see a warning that the global unspliced fraction is > 50%
+## Huge `logFC` values (e.g. >20)
 
-That usually indicates a technical issue (ambient RNA, mismatched
-spliced/unspliced layers, nuclear enrichment / gDNA contamination, or a very
-immature cell population) rather than a clean nascent-transcription signal.
-`scat.qc.unspliced_global(adata)` reports the raw fraction; prefer
-`scat.qc.regime_diagnosis(adata)` for a structured verdict:
+Often a scanpy `rank_genes_groups` artifact when the reference group is near
+zero for that gene — not specific to scATrans. Check raw spliced/unspliced
+counts (e.g. `scat.pl.velocity_phase_portraits`) before reporting. Example:
+{doc}`tutorials/t_ec_active_transcription`.
+
+## Global unspliced fraction > 50%
+
+Often technical (ambient RNA, swapped layers, nuclear enrichment / gDNA, or a
+very immature population) rather than clean nascent signal:
 
 ```python
 r = scat.qc.regime_diagnosis(adata)
 print(r["regime"], r["reliability"], r["message"])
-# "high_unspliced" / "low_unspliced" / "ok"; reliability in [0, 1]
 ```
 
-Reliability is **U-shaped**: near 1 in a normal unspliced band (~10–45%), and
-lower when the fraction is too low (weak nascent signal) or too high (gamma /
-proxy may mis-fit). `partition_de_by_mechanism` always runs this pre-flight
-(`result.regime` / `meta["regime"]`) and scales `mechanism_confidence`.
-`run_default_pipeline` records `meta["regime"]` and applies the scale when
-`annotate_mechanism=True`.
+Reliability is high in a normal band (~10–45% unspliced) and lower at both
+extremes. Partition always runs this check and scales mechanism confidence.
+High reliability means the proxy is not obviously broken — not that residual
+beats DE.
 
-This check is data-quality / gamma reliability only. It does not classify
-dynamic versus steady-state regimes. High reliability means the proxy is not
-clearly corrupted; it does not imply that the residual outperforms DE.
-See {doc}`installation` and {doc}`user_guide/advanced`.
+## Missing length / intron features (all NaN for some genes)
 
-## `add_gene_features` silently produced all-`NaN` length/intron columns for some genes
+`add_gene_features` matches `adata.var_names`. Genes absent from the feature
+table get `NaN` and skip bias correction. Custom tables need a `gene_name`
+column that matches exactly ({doc}`user_guide/gene_features`).
 
-`add_gene_features` reindexes against `adata.var_names`. Genes absent from the
-feature table receive `NaN` and skip bias correction. Custom tables require a
-`gene_name` column that matches `var_names` exactly
-({doc}`user_guide/gene_features`).
+## Design / sample-size warnings
 
-Huber bias correction only uses genes with **`gene_length > 0`** (and finite
-intron). Missing or non-positive lengths from GTF generation are stored as
-`NaN` / excluded from the fit so they cannot act as `log1p(0)` leverage
-points. Partial feature tables on the simple path may be completed from the
-bundled organism table without overwriting existing positive lengths.
+When `sample_col` or pseudobulk is set, design notes land under
+`adata.uns["scatrans"]["diagnostics"]["design"]` (and in the log). Partition
+uses the same path. Open that block if notebook logs are easy to miss.
 
-## Design / sample-size warnings from `active_score`
+## Bundled KEGG for commercial use?
 
-When `sample_col` or `use_pseudobulk` is set, `active_score` runs
-`diagnose_design` automatically, logs each design warning, and stores the
-full payload under `adata.uns["scatrans"]["diagnostics"]["design"]` (including
-`warnings` and `recommendations`). Inspect that block if logs are hard to
-see in notebooks.
+Not under Apache-2.0 alone. KEGG needs a separate commercial license from
+Kanehisa Laboratories for non-academic use. To skip bundled files, pass an
+Enrichr library explicitly, e.g. `run_kegg(..., kegg_library="KEGG_2021")`.
+See {doc}`license`.
 
-## Do I need spliced/unspliced layers at all?
+---
 
-No. If your data is a standard count matrix with no RNA-velocity layers,
-use `differential_expression(...)` instead of `active_score(...)` — same
-downstream tooling (`filter_active_genes`, enrichment, `scat.pl.*`), no
-unspliced-excess term. See {doc}`user_guide/standalone_de` and the
-{doc}`tutorials/t_ec_standalone_de_enrichment` tutorial.
+## Lower-level `active_score` only
 
-## Can I use the bundled KEGG gene sets commercially?
+You only need this section if you call `active_score` /
+`active_score_simple` yourself. The primary path returns DE genes in
+`result.selected` and does not use the built-in `significant` mask for
+membership. Thresholds: {doc}`statistical_guidance`.
 
-Not under Apache-2.0. KEGG pathway data requires a separate commercial
-license from Kanehisa Laboratories for non-academic use. To avoid the
-bundled files entirely, pass an Enrichr/gseapy version explicitly, e.g.
-`run_kegg(..., kegg_library="KEGG_2021")`. See {doc}`license`.
+### Why is the built-in `significant` list empty?
 
-For unresolved issues, open a ticket on
+It requires DE gates **and** residual gates, including residual FDR from
+`use_permutation=True`. With permutation off (the default), the list is empty
+on purpose. For a DE gene list from `all_results`, use
+`filter_active_genes(..., select_by="de")`.
+
+### Why does residual ranking surface genes with `p_adj ≈ 1`?
+
+The residual is independent of DE significance. Genes filtered or filled to
+`padj=1` by a DE backend can still show positive unspliced excess. That is not
+a DE gene list — use `select_by="de"` or partition for membership.
+
+---
+
+Still stuck? Open an issue on
 [GitHub](https://github.com/leelieber2025/scATrans/issues).

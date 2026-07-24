@@ -1,23 +1,25 @@
 # Tutorials
 
-Pre-rendered notebooks on real and synthetic data. HTML builds show stored
-outputs; you do not need the large `.h5ad` files to read the results online.
+Pre-rendered notebooks on real and synthetic data. Online HTML already has
+figures and tables — you do not need the large `.h5ad` files just to read
+along.
 
 ## Start here
 
+New to scATrans? Skim {doc}`../quickstart`, then open the LPS-PBMC notebook.
+
 | If you want… | Open |
 |--------------|------|
-| The main DE → mechanism story (human LPS-PBMC) | {doc}`t_gse226488_partition_mechanism` |
-| The same workflow where DE actually selects genes (mouse) | {doc}`t_ga_active_transcription` |
-| What underpowered DE looks like (empty gene list by design) | {doc}`t_ec_active_transcription` |
-| DE + enrichment with no spliced/unspliced layers | {doc}`t_ec_standalone_de_enrichment` |
-| Plotting helpers only (no real `.h5ad`) | {doc}`t_synthetic_visualization` |
-| Overlap of gene lists across DE backends | {doc}`t_ec_gene_upset` |
+| Full DE → mechanism story (human LPS-PBMC) | {doc}`t_gse226488_partition_mechanism` |
+| Same API with a real mouse DE hit list | {doc}`t_ga_active_transcription` |
+| Underpowered design (empty list on purpose) | {doc}`t_ec_active_transcription` |
+| DE + enrichment, no nascent layers | {doc}`t_ec_standalone_de_enrichment` |
+| Plot gallery only (synthetic tables) | {doc}`t_synthetic_visualization` |
+| Gene-list overlap across DE backends | {doc}`t_ec_gene_upset` |
 
-New to scATrans? Read {doc}`../quickstart`, then the LPS-PBMC notebook. The
-SCI (EC) and GA notebooks use the **same** entry point
-(`partition_de_by_mechanism`) on purpose: they show how **design power**, not
-API choice, decides whether there is anything to partition.
+SCI (EC) and GA use the **same** entry point
+(`partition_de_by_mechanism`) on purpose: design power, not API choice,
+decides whether anything is selected.
 
 ### Three partition notebooks (same API, different designs)
 

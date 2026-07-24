@@ -1,12 +1,10 @@
 # API Stability
 
-Stable public API versus implementation detail for the PyPI package and the
-published documentation.
+What is safe to import in scripts and papers versus what may move before 1.0.
 
-scATrans is **0.10.x (Beta)** (`Development Status :: 4 - Beta` in
-`pyproject.toml`). A future **1.0.0** release will move to Production/Stable and
-apply SemVer (breaking changes only with a major version bump). Until 1.0, minor
-versions may refine behavior with deprecation warnings where practical.
+scATrans is **0.10.x (Beta)**. Until 1.0, minor releases may refine behavior
+(with deprecation warnings where practical). After 1.0, breaking changes need a
+major version bump.
 
 **Scientific heuristic defaults** (e.g. `HEURISTIC_FILTER_DEFAULTS` values
 such as `logfc_cutoff`, residual/FDR gates) are
@@ -21,9 +19,10 @@ filter semantics**, not the numeric defaults. Always report the installed
 ```python
 import scatrans as scat
 
-scat.active_score(...)
+scat.partition_de_by_mechanism(...)  # primary entry point
+scat.active_score(...)               # lower-level residual + DE engine
 scat.differential_expression(...)
-scat.run_default_pipeline(...)
+scat.run_default_pipeline(..., select_by="de")
 scat.pl.volcano_plot(...)
 scat.qc.unspliced_global(...)
 scat.qc.regime_diagnosis(...)
@@ -41,13 +40,15 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
    - primary workflow: `partition_de_by_mechanism` (DE selects → mechanism
      partition; the recommended entry point) and its result `PartitionResult`
      (fields `adata`, `regime`, `gene_table`, `selected`, `programs`,
-     `enrichment`, `meta`, parallel to `PipelineResult`). The composite
+     `enrichment`, `meta`, optional `programs_induction_matched`; parallel to
+     `PipelineResult`). The composite
      `run_default_pipeline(select_by="composite")` path is deprecated as a
      discovery entry (see {doc}`faq`).
    - scoring / DE / pipeline: `active_score`, `active_score_simple`,
      `adaptive_active_score`, `add_adaptive_score`, `adaptive_weight`,
      `labeling_anchor`, `add_abundance_normalized_residual`,
      `annotate_mechanism_class`, `program_mechanism`,
+     `program_mechanism_induction_matched`,
      `nascent_activity_score` (active-transcription detection score; opt-in
      detection columns via `partition_de_by_mechanism(add_nascent_score=True)`,
      decoupled from the mechanism partition),
@@ -67,9 +68,12 @@ compatible releases (after 1.0: without breaking changes in a minor/patch):
 
 **Scientific maturity (not the same as import stability):** differential
 expression, enrichment, and plotting that do **not** depend on
-spliced/unspliced layers are suitable for routine use. Nascent-transcription
-scoring (`active_score` and its velocity-dependent add-ons) remains
-**experimental**; see {doc}`faq` and the README.
+spliced/unspliced layers are suitable for routine use. Mechanism partition
+(DE membership + residual annotation via `partition_de_by_mechanism`) is the
+supported primary workflow. **Composite ranking as gene discovery**
+(`ranking_mode="composite"`, `run_default_pipeline(select_by="composite")`)
+remains experimental / deprecated; residual-only discovery is not
+recommended. See {doc}`faq` and the README.
 2. **`scatrans.pl`** — names in `scatrans.pl.__all__` (plotting helpers).
 3. **`scatrans.qc`** — names in `scatrans.qc.__all__`
    (`unspliced_global`, `regime_diagnosis`).
@@ -80,18 +84,24 @@ scoring (`active_score` and its velocity-dependent add-ons) remains
 
 `partition_de_by_mechanism` returns a dataclass with fields:
 
-`adata`, `regime`, `gene_table`, `selected`, `programs`, `enrichment`, `meta`.
+`adata`, `regime`, `gene_table`, `selected`, `programs`, `enrichment`, `meta`,
+and `programs_induction_matched` (default `None`).
 
 - **`selected` / `gene_table`:** DE membership is only in `selected`; mechanism
   columns live on both when annotation ran. Detection columns
   (`nascent_poisson_z`, `de_reproducible`, …) appear only if
   `add_nascent_score=True`.
+- **`programs` / `programs_induction_matched`:** competitive program table when
+  `gene_sets=` is set; induction-matched table when `induction_matched=True`.
 - **`regime`:** copy of the reliability pre-flight dict (also under
   `meta["regime"]`).
 - **`meta` keys:** always `scatrans_version`, `organism`, `de_source`, `de`,
   `select`, `regime`, `mechanism`, `programs`, `nascent_score`
-  (`enabled` / `status` / …). Mechanism is **always** residual-based;
-  `nascent_score` never drives `transcription_support` / program directions.
+  (`enabled` / `status` / …); plus `programs_induction_matched` and
+  `pseudoreplication_warning` when applicable. Mechanism is **always**
+  residual-based; `nascent_score` never drives `transcription_support` /
+  program directions.
+- **`summary()`:** compact program-first counts; marks per-gene classes as soft.
 
 ### `PipelineResult`
 
@@ -150,7 +160,8 @@ changes that affect scientific interpretation should be called out in
 ## How to stay safe as a user
 
 1. Depend on `scatrans.__all__` / documented functions, not internal modules.
-2. Pin a minor version range in papers and production
-   (`scatrans>=0.10.7,<0.11` or `==0.10.7` for exact reproducibility).
+2. Pin a minor version range in papers and production. For analyses matching
+   the scATrans manuscript pin **0.10.8**, use ``scatrans==0.10.8`` (or
+   ``scatrans>=0.10.8,<0.11`` if you accept later 0.10.x patches).
 3. Record `scatrans.__version__` (and backend versions such as PyDESeq2) in
    Methods / session logs.

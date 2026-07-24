@@ -1,12 +1,12 @@
 # Plotting
 
-Gallery covering most `scat.pl.*` helpers:
-{doc}`../tutorials/t_synthetic_visualization`.
+Quick plots on a results table (`result.gene_table`, `all_results`, or a DE
+frame). Full gallery: {doc}`../tutorials/t_synthetic_visualization`.
 
 ```python
 import scatrans as scat
 
-scat.pl.comet_plot(all_results, top_n=12, title="Active Drivers")
+scat.pl.comet_plot(all_results, top_n=12, title="DE genes")
 scat.pl.volcano_plot(all_results, top_n=10, label_genes=["YourGene1", "YourGene2"])
 scat.pl.bias_diagnostic_plot(all_results)
 ```

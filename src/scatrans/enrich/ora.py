@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -40,6 +41,45 @@ from ._data import (  # noqa: F401 — explicit for type checkers
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+_MECHANISM_CLASS_COL = "mechanism_class"
+_HARD_MECHANISM_CLASSES = frozenset({"transcription-driven", "stabilization-driven"})
+
+_MECHANISM_CLASS_ORA_MSG = (
+    "ORA on genes split by per-gene mechanism_class is induction-confounded at a "
+    "single snapshot (highly induced genes accumulate mature mRNA and soft-label as "
+    "stabilization-driven regardless of true mechanism; Fig. 7 trap). Prefer: "
+    "(1) ORA on the full DE-selected list, (2) program_mechanism / "
+    "program_mechanism_induction_matched on curated sets, or (3) the decoupled "
+    "detection filter (nascent_z + de_reproducible). Pass "
+    "allow_mechanism_class_ora=True only if you accept this caveat."
+)
+
+
+def _warn_mechanism_class_ora(gene_list: Any, *, allow: bool) -> None:
+    """Warn when the query looks like a mechanism_class-partitioned gene table."""
+    if allow or not isinstance(gene_list, pd.DataFrame):
+        return
+    if _MECHANISM_CLASS_COL not in gene_list.columns:
+        return
+    classes = {str(c) for c in gene_list[_MECHANISM_CLASS_COL].dropna().unique()}
+    hard_present = classes & _HARD_MECHANISM_CLASSES
+    # Warn whenever mechanism_class is on the input table (user likely filtered or
+    # is about to interpret class-stratified enrichment). Stronger note if only
+    # one hard class remains (classic mistaken workflow).
+    if len(hard_present) == 1 and len(classes) <= 2:
+        warnings.warn(
+            "gene_list appears filtered to a single mechanism_class "
+            f"({next(iter(hard_present))}). {_MECHANISM_CLASS_ORA_MSG}",
+            UserWarning,
+            stacklevel=3,
+        )
+    else:
+        warnings.warn(
+            f"gene_list carries a {_MECHANISM_CLASS_COL!r} column. {_MECHANISM_CLASS_ORA_MSG}",
+            UserWarning,
+            stacklevel=3,
+        )
+
 
 def run_enrichment(
     gene_list: Iterable[Any],
@@ -61,6 +101,7 @@ def run_enrichment(
     gene_set_source: str = "scatrans",
     include_gene_list: bool = False,
     p_adjust_method: str = "fdr_bh",
+    allow_mechanism_class_ora: bool = False,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -142,6 +183,11 @@ def run_enrichment(
         Deprecated alias of `universe`. Use `universe` instead.
         If both are provided, raises ValueError.
         In docs and examples we strongly prefer the term `universe`.
+
+    allow_mechanism_class_ora : bool, default False
+        When ``gene_list`` is a DataFrame with a ``mechanism_class`` column,
+        emit a :class:`UserWarning` that ORA on mechanism-class partitions is
+        induction-confounded. Set True to silence (you accept the caveat).
     """
     # Normalize organism early for consistency (attrs, resolver, etc.)
     organism_norm = str(organism).lower()
@@ -152,6 +198,8 @@ def run_enrichment(
     # Resolve cutoff: prefer explicit padj_cutoff, fall back to pval_cutoff (legacy name).
     # Both are applied to the adjusted p-value column ("p.adjust").
     cutoff = _resolve_enrichment_padj_cutoff(pval_cutoff, padj_cutoff)
+
+    _warn_mechanism_class_ora(gene_list, allow=allow_mechanism_class_ora)
 
     genes = _clean_gene_list(gene_list, gene_case=gene_case)
     if not genes:

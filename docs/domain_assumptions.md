@@ -1,7 +1,8 @@
 # Domain Assumptions
 
-Domain conventions enforced by the implementation. Use this page to check
-expectations against behavior.
+How the code behaves when conventions matter. Use this page to check
+expectations against implementation — not as a first tutorial. Start with
+{doc}`quickstart` if you are new.
 
 Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (scope).
 
@@ -11,11 +12,14 @@ Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (scope).
 
 | Assumption | Implication | If you need something else |
 |------------|-------------|----------------------------|
-| **Active transcription ranking is upregulation-oriented** | Built-in `significant` requires positive `logFC` (and positive residual). Default `filter_active_genes` direction is `"up"`. | `logfc_direction="down"` / `"both"` on pure DE tables; or use `differential_expression` alone |
-| **The unspliced-excess residual is independent of DE direction and DE significance** | Positive unspliced excess can occur even if DE is weak, untested, or `p_adj` filled to 1 (e.g. PyDESeq2 independent filtering). Ranking by the residual is not a DE-significant list. | `filter_active_genes(..., select_by="de")` or explicit `padj_cutoff` / `logfc_cutoff`, or `significant` conjunction |
-| **`select_by="de"` decouples membership from the proxy** | DE gates define the list; nascent gates are skipped; sorting is by `p_adj` then `logFC`. | Default `select_by="composite"` keeps prior proxy-aware filtering |
-| **`qc.regime_diagnosis` reliability is U-shaped in unspliced fraction** | Full reliability in a normal band (~10–45%); degrades at low (noise) and high (nuclear/gDNA, gamma mis-fit) extremes. Scales `mechanism_confidence` in `partition_de_by_mechanism` and when `annotate_mechanism=True`. | This is data-quality only — not dynamic vs steady-state |
+| **Primary membership is DE, not residual ranking** | {func}`~scatrans.partition_de_by_mechanism` and `filter_active_genes(..., select_by="de")` define lists from DE. The residual annotates mechanism among those genes. | Residual-only / composite ranking is exploratory or legacy; not production discovery |
+| **Built-in `significant` (lower-level path) is upregulation-oriented** | That mask requires positive `logFC` and positive residual (and residual FDR when permutation ran). Default `filter_active_genes` direction is `"up"`. | `logfc_direction="down"` / `"both"` on pure DE tables; or use `differential_expression` alone |
+| **The unspliced-excess residual is independent of DE direction and DE significance** | Positive unspliced excess can occur even if DE is weak, untested, or `p_adj` filled to 1 (e.g. PyDESeq2 independent filtering). Ranking by the residual is not a DE-significant list. | Prefer `select_by="de"` or the primary partition API for membership |
+| **`select_by="de"` decouples membership from the proxy** | DE gates define the list; nascent gates are skipped; sorting is by `p_adj` then `logFC`. Primary path uses this mode. | `filter_active_genes` API default `select_by="composite"` keeps legacy proxy-aware filtering — not recommended for production lists |
+| **`qc.regime_diagnosis` reliability is U-shaped in unspliced fraction** | Full reliability in a normal band (~10–45%); degrades at low (noise) and high (nuclear/gDNA, gamma mis-fit) extremes. Scales `mechanism_confidence`; by default hard gene classes are suppressed to `ambiguous` when reliability is near zero (`suppress_hard_labels_when_unreliable=True`). | This is data-quality only — not dynamic vs steady-state |
 | **Detection ≠ mechanism** | `nascent_poisson_z` / `add_nascent_score=True` is an absolute nascent-increase **detection** score (induction-coupled). Mechanism labels always use the induction-normalized residual. | Do not pass `nascent_poisson_z` as `residual_col` for `annotate_mechanism_class` if you want transcription-vs-stabilization |
+| **High-induction stabilization calls are single-snapshot non-identifiable** | Strong induction can push the residual negative even for transcription-driven genes. `flag_induction_confound=True` marks `induction_confounded` and down-weights confidence only (no relabel). | Prefer `program_mechanism_induction_matched` (or induction-matched regression) for claims; do not ORA gene lists split by `mechanism_class` |
+| **ORA on `mechanism_class` subsets is discouraged** | `run_enrichment` warns if the gene table carries `mechanism_class`. | Enrich the DE-selected list, or use program tables; silence only with `allow_mechanism_class_ora=True` |
 | **Residual is one-sided (positive excess)** | Negative excess does not contribute to the residual soft-scale. Permutation FDR on residual is one-sided for positive excess. | Do not interpret low residual FDR as “repression” |
 | **The residual is a within-run relative magnitude** | The residual soft-scale `λ ≈ median(positive x) / ln(2)` is estimated **from the genes in that run**. Residual magnitudes are comparable within one run, not as absolute cross-run units. | For cross-subset or cross-dataset claims use transportable quantities: `logFC`, `p_adj`, or re-run on a **shared gene universe**. Inspect `diagnostics["scoring"]`. |
 
@@ -29,7 +33,7 @@ Related: {doc}`statistical_guidance` (reporting), {doc}`faq` (scope).
 | **Heuristic filter defaults live in one code dict** | `HEURISTIC_FILTER_DEFAULTS` / `PSEUDOBULK_FILTER_DEFAULTS` set `logfc_cutoff`, residual, score, and FDR gates. Documented table: {doc}`statistical_guidance`. | Override cutoffs explicitly; do not hard-code stale numbers in papers without checking the installed version |
 | **`extract_gene_lists` prefers adjusted p** | If only raw p exists, a **warning** is emitted and the cutoff is applied to raw p (inflates false positives). | Provide `p_adj` / `padj` |
 | **MixedLM: `p_adj` tests `mixedlm_coef`, not sample-aware `logFC`** | Significant / s3 direction use `mixedlm_coef > 0`. Sign discordance emits a **warning** and increments `n_genes_logFC_mixedlm_sign_discordant`. | Inspect `mixedlm_coef` vs `logFC` before claiming effect direction |
-| **Built-in `significant` is empty without permutation** | Default `use_permutation=False` → empty `significant` by design (needs residual FDR). | `use_permutation=True` or exploratory `filter_active_genes` |
+| **Built-in `significant` is empty without permutation** | Lower-level `active_score` only: default `use_permutation=False` → empty `significant` by design (needs residual FDR). Primary path uses `result.selected` (DE), not this mask. | `select_by="de"` for production lists; `use_permutation=True` only if you need residual FDR |
 
 ---
 
@@ -81,8 +85,10 @@ Bugs that “do exactly what the code says” but violate domain intent (wrong d
 
 ## Checklist before interpreting top hits
 
-1. Did I want **DE-significant** genes, or **nascent-excess** rank?  
+1. Is the gene list from **DE** (`result.selected` / `select_by="de"`)?  
 2. If MixedLM: do `logFC` and `mixedlm_coef` agree in sign?  
-3. Is residual high because of biology, or length/annotation holes?  
-4. For enrichment: signed metric + symbol case matching?  
-5. For claims: `p_adj` / `unspliced_excess_fdr`, not the nascent residual alone.
+3. Could residual be length/annotation artifact rather than biology?  
+4. Enrichment: signed ranks + matching symbol case? Enrich the DE list, not
+   `mechanism_class` splits.  
+5. Report DE `p_adj` for membership; use residual / soft labels / program
+   tables for mechanism — not residual rank alone.
