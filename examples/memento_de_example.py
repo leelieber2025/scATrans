@@ -18,9 +18,10 @@ Requires (for full demo):
   (the rest are core dependencies)
 """
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
+
 import scatrans as scat
 
 print("=== scATrans + Memento Example ===")
@@ -30,19 +31,21 @@ print(f"scATrans version: {scat.__version__}")
 # PART 1: Main line — data WITH spliced/unspliced layers (recommended original workflow)
 # =============================================================================
 
-print("\n" + "="*70)
+print("\n" + "=" * 70)
 print("PART 1: Original main workflow (data has velocity layers)")
 print("Focus: active_score + choosing DE backend (t-test vs Memento)")
-print("="*70)
+print("=" * 70)
 
 np.random.seed(42)
 n_cells = 180
 n_genes = 60
 
-obs = pd.DataFrame({
-    "condition": ["Ctrl"] * 90 + ["Disease"] * 90,
-    "batch": np.repeat(["b1", "b2"], 90),
-})
+obs = pd.DataFrame(
+    {
+        "condition": ["Ctrl"] * 90 + ["Disease"] * 90,
+        "batch": np.repeat(["b1", "b2"], 90),
+    }
+)
 obs.index = [f"cell_{i}" for i in range(n_cells)]
 
 # Synthetic counts with some active transcription signal in unspliced
@@ -81,7 +84,7 @@ adata_t, sig_t, all_t = scat.active_score(
     groupby="condition",
     target_group="Disease",
     reference_group="Ctrl",
-    de_method="t-test_overestim_var",   # explicit traditional choice
+    de_method="t-test_overestim_var",  # explicit traditional choice
     de_preprocess="auto",
     use_permutation=False,
     show_plot=False,
@@ -100,7 +103,7 @@ adata_m, sig_m, all_m = scat.active_score(
     use_memento_de=True,
     memento_capture_rate=0.10,
     memento_num_boot=300,
-    de_preprocess="none",   # Memento prefers count scale
+    de_preprocess="none",  # Memento prefers count scale
     use_permutation=False,
     show_plot=False,
     min_total_counts=5,
@@ -115,12 +118,12 @@ print("Memento recorded in metadata:", meta.get("use_memento_de"), meta.get("mem
 # PART 2: Additional capability — pure DE when you have NO velocity data
 # =============================================================================
 
-print("\n" + "="*70)
+print("\n" + "=" * 70)
 print("PART 2: Additional / non-primary use case")
 print("Data has NO spliced/unspliced layers at all.")
 print("Use differential_expression() + downstream enrichment/plotting.")
 print("This is supported but is not the original intended main workflow.")
-print("="*70)
+print("=" * 70)
 
 # Plain count AnnData (no velocity layers whatsoever)
 np.random.seed(123)
@@ -161,7 +164,10 @@ plain_m, de_m = scat.differential_expression(
     memento_num_boot=200,
     de_preprocess="none",
 )
-print("\nPure DE with Memento backend. Memento columns:", [c for c in de_m.columns if c.startswith("memento_")])
+print(
+    "\nPure DE with Memento backend. Memento columns:",
+    [c for c in de_m.columns if c.startswith("memento_")],
+)
 print(de_m.head(3)[["logFC", "p_adj", "memento_dv_coef"]])
 
 # Downstream tools work the same

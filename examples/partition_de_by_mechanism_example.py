@@ -13,6 +13,7 @@ Two demos:
 
 Run:  PYTHONPATH=src python examples/partition_de_by_mechanism_example.py
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,8 +37,10 @@ def _synthetic(seed: int = 0):
     g = len(genes)
 
     def block(mu_s_ctrl, mu_s_dis, mu_u_ctrl, mu_u_dis, k):
-        s_c = rng.poisson(mu_s_ctrl, (n, k)); s_d = rng.poisson(mu_s_dis, (n, k))
-        u_c = rng.poisson(mu_u_ctrl, (n, k)); u_d = rng.poisson(mu_u_dis, (n, k))
+        s_c = rng.poisson(mu_s_ctrl, (n, k))
+        s_d = rng.poisson(mu_s_dis, (n, k))
+        u_c = rng.poisson(mu_u_ctrl, (n, k))
+        u_d = rng.poisson(mu_u_dis, (n, k))
         return s_c, s_d, u_c, u_d
 
     # transcription-driven: both spliced AND unspliced rise
@@ -47,8 +50,10 @@ def _synthetic(seed: int = 0):
     # background: unchanged
     sBc, sBd, uBc, uBd = block(5, 5, 4, 4, n_bg)
 
-    S_ctrl = np.hstack([sTc, sSc, sBc]); S_dis = np.hstack([sTd, sSd, sBd])
-    U_ctrl = np.hstack([uTc, uSc, uBc]); U_dis = np.hstack([uTd, uSd, uBd])
+    S_ctrl = np.hstack([sTc, sSc, sBc])
+    S_dis = np.hstack([sTd, sSd, sBd])
+    U_ctrl = np.hstack([uTc, uSc, uBc])
+    U_dis = np.hstack([uTd, uSd, uBd])
     S = np.vstack([S_dis, S_ctrl]).astype(float)
     U = np.vstack([U_dis, U_ctrl]).astype(float)
 
@@ -71,9 +76,12 @@ def main():
     print("(A) partition_de_by_mechanism — builtin DE + program-level call")
     print("=" * 70)
     r = scat.partition_de_by_mechanism(
-        ad, groupby="condition", target_group="Disease", reference_group="Control",
-        organism="human", gene_sets={"transcription_program": txn,
-                                     "stabilization_program": stab},
+        ad,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        organism="human",
+        gene_sets={"transcription_program": txn, "stabilization_program": stab},
         program_min_genes=5,
         # toy caveat: here the two programs ARE the whole selected list, so pool
         # the program test over all tested genes (else the background is empty).
@@ -98,23 +106,40 @@ def main():
     print("(B) pluggable DE front-end — same call, different DE sources")
     print("=" * 70)
     # builtin
-    n_builtin = len(scat.partition_de_by_mechanism(
-        ad, target_group="Disease", reference_group="Control", organism="human").selected)
+    n_builtin = len(
+        scat.partition_de_by_mechanism(
+            ad, target_group="Disease", reference_group="Control", organism="human"
+        ).selected
+    )
     # a scanpy DE method routed through differential_expression
-    n_ttest = len(scat.partition_de_by_mechanism(
-        ad, target_group="Disease", reference_group="Control", organism="human",
-        de="t-test").selected)
+    n_ttest = len(
+        scat.partition_de_by_mechanism(
+            ad, target_group="Disease", reference_group="Control", organism="human", de="t-test"
+        ).selected
+    )
     # a precomputed DataFrame (pretend it came from edgeR/DESeq2)
     de_df = pd.DataFrame(
-        {"log2FC": [3.0 if (g.startswith("TXN") or g.startswith("STAB")) else 0.0
-                    for g in ad.var_names],
-         "FDR": [1e-5 if (g.startswith("TXN") or g.startswith("STAB")) else 1.0
-                 for g in ad.var_names]},
+        {
+            "log2FC": [
+                3.0 if (g.startswith("TXN") or g.startswith("STAB")) else 0.0 for g in ad.var_names
+            ],
+            "FDR": [
+                1e-5 if (g.startswith("TXN") or g.startswith("STAB")) else 1.0 for g in ad.var_names
+            ],
+        },
         index=list(ad.var_names),
     )
-    n_ext = len(scat.partition_de_by_mechanism(
-        ad, target_group="Disease", reference_group="Control", organism="human",
-        de=de_df, de_logfc_col="log2FC", de_padj_col="FDR").selected)
+    n_ext = len(
+        scat.partition_de_by_mechanism(
+            ad,
+            target_group="Disease",
+            reference_group="Control",
+            organism="human",
+            de=de_df,
+            de_logfc_col="log2FC",
+            de_padj_col="FDR",
+        ).selected
+    )
     print(f"selected genes — builtin: {n_builtin} | t-test: {n_ttest} | precomputed DF: {n_ext}")
     print("(same partition/annotation applied regardless of which DE selected the list)")
 
