@@ -4,7 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
+## [0.10.8] - 2026-07-22
+
+### Added
+- `program_mechanism_induction_matched`: program-level mechanism tests that
+  control for induction strength (OLS `support ~ logFC + membership`, optional
+  nearest-logFC matching). Exposed as
+  `partition_de_by_mechanism(induction_matched=True)` →
+  `PartitionResult.programs_induction_matched`.
+- `annotate_mechanism_class(..., flag_induction_confound=True)`: marks high-
+  induction stabilization calls in `induction_confounded` and down-weights
+  `mechanism_confidence` (does not relabel or change program tests). Penalty
+  shapes: `graded` (default) or `smooth`.
+- `annotate_mechanism_class(preset="high_precision")`: sets
+  `class_threshold=1.0` (lower hard-call rate; explicit `class_threshold`
+  overrides). Wired as `partition_de_by_mechanism(mechanism_preset=...)`.
+- `annotate_mechanism_class(suppress_hard_labels_when_unreliable=True)`: when
+  regime `reliability` is below `min_reliability_for_hard_labels` (default
+  0.05), hard per-gene classes become `ambiguous` (support unchanged).
+
+### Changed
+- `PartitionResult.summary()`: program-level counts first; documents that
+  per-gene classes are soft (`per_gene_labels_are_soft`).
+- `partition_de_by_mechanism`: warns when `sample_col` is missing
+  (`meta["pseudoreplication_warning"]`).
+- `run_enrichment(..., allow_mechanism_class_ora=False)`: warns if the query
+  table carries a `mechanism_class` column (ORA on mechanism subsets is
+  discouraged). Set `allow_mechanism_class_ora=True` to silence.
+
+### Fixed
+- `program_mechanism_induction_matched`: drop `zip(..., strict=True)` so the
+  function runs on Python 3.9 (CI matrix).
+- `pl.enrich_barplot`: prefer non-null `Description`, else `Term` (avoids
+  literal `"nan"` labels on bundled GO/KEGG tables).
+- `pl.compare_dotplot`: rotate long or many cluster x-labels to reduce overlap.
+
+### Documentation
+- `program_mechanism`: docstring notes that arbitrary KEGG/GO screens are
+  confounded by gene length; prefer mechanism-coherent sets.
+- User guide / FAQ / API reference aligned with induction-matched programs,
+  reliability hard-label suppression, and enrichment guards (this release).
 
 ## [0.10.7] - 2026-07-20
 
