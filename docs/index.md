@@ -11,58 +11,76 @@
 
 ## What scATrans does
 
-After you run differential expression, some genes go up because of
-transcription and some because mRNA is stabilized. **scATrans** takes a
-DE-selected gene list and soft-labels that difference using a
-reference-corrected nascent (unspliced) residual.
+Differential expression tells you **which** genes change. When you also have
+nascent or unspliced layers, scATrans helps you ask **how** those changes look
+on a transcription-versus-stabilization axis.
 
-One call does the usual path:
+- Soft labels on individual genes are exploratory.
+- Stronger claims usually come from **gene programs**, not single genes.
+- DE still defines the gene list. scATrans does not replace DE for discovery.
+
+No nascent layers? You can still run DE, enrichment, and plotting.
+
+## Where to go
+
+| Goal | Page |
+|------|------|
+| Install and run a first analysis | {doc}`installation` → {doc}`quickstart` |
+| Pick an API or program test | {doc}`faq` and the table below |
+| Full workflow, enrichment, plots | {doc}`user_guide/index` · {doc}`tutorials/index` |
+| What each column means for a paper | {doc}`statistical_guidance` |
+| Math and formal API | {doc}`method` · {doc}`api/index` |
+
+### A sensible path
+
+1. Install: `pip install "scatrans[pseudobulk]"` (add `[gsea]` if you need GSEA).
+2. Follow {doc}`quickstart`.
+3. Work through a real notebook
+   ({doc}`tutorials/t_gse226488_partition_mechanism` or
+   {doc}`tutorials/t_ga_active_transcription`).
+4. Enrich the DE gene list; keep mechanism claims at the program level when you can.
+
+### Default call
 
 ```python
 import scatrans as scat
 
 result = scat.partition_de_by_mechanism(
-    adata,  # spliced/unspliced or mature/nascent layers
+    adata,  # needs spliced/unspliced or mature/nascent layers
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
     organism="mouse",  # or "human"
     de="builtin",
-    # sample_col="sample",   # preferred with biological replicates
-    # gene_sets=my_pathways, # optional program-level table
+    sample_col="sample",  # set when you have biological replicates
+    # gene_sets=my_pathways,
+    # induction_matched=True,
 )
-result.regime           # capture-quality check
-result.selected.head()  # DE genes + mechanism labels
-result.summary()
+print(result.regime)           # capture quality
+print(result.selected.head())  # DE genes + mechanism labels
+print(result.summary())
 ```
 
-| Role | Job |
+### Which tool for which job
+
+| Goal | Use |
 |------|-----|
-| **DE** | Builds the gene list |
-| **Mechanism** | Transcription vs. stabilization labels on that list |
-| **Detection** (optional) | Extra nascent scores via `add_nascent_score=True` — does not drive labels |
+| DE + mechanism (usual case) | `partition_de_by_mechanism` |
+| DE / enrichment only (no velocity layers) | `differential_expression` + `run_enrichment` |
+| Program vs genome-wide background | `gene_sets=` → `result.programs` |
+| Program with induction controlled | `induction_matched=True` |
+| Absolute program placement | `program_mechanism_permutation_calibrated` |
+| Optional nascent detection score | `add_nascent_score=True` (does not set mechanism labels) |
+| Enrichment | On `result.selected`, not on `mechanism_class` splits |
 
-Program-level summaries (`gene_sets=`) are more trustworthy than single-gene
-calls. No nascent layers? You can still run ordinary DE, enrichment, and
-plots. Scope and caveats: {doc}`faq`.
-
-## Get started
-
-```bash
-pip install scatrans
-```
-
-| Step | Page |
-|------|------|
-| 1. Install (and optional extras) | {doc}`installation` |
-| 2. Run the first example | {doc}`quickstart` |
-| 3. Walk a real notebook | {doc}`tutorials/index` |
-| 4. Dig into options | {doc}`user_guide/index` |
+Practical habits: define membership with DE, treat per-gene classes as soft,
+prefer programs for claims, and pass `sample_col` when you have replicates.
+See {doc}`faq`.
 
 :::{note}
-**Beta (0.10.x).** Use `import scatrans as scat` and public names in
-`scatrans.__all__`, `scat.pl`, and `scat.qc`. Private leaf modules may move
-before 1.0 — see {doc}`api_stability`.
+scATrans is **0.10.x (Beta)**. Prefer `import scatrans as scat` and the public
+names in `scatrans.__all__`, `scat.pl`, and `scat.qc`. Details:
+{doc}`api_stability`.
 :::
 
 ::::{grid} 1 2 3 3
@@ -79,35 +97,42 @@ pip, Bioconda, optional extras.
 :link: quickstart
 :link-type: doc
 
-First run, what to read back, enrichment.
+First run after install.
 :::
 
 :::{grid-item-card} Tutorials {octicon}`play;1em;`
 :link: tutorials/index
 :link-type: doc
 
-Worked notebooks on real and synthetic data.
+Worked notebooks (read online or re-run).
 :::
 
 :::{grid-item-card} User Guide {octicon}`book;1em;`
 :link: user_guide/index
 :link-type: doc
 
-Workflow, DE backends, enrichment, plots.
+Workflow, enrichment, plots, advanced options.
 :::
 
-:::{grid-item-card} Method {octicon}`beaker;1em;`
-:link: method
+:::{grid-item-card} FAQ {octicon}`question;1em;`
+:link: faq
 :link-type: doc
 
-Residual math and optional permutation.
+API choice and common errors.
 :::
 
 :::{grid-item-card} Statistical Guidance {octicon}`alert;1em;`
 :link: statistical_guidance
 :link-type: doc
 
-What each column means for reporting.
+What each column is for.
+:::
+
+:::{grid-item-card} Method {octicon}`beaker;1em;`
+:link: method
+:link-type: doc
+
+Residual and calibration math.
 :::
 
 :::{grid-item-card} API Reference {octicon}`code;1em;`
@@ -117,17 +142,10 @@ What each column means for reporting.
 Functions and parameters.
 :::
 
-:::{grid-item-card} FAQ {octicon}`question;1em;`
-:link: faq
-:link-type: doc
-
-Scope, data requirements, common errors.
-:::
-
 :::{grid-item-card} GitHub {octicon}`mark-github;1em;`
 :link: https://github.com/leelieber2025/scATrans
 
-Source, issues, contributions.
+Source and issues.
 :::
 ::::
 

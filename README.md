@@ -57,10 +57,13 @@ result = scat.partition_de_by_mechanism(
     de="builtin",
     # sample_col="sample",   # set this when you have biological replicates
     # gene_sets=my_pathways, # optional pathway / program table
+    # induction_matched=True,
 )
 print(result.regime)           # data-quality check on unspliced capture
 print(result.selected.head())  # DE genes + soft mechanism labels
 print(result.summary())
+# Absolute program placement (optional):
+# scat.program_mechanism_permutation_calibrated(adata, gene_sets, de=frozen_de, ...)
 ```
 
 That is the recommended entry point. Next:
@@ -78,7 +81,8 @@ That is the recommended entry point. Next:
 ## Citation
 
 Cite the Zenodo DOI above (and the manuscript when available). For analyses
-tied to package version **0.10.8**, pin `scatrans==0.10.8`. See `CITATION.cff`.
+tied to package version **0.10.9** (manuscript draft v6.21 pin), use
+`scatrans==0.10.9`. See `CITATION.cff`.
 
 ## License
 

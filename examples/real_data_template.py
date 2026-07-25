@@ -26,6 +26,8 @@ See also:
   - synthetic_active_transcription.py for a fully runnable (but synthetic) demo
 """
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import scanpy as sc
 
@@ -34,16 +36,19 @@ import scatrans as scat
 # ------------------------------------------------------------------
 # 1. Load your data (example: kb_python or velocyto output)
 # ------------------------------------------------------------------
-# adata = sc.read_h5ad("path/to/your_velocity_object.h5ad")
 # Common patterns:
 #   - kb_python lamanno/velocity → layers 'mature' + 'nascent' (auto-remapped)
 #   - velocyto / scVelo standard → 'spliced' + 'unspliced'
 #
 # Make sure you have a categorical obs column for the biological contrast, e.g.
 # adata.obs["condition"] = ...   # "Disease", "Control", etc.
-
-# For illustration we assume the object is already loaded and has the required layers + obs.
-# adata = ...
+DATA_PATH = Path("path/to/your_velocity_object.h5ad")  # <-- change me
+if not DATA_PATH.is_file():
+    raise SystemExit(
+        f"Adapt DATA_PATH (currently {DATA_PATH}) to a real .h5ad before running. "
+        "This file is a template — see the module docstring."
+    )
+adata = sc.read_h5ad(DATA_PATH)
 
 # ------------------------------------------------------------------
 # 2. Standalone pre-flight QC (HIGHLY RECOMMENDED)
@@ -83,13 +88,13 @@ print("\nRunning active_score with diagnostics enabled (permutation + heuristic 
 
 adata_res, significant, all_results = scat.active_score(
     adata_input=adata,
-    groupby="condition",          # <-- change to your column
-    target_group="Disease",       # <-- your group of interest
-    reference_group="Control",    # <-- your reference
-    mode="heuristic",             # or "advanced" when appropriate
+    groupby="condition",  # <-- change to your column
+    target_group="Disease",  # <-- your group of interest
+    reference_group="Control",  # <-- your reference
+    mode="heuristic",  # or "advanced" when appropriate
     use_permutation=True,
-    n_perm=200,                   # 100-500 typical; auto-reduced for tiny pseudobulk designs
-    show_plot=False,              # we will make nicer figures below with ax=
+    n_perm=200,  # 100-500 typical; auto-reduced for tiny pseudobulk designs
+    show_plot=False,  # we will make nicer figures below with ax=
     min_total_counts=50,
     # advanced_... parameters only matter if you choose mode="advanced"
 )
@@ -107,18 +112,22 @@ print("Unspiced global fraction :", meta.get("unspliced_global_fraction"))
 print("Bias correction info     :", meta["diagnostics"]["bias_correction"])
 print("Permutation approximation:", meta.get("permutation_approximation_note"))
 print("Full diagnostics dict is at adata_res.uns['scatrans']['diagnostics']")
-print("Note: by default effective_gamma and delta_variance are not added to .var (opt-in via flags).")
+print(
+    "Note: by default effective_gamma and delta_variance are not added to .var (opt-in via flags)."
+)
 
 # Effective gamma per gene (transparency) — only present if show_effective_gamma=True was used
 if "effective_gamma" in adata_res.var.columns:
     print("effective_gamma (first 5):", adata_res.var["effective_gamma"].head().tolist())
 else:
-    print("effective_gamma not exposed (default). Pass show_effective_gamma=True to active_score to include it.")
+    print(
+        "effective_gamma not exposed (default). Pass show_effective_gamma=True to active_score to include it."
+    )
 
 # ------------------------------------------------------------------
 # 6. Publication-quality figures (ax= support for multi-panel)
 # ------------------------------------------------------------------
-scat.pl.set_style()   # call once for clean vector output (Type 42 fonts etc.)
+scat.pl.set_style()  # call once for clean vector output (Type 42 fonts etc.)
 
 fig = plt.figure(figsize=(16, 5), dpi=150)
 grid = fig.add_gridspec(1, 3, width_ratios=[1.1, 1, 1], wspace=0.35)
@@ -159,7 +168,7 @@ if len(significant) > 0:
         gene_sets="GO_Biological_Process",  # or "GO_BP" — auto-resolves to the correct
         # organism-specific bundled built-in (Mm/Hs_GO_Biological_Process_2026.txt).
         # No need to specify year or _scATrans suffix.
-        organism="mouse",   # or "human"
+        organism="mouse",  # or "human"
         # CRITICAL for correct background: pass adata= (the one on which you called
         # store_raw_counts early) so it auto-uses the preserved full measured gene list
         # instead of whatever is left after HVG. This is the most convenient & correct default.
@@ -176,11 +185,21 @@ if len(significant) > 0:
     # or scat.pl.enrich_dotplot(enrich, show_terms=["specific term desc", "another GO term"])
 
 print("\n=== Recommended next steps ===")
-print("- Look at adata_res.var for 'active_score', 'unspliced_excess_residual', 'effective_gamma', logFC, p_adj, ...")
-print("- Check the full diagnostics dict for any red flags (small bias fit n, very high unspliced frac, etc.).")
-print("- For top genes, you may want to manually inspect their phase portraits (U vs S colored by group).")
-print("- Consider running the same contrast with mode='advanced' (if cell number permits) and comparing the resulting significant lists.")
-print("- Always report the exact mode, n_perm, prior_weight, and whether permutation was used in your methods.")
+print(
+    "- Look at adata_res.var for 'active_score', 'unspliced_excess_residual', 'effective_gamma', logFC, p_adj, ..."
+)
+print(
+    "- Check the full diagnostics dict for any red flags (small bias fit n, very high unspliced frac, etc.)."
+)
+print(
+    "- For top genes, you may want to manually inspect their phase portraits (U vs S colored by group)."
+)
+print(
+    "- Consider running the same contrast with mode='advanced' (if cell number permits) and comparing the resulting significant lists."
+)
+print(
+    "- Always report the exact mode, n_perm, prior_weight, and whether permutation was used in your methods."
+)
 
 if __name__ == "__main__":
     print("\nThis template is meant to be read and adapted, not executed directly.")

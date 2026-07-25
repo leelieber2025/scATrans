@@ -4,7 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## Unreleased
+## [0.10.9] - 2026-07-25
+
+### Added
+- `program_mechanism_permutation_calibrated` (`tl/calibration.py`): program mean
+  `transcription_support` minus the same program's mean under shuffled condition
+  labels (absolute mechanism-axis placement). Requires frozen `de=`; returns
+  `calibrated`, `z`, and a Phipson–Smyth `(b+1)/(n+1)` p-value. Exported from
+  `scatrans` / `scatrans.tl`. Tests: `tests/test_calibration.py`.
+
+### Fixed
+- Label checks now use the same normalization as `active_score` (strip,
+  `"1.0"`↔`"1"`), so `target_group` matching no longer rejects valid contrasts.
+
+### Documentation
+- Docs aligned with manuscript package **0.10.9**: Methods
+  subsection *Permutation-calibrated program placement*, locked GSE226488
+  calibration numbers (ARE null ≈ −2.81), `null_sd` semantics, S4 return
+  fields, competitive vs induction-matched vs calibrated tools, pin
+  `scatrans==0.10.9` (method, workflow, FAQ, statistical guidance, API,
+  domain assumptions, README).
+
+## [0.10.8] - 2026-07-22
 
 ### Added
 - `program_mechanism_induction_matched`: program-level mechanism tests that

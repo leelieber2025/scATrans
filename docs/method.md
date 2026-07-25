@@ -14,12 +14,18 @@ mode diagram below). Equation numbers here are local to this documentation
 page; the residual core matches the manuscript Methods (reference-corrected
 excess and Huber gene-structure residualization).
 
-**Primary software path (manuscript-aligned):** DE defines gene-list membership;
-the residual annotates transcription vs. stabilization support; program-level
-calls (and optional induction-matched tests) are preferred over hard per-gene
-claims; optional `add_nascent_score` is a **detection** axis and never rewrites
-mechanism labels. Sample-level residual permutation is **optional** (Mode A),
-not required for mechanism partition. Product scope: {doc}`faq`.
+**Primary software path (manuscript-aligned: package 0.10.9 / draft v6.21):** DE
+defines gene-list membership; the residual annotates transcription vs.
+stabilization support; program-level calls (competitive and optional
+induction-matched) are preferred over hard per-gene claims; for **absolute**
+program placement use
+{func}`~scatrans.program_mechanism_permutation_calibrated` (observed mean minus
+the same gene set’s expectation under shuffled condition labels — Methods
+subsection *Permutation-calibrated program placement*); optional
+`add_nascent_score` is a **detection** axis and never rewrites mechanism labels.
+Gene-wise residual permutation FDR (`use_permutation=True` on `active_score`) is
+**optional** (Mode A) and separate from program-level calibration. Product
+scope: {doc}`faq`.
 
 - Output columns and reporting: {doc}`statistical_guidance`
 - Domain conventions: {doc}`domain_assumptions`
@@ -87,14 +93,23 @@ pseudobulk when `sample_col` provides replicates), (iii) computes the
 reference-corrected unspliced excess and optional Huber gene-structure
 residualization below, (iv) forms soft mechanism labels and optional
 program-level / induction-matched tables, and (v) optionally appends a
-**decoupled** nascent detection score (`add_nascent_score=True`). Sample-level
+**decoupled** nascent detection score (`add_nascent_score=True`). Gene-wise
 residual permutation is **not** required for that path.
 
-**Optional residual permutation path (Mode A).** When biological sample
-structure exists, the lower-level scorer can recompute the residual under
-sample-level label permutation to obtain residual FDR. That configuration is
-described in the steps below for users who request it; it is a separate
-calibration of the residual, not the definition of DE membership.
+**Program absolute placement (recommended for claims that need a zero).**
+{func}`~scatrans.program_mechanism_permutation_calibrated` places a gene set on
+the mechanism axis against an **empirical** null: the same program’s mean
+`transcription_support` under shuffled condition labels. Competitive /
+induction-matched program tests are *relative* (background or matched
+non-members); genome-wide standardization does not remove a gene set’s own
+structural offset (length, intron content). See **Program-level permutation
+calibration** below.
+
+**Optional gene-wise residual permutation path (Mode A).** When biological
+sample structure exists, the lower-level scorer can recompute the residual under
+sample-level label permutation to obtain residual FDR (`unspliced_excess_fdr`).
+That is a separate, gene-level calibration — not DE membership and not the
+program-level absolute placement API.
 
 For each gene the residual core is: (i) a shrunken reference
 unspliced-to-spliced ratio, (ii) target-group unspliced excess, (iii) optional
@@ -130,7 +145,7 @@ $\rho_{c}$ is the Huber loss with threshold $c = 1.35$ (quadratic for $|e| \leq 
 
 Pseudobulk counts are modeled with PyDESeq2 (negative-binomial GLM, Wald test, Benjamini–Hochberg adjustment), yielding ${logFC}_{g}$ and the adjusted p-value $p_{g}^{adj}$; the latter is the DE backend’s own adjusted p-value and is distinct from the permutation-calibrated FDR of Step 4. The log-fold change and adjusted significance are reported alongside the bias-corrected residual $R_{g}$; the residual is the quantity carried into the permutation calibration of Step 4 and into the induction-normalized mechanism annotation. Alternative DE backends (Supplementary Methods S3) supply ${logFC}_{g}$ and $p_{g}^{adj}$ without otherwise changing the pipeline.
 
-### Step 4: Empirical calibration by sample-level permutation
+### Step 4 (optional): Gene-wise residual FDR by sample-level permutation
 
 Condition labels are permuted $B$ times while preserving the target and reference group sizes. Permutation is performed **at the pseudobulk sample level, never at the cell level**, so that the null distribution respects the biological replicate as the unit of inference and pseudoreplication is not reintroduced through the null. For each permutation $b$ the residual pipeline — unspliced excess and bias correction — is recomputed, yielding null residual values $R_{g}^{(b)}$. With $B_{eff} \leq B$ the number of permutations that completed successfully, the one-sided empirical p-values and their BH-adjusted counterparts are
 
@@ -138,9 +153,69 @@ $$p_{g}^{perm,R} = \frac{1 + \sum_{b = 1}^{B_{eff}}\mathbf{1}\left( R_{g}^{(b)} 
 
 The $+ 1$ correction keeps the p-values strictly positive and valid. The residual-based value $q_{g}^{perm,R}$ (`unspliced_excess_fdr`) is an optional residual FDR (also used by the lower-level built-in `significant` conjunction on `active_score` when permutation is enabled), with the one-sided requirement $R_{g} > 0$. It does **not** define DE membership on the primary `partition_de_by_mechanism` path. Because the attainable resolution of an empirical p-value is $1/\left( B_{eff} + 1 \right)$, FDR values are reported as usable only when $B_{eff} \geq 100$; otherwise the p-values are returned but flagged (`use_fdr = False`, reason `small_permutation_space`). The permutation null tests the exchangeability of condition labels.
 
+### Program-level permutation calibration (absolute placement)
+
+Matches the manuscript Methods subsection *Permutation-calibrated program
+placement* (v6.21) and the package function
+{func}`~scatrans.program_mechanism_permutation_calibrated` (0.10.9).
+
+Competitive {func}`~scatrans.program_mechanism` and induction-matched
+{func}`~scatrans.program_mechanism_induction_matched` are **relative**: they
+rank a set against a background or matched non-members. Neither supplies a
+zero — `transcription_support` is standardized genome-wide, while any gene set
+has its own length / intron / expression composition.
+
+**Construction.** Let $m$ be the mean `transcription_support` of the program’s
+members. Condition labels in `obs[groupby]` are permuted across cells
+(optionally **within** `block_col` strata such as donor/batch so that
+condition-by-block imbalance is preserved in the null). Each replicate is
+pushed through the **identical** chain as the observation: same frozen DE
+table, residual estimator, gene-structure bias correction, robust-z, and gene
+universe — yielding replicate means $m_b^\*$. Membership is taken from the
+observed run and never recomputed (a precomputed `de=` is required; otherwise
+the null absorbs DE-selection noise). Then
+
+$$\mathrm{calibrated} = m - \overline{m^\*},\qquad
+\mathrm{null\_sd} = \mathrm{sd}_b(m_b^\*).$$
+
+`null_sd` is the SD of the null replicate means — how stable the structural
+offset is across shuffles — **not** the sampling SE of the observed mean $m$.
+Negative `calibrated` → stabilization-weighted; positive → transcription-
+weighted.
+
+**What to report.** The manuscript focuses on the displacement `calibrated`
+(and shows that a transcriptional control returns near zero while a true
+stabilization program does not). The package still returns several optional
+summaries so users can choose what fits their claim:
+
+| Column | Role |
+|--------|------|
+| `calibrated` | Absolute displacement (recommended for absolute placement claims) |
+| `null_mean` / `null_sd` | Structural offset and its shuffle-to-shuffle stability |
+| `p_perm` | Phipson–Smyth $(b+1)/(n+1)$ (never zero; floor $1/(n+1)$) |
+| `z` | Optional `calibrated / null_sd` (descriptive standardization of the offset) |
+
+**Permutation p-value.** Default implementation: **two-sided** count
+$\lvert m_b^\* - \overline{m^\*} \rvert \ge \lvert\mathrm{calibrated}\rvert$
+(centered on the null mean). Manuscript prose sometimes phrases extremity in
+the observed direction; for programs far in one tail both conventions often
+hit the same floor $p=1/(n+1)$ (e.g. $n=50$ → $0.020$). Either framing is
+usable if stated clearly.
+
+**Membership.** Frozen `de=` is required so the null does not re-run DE
+selection. `restrict_to_selected=True` intersects with the observed DE list
+(same universe as program figures); leave it `False` to use all finite-support
+members of the supplied gene set.
+
+**Locked GSE226488 illustration (S5, `restrict_to_selected` on the 803-gene
+DE list):** ARE $n=16$, observed $\approx -17.45$, null $\approx -2.81$,
+calibrated $\approx -14.64$; primary NF-κB returns near the empirical zero after
+calibration (structural offset removed without erasing the ARE effect). That
+pair is the verification the Discussion requires of a correct offset correction.
+
 ### Limitations
 
-Two limitations follow directly from the construction. First, residual magnitudes are data-adaptive within a run: use them for mechanism annotation and within-run visualization among DE-selected genes, not as a substitute DE discovery score or as absolute cross-run units. Optional residual permutation FDR (Eq. 5) calibrates residual magnitude under a conditional null; gene-list membership remains DE-defined. Second, the replicate-aware guarantees above depend on the availability of biological replicates. When replicates are unavailable, scATrans provides cell-level backends (Supplementary Methods, Mode B), but the resulting p-values are subject to pseudoreplication and permutation at the cell level cannot correct it; such residual calibrations should be regarded as exploratory only.
+Two limitations follow directly from the construction. First, residual magnitudes are data-adaptive within a run: use them for mechanism annotation and within-run visualization among DE-selected genes, not as a substitute DE discovery score or as absolute cross-run units. Optional residual permutation FDR (Step 4) calibrates residual magnitude under a conditional null; gene-list membership remains DE-defined. Program-level calibration removes a gene set’s structural offset under label exchangeability but still depends on capture regime and design (prefer biological replicates / `block_col` when available). Second, the replicate-aware guarantees above depend on the availability of biological replicates. When replicates are unavailable, scATrans provides cell-level backends (Supplementary Methods, Mode B), but the resulting p-values are subject to pseudoreplication and permutation at the cell level cannot correct it; such residual calibrations should be regarded as exploratory only.
 
 ## Supplementary Methods
 

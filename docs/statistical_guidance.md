@@ -1,15 +1,26 @@
 # Statistical Guidance and Reporting Checklist
 
-What each output is for when you write methods or figures. Domain conventions:
-{doc}`domain_assumptions`. Product scope: {doc}`faq`. New here? Run
-{doc}`quickstart` first, then return when you need reporting detail.
+Use this once you have results and need to decide what is safe to report. If
+you are new to scATrans, start with {doc}`quickstart` and
+{doc}`user_guide/index`. Scope: {doc}`faq`. Assumptions:
+{doc}`domain_assumptions`.
+
+### Short reporting checklist
+
+1. Gene list from DE (`result.selected`, with padj and logFC).
+2. Note capture quality (`result.regime` / `reliability`).
+3. Mechanism: soft per-gene labels for exploration; program tables for claims;
+   `calibrated` if you ran absolute placement.
+4. Enrich only the DE list (not `mechanism_class` splits).
+5. Record `scatrans.__version__`, DE backend, and cutoffs.
 
 ## Capability roles
 
 | Capability | Primary columns / API | Intended use | Not intended for |
 |------------|----------------------|--------------|------------------|
 | DE membership | `logFC`, `p_adj`; `select_by="de"` / partition `selected` | Gene-list definition | — |
-| Mechanism | residual → `transcription_support`, `mechanism_class`; `program_mechanism` | Annotate DE genes (prefer program level) | Replacing DE; driving membership with `nascent_poisson_z` |
+| Mechanism | residual → `transcription_support`, `mechanism_class`; `program_mechanism` / `program_mechanism_induction_matched` | Annotate DE genes (prefer program level) | Replacing DE; driving membership with `nascent_poisson_z` |
+| Absolute program placement | `program_mechanism_permutation_calibrated` → `calibrated`, `null_mean`, `null_sd`, `p_perm` (+ optional `z`) | Program mean vs label-shuffle null; report `calibrated` for absolute claims (other columns optional) | Per-gene labels; reading raw means as absolute; treating `null_sd` as sampling SE of $m$ |
 | Detection | `nascent_poisson_z`, `de_reproducible` via `add_nascent_score=True` | Optional active-transcription annotation | Mechanism labels; sole production filter |
 
 ## Output columns
@@ -21,6 +32,7 @@ What each output is for when you write methods or figures. Domain conventions:
 | `unspliced_excess_residual_abnorm` | Interpretable residual ranking after abundance (and optional length) normalization — demotes nuclear-retained / extreme-abundance outliers | A significance test, or assuming it restores residual reliability on steady-state velocity snapshots (kinetic limitation remains) |
 | `nascent_poisson_z` / `de_reproducible` | Optional **detection** annotations (`add_nascent_score=True` / `nascent_activity_score`) | Mechanism labels / program pooling; sole production gene filter |
 | `transcription_support` / `mechanism_class` / `mechanism_confidence` / `induction_confounded` | Soft **annotation** of DE-selected genes. Prefer `program_mechanism` / `program_mechanism_induction_matched` for program-level calls. Confidence is scaled by regime reliability and by the induction-confound flag | High-confidence per-gene claims; ORA on `mechanism_class` subsets; gating DE membership by the residual |
+| `calibrated` / `null_mean` / `null_sd` / `p_perm` / `z` (`program_mechanism_permutation_calibrated`) | Absolute program displacement (`calibrated = observed − null_mean`). `null_sd` = SD of null means (offset stability). `p_perm` = Phipson–Smyth (floor $1/(n+1)$). `z` optional. Report frozen `de=` and `n_perm` | Reading raw program means as absolute; treating `null_sd` as sampling SE of the observed mean; gene-wise residual FDR as DE membership |
 | `meta["regime"]` / `result.regime` / `qc.regime_diagnosis` | Pre-flight data-quality reliability of the nascent proxy from global unspliced fraction (U-shaped map) | Dynamic-vs-steady-state claims (not yet implemented); sole justification for production gene lists |
 | `logFC`, `p_adj` (DE leg) | Standard DE reporting (with usual pseudoreplication caveats). Under **`use_mixed_model=True`**, `logFC` is **sample-mean-of-means log2FC**, not the LMM fixed-effect coefficient — see `diagnostics["mixed_model"]["logFC_method"]`. Sign discordance vs `mixedlm_coef` triggers a **warning** and is counted in `n_genes_logFC_mixedlm_sign_discordant` | Treating MixedLM `logFC` as the LMM coef, or ignoring high `n_genes_logFC_mixedlm_sign_discordant` |
 | `unspliced_excess_fdr` (with `use_permutation=True`) | Exploratory significance on residual under conditional permutation | Sole production filter without DE; claims without inspecting diagnostics and replicate structure |
@@ -36,16 +48,23 @@ What each output is for when you write methods or figures. Domain conventions:
 3. Call the unspliced excess a **reference-gamma group contrast**, not full
    RNA-velocity inference. Keep **detection** (`nascent_poisson_z`) separate
    from **mechanism** residual if both appear.
-4. If `use_permutation=True`, note the **conditional** shuffle (labels only;
-   layers and γ fixed) and the **(1+exceed)/(n+1)** p-value convention
-   (Phipson & Smyth — {doc}`references`).
-5. Cite backends and gene-set sources (scanpy / PyDESeq2 / GSEApy / GO / KEGG)
+4. For program claims: prefer induction-matched tests when induction varies;
+   for **absolute** placement report `calibrated` (and `null_mean`) from
+   `program_mechanism_permutation_calibrated` (frozen `de=`, `n_perm` often 50
+   in the manuscript, optional `block_col`), not the raw program mean alone.
+   A transcriptional control should approach zero after calibration if the
+   offset correction is working.
+5. If `use_permutation=True` (gene-wise residual FDR), note the **conditional**
+   shuffle and the **(1+exceed)/(n+1)** p-value convention (Phipson & Smyth —
+   {doc}`references`). Program-level `p_perm` uses the same convention.
+6. Cite backends and gene-set sources (scanpy / PyDESeq2 / GSEApy / GO / KEGG)
    from {doc}`references`.
-6. Spot-check top genes against raw spliced/unspliced counts or phase
+7. Spot-check top genes against raw spliced/unspliced counts or phase
    portraits when you can.
 
-Residual permutation is off by default. Turn it on only when you need residual
-FDR — not for ordinary DE membership.
+Gene-wise residual permutation is off by default. Turn it on only when you need
+`unspliced_excess_fdr` — not for ordinary DE membership. Program-level
+calibration is a separate API.
 
 ## Quick reference (one page)
 
@@ -56,7 +75,8 @@ FDR — not for ordinary DE membership.
 | 0. Pre-flight | `scat.qc.regime_diagnosis(adata)` (also inside partition) | `regime`, `reliability`, `message` |
 | 1. Primary | `partition_de_by_mechanism(...)` | `PartitionResult`: `selected`, `gene_table`, `programs`, `regime`, `meta`; optional `programs_induction_matched` |
 | 1b. Optional detection | `add_nascent_score=True` on partition (or standalone `nascent_activity_score`) | `nascent_poisson_z`, `de_reproducible` / `de_repro_frac` — **detection only**, not mechanism |
-| 1c. Optional programs | `gene_sets=` / `induction_matched=True` | competitive and induction-controlled program tables |
+| 1c. Optional programs | `gene_sets=` / `induction_matched=True` | competitive and induction-controlled program tables (relative) |
+| 1d. Absolute placement | `program_mechanism_permutation_calibrated(..., de=frozen_de)` | `calibrated`, `null_mean`, `p_perm` (program-level) |
 | 2. Enrich / plot | ORA on `result.selected` (not on `mechanism_class` subsets); plots on residual / DE columns | enrichment table; figures |
 
 **Lower-level / pure DE path:**
@@ -66,7 +86,7 @@ FDR — not for ordinary DE membership.
 | 0. Pre-flight | `recommend_workflow(...)`; with velocity layers also `scat.qc.regime_diagnosis(adata)` | workflow presets; `regime` / `reliability` / message |
 | 1. Score | `active_score(...)` / `active_score_simple(...)` **or** pure DE via `differential_expression` | `all_results` / `de_results`, `adata.uns["scatrans"]` |
 | 1b. Optional | `add_adaptive_score` / `add_abundance_normalized_residual` / pipeline `bias_method` & `adaptive_weighting` | `adaptive_score`, `unspliced_excess_residual_abnorm` + diagnostics |
-| 1c. Optional | `annotate_mechanism_class` (pass `reliability=` from regime) / `program_mechanism` / `program_mechanism_induction_matched` / `threshold_sensitivity` | soft mechanism labels; program tables; threshold grid |
+| 1c. Optional | `annotate_mechanism_class` (pass `reliability=` from regime) / `program_mechanism` / `program_mechanism_induction_matched` / `program_mechanism_permutation_calibrated` / `threshold_sensitivity` | soft mechanism labels; program tables; absolute placement; threshold grid |
 | 2. Filter | `filter_active_genes(..., select_by="de")` for production DE lists, or `preset=...` for exploratory thresholds | candidate gene list for plots / enrichment |
 | 3. Enrich | `run_enrichment(candidates, gene_sets="GO_Biological_Process", adata=adata)` on DE (or detection-filtered) lists — not `mechanism_class` partitions | ORA table; cite `attrs["gene_set_info"]["provenance"]` |
 | 4. Plot | `scat.pl.comet_plot(...)`, `volcano_plot(..., label_repel=True)` | `(fig, ax)`; batch export via `scat.pl.figure_export_context` or `save_all_figures` |

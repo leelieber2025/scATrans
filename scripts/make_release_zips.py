@@ -72,6 +72,7 @@ RELEASE_INCLUDES = [
     "pyproject.toml",
     "setup.cfg",
     "scripts/make_release_zips.py",
+    "scripts/execute_tutorials.py",
     "src/scatrans/**",
     "tests/**",
 ]

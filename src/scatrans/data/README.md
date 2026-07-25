@@ -28,10 +28,9 @@ generate-gene-features --gtf /path/to/genes.gtf \
 Programmatic:
 ```python
 import scatrans as scat
+
 df = scat.generate_gene_features_from_gtf(
-    "/path/to/genes.gtf",
-    output_name="my_features.parquet",
-    organism="human"
+    "/path/to/genes.gtf", output_name="my_features.parquet", organism="human"
 )
 ```
 
@@ -88,8 +87,9 @@ classic = scat.run_enrichment(
 )
 
 classic_kegg = scat.run_kegg(
-    my_genes, organism="mouse",
-    kegg_library="KEGG_2021",   # or KEGG_2019, KEGG_2016, etc.
+    my_genes,
+    organism="mouse",
+    kegg_library="KEGG_2021",  # or KEGG_2019, KEGG_2016, etc.
 )
 ```
 

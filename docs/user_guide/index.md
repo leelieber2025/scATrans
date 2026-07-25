@@ -1,27 +1,45 @@
 # User Guide
 
-Start with {doc}`../quickstart` if you have not run the package yet. This
-guide covers the main knobs after that first call.
+Read {doc}`../quickstart` first if you have not run scATrans yet. This guide
+covers the main options after that.
 
-## Pages
+## Which page do I need?
 
-| Page | When you need it |
-|------|------------------|
-| {doc}`workflow` | Primary API, filtering, design checks, layers |
-| {doc}`standalone_de` | DE without spliced/unspliced layers |
-| {doc}`enrichment` | ORA, GSEA, GO, KEGG |
-| {doc}`plotting` | `scat.pl` helpers and figure export |
-| {doc}`advanced` | Permutation, mixed models, adaptive score |
-| {doc}`gene_features` | Length/intron tables and GTF CLI |
+| Task | Page |
+|------|------|
+| Default DE → mechanism workflow | {doc}`workflow` |
+| DE without spliced/unspliced layers | {doc}`standalone_de` |
+| ORA, GO, KEGG, GSEA | {doc}`enrichment` |
+| Volcano, comet, enrichment plots | {doc}`plotting` |
+| Residual permutation, mixed models, adaptive score | {doc}`advanced` |
+| Length/intron tables or a custom GTF | {doc}`gene_features` |
 
-## Conventions
+## Default analysis steps
 
-- **Default entry point:** {func}`~scatrans.partition_de_by_mechanism` →
-  {class}`~scatrans.PartitionResult`
-- **Gene list:** DE membership (`result.selected` or
-  `filter_active_genes(..., select_by="de")`)
-- **Run metadata:** `result.meta` and `adata.uns["scatrans"]`
-- **Scope / reporting:** {doc}`../faq`, {doc}`../statistical_guidance`
+1. **Prepare** — AnnData with `spliced`/`unspliced` (or `mature`/`nascent`).
+   Set `sample_col` if you have replicates. Optionally run
+   `scat.store_raw_counts(adata, layer="counts")`.
+2. **Partition** — `scat.partition_de_by_mechanism(...)`. Check
+   `result.regime` and `result.selected`.
+3. **Interpret** — use soft per-gene labels for exploration. For stronger
+   claims, pass `gene_sets=`, turn on `induction_matched=True`, and/or run
+   `program_mechanism_permutation_calibrated`.
+4. **Enrich** — on `result.selected` only (not on `mechanism_class` subsets).
+5. **Plot and report** — `scat.pl.*`; see {doc}`../statistical_guidance` for
+   what each column means.
+
+## Defaults worth remembering
+
+| Topic | Usual practice |
+|-------|----------------|
+| Entry point | `partition_de_by_mechanism` → `PartitionResult` |
+| Gene list | DE membership (`result.selected`) |
+| Mechanism claims | Prefer program tables over single-gene classes |
+| Absolute placement | `program_mechanism_permutation_calibrated` with a frozen `de=` table |
+| Detection | Optional `add_nascent_score=True` — separate from mechanism |
+| Run metadata | `result.meta` and `adata.uns["scatrans"]` |
+
+Stuck? {doc}`../faq`.
 
 ```{toctree}
 :maxdepth: 2

@@ -75,13 +75,10 @@ scRNA-seq of human PBMCs under resting and stimulated conditions:
   (BioProject [PRJNA940428](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA940428)).
   Tutorial contrast: resting (e.g. GSM7077865) vs LPS 4 h (e.g. GSM7077866),
   10x Genomics 3′ v3.1.
-- Tutorial object: `GSE226488_PBMC_tutorial_subset.h5ad` at the repository
-  root (not shipped in the PyPI sdist). Build it by quantifying spliced and
-  unspliced counts (for example STARsolo with Velocyto-style output, or an
-  equivalent pipeline), assembling an AnnData with those layers, then
-  downsampling to a few thousand cells while keeping both conditions. Exact
-  steps depend on your aligner setup; the notebook **Reproduce** section
-  outlines the stages without assuming a fixed local path.
+- Tutorial object: place `GSE226488_PBMC_tutorial_subset.h5ad` (~4.4k cells)
+  at the repository root. Not on PyPI. Rebuild if needed by quantifying
+  spliced/unspliced, assembling AnnData with those layers and
+  `obs["condition"]` ∈ {`resting`, `LPS`}, then downsampling.
 
 ### How tutorial data is distributed
 
@@ -91,9 +88,8 @@ scRNA-seq of human PBMCs under resting and stimulated conditions:
 | `EC.h5ad`, `GA_test.h5ad`, GSE subset | Often **local only** (too large for default packaging) | tens–hundreds of MB |
 
 If you only need figures and tables, use the online tutorials. To re-run
-notebooks, place each `.h5ad` where the notebook loads it (paths are relative
-to `docs/tutorials/`, usually `../../<file>.h5ad`). See
-{doc}`tutorials/index` for which notebook uses which file.
+notebooks, put each `.h5ad` at the repository root (see
+{doc}`tutorials/index`).
 
 ---
 
