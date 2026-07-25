@@ -27,7 +27,7 @@ layers. Scope and deprecated composite discovery ranking: {doc}`../faq`.
 | `suppress_hard_labels_when_unreliable` | `True` | At low regime reliability, hard gene classes → `ambiguous`. |
 
 **Program absolute placement** (separate call; not a partition kwarg;
-manuscript v6.21 Methods + package 0.10.9):
+package 0.10.9):
 {func}`~scatrans.program_mechanism_permutation_calibrated` — requires frozen
 `de=`. Returns per program: `n_genes`, `observed_mean`, `null_mean`, `null_sd`,
 `calibrated` ($=$ observed − null), `p_perm` (Phipson–Smyth),

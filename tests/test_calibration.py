@@ -182,6 +182,23 @@ def test_block_col_shuffles_within_blocks(adata_basic):
             assert sorted(out[m]) == sorted(labels[m])
 
 
+def test_na_block_rows_left_fixed(adata_basic):
+    """NA block keys are skipped; those rows keep their original labels."""
+    from scatrans.tl.calibration import _shuffle_within_blocks
+
+    labels = np.array(["A", "B", "A", "B", "A", "B"])
+    blocks = np.array(["b1", "b1", np.nan, np.nan, "b2", "b2"], dtype=object)
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        out = _shuffle_within_blocks(labels, blocks, rng)
+        # NA-blocked rows are not exchangeable — left fixed
+        assert list(out[2:4]) == list(labels[2:4])
+        # Named blocks still permute within themselves
+        for b in ("b1", "b2"):
+            m = blocks == b
+            assert sorted(out[m]) == sorted(labels[m])
+
+
 def test_no_block_col_permutes_globally(adata_basic):
     from scatrans.tl.calibration import _shuffle_within_blocks
 

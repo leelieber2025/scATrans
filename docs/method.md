@@ -14,7 +14,7 @@ mode diagram below). Equation numbers here are local to this documentation
 page; the residual core matches the manuscript Methods (reference-corrected
 excess and Huber gene-structure residualization).
 
-**Primary software path (manuscript-aligned: package 0.10.9 / draft v6.21):** DE
+**Primary software path (package 0.10.9):** DE
 defines gene-list membership; the residual annotates transcription vs.
 stabilization support; program-level calls (competitive and optional
 induction-matched) are preferred over hard per-gene claims; for **absolute**
@@ -156,7 +156,7 @@ The $+ 1$ correction keeps the p-values strictly positive and valid. The residua
 ### Program-level permutation calibration (absolute placement)
 
 Matches the manuscript Methods subsection *Permutation-calibrated program
-placement* (v6.21) and the package function
+placement* and the package function
 {func}`~scatrans.program_mechanism_permutation_calibrated` (0.10.9).
 
 Competitive {func}`~scatrans.program_mechanism` and induction-matched
@@ -208,10 +208,13 @@ selection. `restrict_to_selected=True` intersects with the observed DE list
 members of the supplied gene set.
 
 **Locked GSE226488 illustration (S5, `restrict_to_selected` on the 803-gene
-DE list):** ARE $n=16$, observed $\approx -17.45$, null $\approx -2.81$,
-calibrated $\approx -14.64$; primary NF-κB returns near the empirical zero after
-calibration (structural offset removed without erasing the ARE effect). That
-pair is the verification the Discussion requires of a correct offset correction.
+DE list):** ARE ($n=16$) stays strongly stabilization-displaced after
+calibration (observed far negative; label-shuffle null is a modest structural
+offset; calibrated remains large). Primary NF-κB returns near the empirical
+zero after calibration (structural offset removed without erasing the ARE
+effect). That pair is the verification the Discussion requires of a correct
+offset correction. Report final null / calibrated figures from the production
+$n_{\mathrm{perm}}$ run (package default 200; manuscript uses a finer grid).
 
 ### Limitations
 
@@ -295,7 +298,7 @@ The DE backend supplies ${logFC}_{g}$ and $p_{g}^{adj}$ as reported outputs; the
 | `gamma_method`              | **heuristic\_shrink** / robust\_median / empirical\_bayes / raw | Eq. 2 → S1, S2                       | EB recommended for small reference groups       |
 | `prior_weight` $\eta$       | **5.0**                                                         | Eq. 2                                | Larger = stronger shrinkage to $\rho_{0}$       |
 | `bias_correction`           | **huber\_length\_intron** / none                                | Eq. 4                                | Median-centering fallback is automatic           |
-| `n_perm` $B$                | **100**                                                         | Eq. 5                                | FDR usable only when $B_{eff} \geq 100$         |
+| `n_perm` $B$ (residual FDR) | **100**                                                         | Eq. 5 residual p / FDR               | Residual permutation in `active_score` / design; FDR usable only when $B_{eff} \geq 100$. Separate from program calibration (`program_mechanism_permutation_calibrated` defaults to **200**) |
 | `min_total_counts` $\kappa$ | **50**                                                          | $\mathcal{G}_{valid}$                | Genes below threshold get $R_{g} = 0$           |
 
 ### S6. Equation index (for the software documentation)

@@ -113,7 +113,7 @@ cal = scat.program_mechanism_permutation_calibrated(
     reference_group="Control",
     organism="mouse",
     restrict_to_selected=True,
-    n_perm=50,
+    n_perm=200,
 )
 print(cal[["observed_mean", "null_mean", "calibrated", "p_perm"]])
 ```

@@ -81,8 +81,7 @@ That is the recommended entry point. Next:
 ## Citation
 
 Cite the Zenodo DOI above (and the manuscript when available). For analyses
-tied to package version **0.10.9** (manuscript draft v6.21 pin), use
-`scatrans==0.10.9`. See `CITATION.cff`.
+tied to package version **0.10.9**, use `scatrans==0.10.9`. See `CITATION.cff`.
 
 ## License
 

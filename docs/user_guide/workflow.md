@@ -73,7 +73,7 @@ cal = scat.program_mechanism_permutation_calibrated(
     reference_group="Control",
     organism="mouse",
     restrict_to_selected=True,     # same membership as res.programs figures
-    n_perm=50,                     # smallest p ≈ 0.02; raise for a finer grid
+    n_perm=200,                    # package default; floor p ≈ 1/201; raise for a finer grid
     random_state=0,
     # block_col="donor",           # optional: shuffle within batch/donor
 )
