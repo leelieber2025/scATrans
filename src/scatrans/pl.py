@@ -550,7 +550,7 @@ def set_style(
         "patch.linewidth": 0.5,
     }
     rc_updates.update(kwargs)
-    mpl.rcParams.update(rc_updates)
+    mpl.rcParams.update(rc_updates)  # type: ignore[arg-type]  # rcParams keys are a dynamic Literal union in mpl stubs
 
     sns.set_style(
         "white",
