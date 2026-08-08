@@ -9,13 +9,13 @@ Recommended usage:
     scat.pl.set_style()
     scat.run_enrichment(...)
 
-Submodules `pl` and `qc` are intentionally exposed (scanpy-style convention).
-Other internal modules are not part of the stable public surface.
+Submodules `pl`, `qc`, and `datasets` are intentionally exposed (scanpy-style
+convention). Other internal modules are not part of the stable public surface.
 """
 
 from __future__ import annotations
 
-from . import pl, qc
+from . import datasets, pl, qc
 from ._version import __version__
 from .enrich import (
     compare_enrichment,
@@ -107,5 +107,6 @@ __all__ = [
     "concat_compare_results",
     "pl",
     "qc",
+    "datasets",
     "__version__",
 ]

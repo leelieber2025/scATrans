@@ -45,7 +45,12 @@ calibration removes. Always pass a frozen `de=` table. See
 **For mechanism partition, yes** (`spliced`/`unspliced` or `mature`/`nascent`).
 **For ordinary DE, no** — use {func}`~scatrans.differential_expression` on a
 count matrix. Enrichment and plotting work the same either way. Tutorial:
-{doc}`tutorials/t_ec_standalone_de_enrichment`.
+{doc}`tutorials/t_gse96583_standalone_de_enrichment`.
+
+Don't have those layers yet? {doc}`tutorials/t_prepare_spliced_unspliced`
+covers generating them with velocyto / kb-python / STARsolo / alevin-fry (or
+renaming labeling-based `new`/`old` counts) and merging them into an
+existing AnnData.
 
 ## Can the residual replace DE?
 

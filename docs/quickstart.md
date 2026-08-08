@@ -22,6 +22,7 @@ print(scat.__version__)
 |-----------|------------|
 | AnnData with `spliced`/`unspliced` (or `mature`/`nascent`) | `partition_de_by_mechanism` below |
 | Counts only (no nascent layers) | `differential_expression` — see [DE only](#de-only-no-nascent-layers) |
+| Raw reads, no nascent layers yet | {doc}`tutorials/t_prepare_spliced_unspliced` — generate them with velocyto / kb-python / STARsolo / alevin-fry first |
 
 If you plan to use PyDESeq2, Memento, or a full-gene enrichment background,
 snapshot raw counts before HVG / normalize:
@@ -45,8 +46,14 @@ DE builds the gene list. The residual only annotates mechanism on that list.
 
 ## 3. Run the default path
 
+No AnnData handy? `scat.datasets.load_toy()` returns a small synthetic
+object with `spliced`/`unspliced` layers already set — swap in your own
+once the calls below run end to end.
+
 ```python
 import scatrans as scat
+
+adata = scat.datasets.load_toy()  # or your own AnnData
 
 result = scat.partition_de_by_mechanism(
     adata,
@@ -127,7 +134,7 @@ More detail: {doc}`user_guide/workflow`.
 | Human LPS–PBMC example | {doc}`tutorials/t_gse226488_partition_mechanism` |
 | Mouse example with real DE hits | {doc}`tutorials/t_ga_active_transcription` |
 | Underpowered design (empty DE list) | {doc}`tutorials/t_ec_active_transcription` |
-| DE + enrichment only | {doc}`tutorials/t_ec_standalone_de_enrichment` |
+| DE + enrichment only | {doc}`tutorials/t_gse96583_standalone_de_enrichment` |
 | Full workflow options | {doc}`user_guide/index` |
 | Column meanings for reporting | {doc}`statistical_guidance` |
 | Errors and API choice | {doc}`faq` |

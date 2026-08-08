@@ -175,3 +175,129 @@ def test_gene_upsetplot_custom_colors_applied(three_de):
     assert to_rgba(ax_inter.patches[0].get_facecolor()) == to_rgba("#EE7733")
     assert to_rgba(ax_inter.patches[1].get_facecolor()) == to_rgba("#009988")
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
+# normalize_external_de / external tables
+# --------------------------------------------------------------------------- #
+def test_normalize_external_de_deseq2_style():
+    raw = pd.DataFrame(
+        {
+            "gene": ["A", "B", "C"],
+            "log2FoldChange": [1.2, -0.8, 0.1],
+            "padj": [1e-4, 1e-3, 0.2],
+            "pvalue": [1e-5, 1e-4, 0.1],
+        }
+    )
+    de = scat.pl.normalize_external_de(raw)
+    assert list(de.index) == ["A", "B", "C"]
+    assert "logFC" in de.columns and "p_adj" in de.columns
+    assert de.loc["A", "logFC"] == pytest.approx(1.2)
+    assert de.loc["B", "p_adj"] == pytest.approx(1e-3)
+
+
+def test_normalize_external_de_seurat_style_index_gene():
+    raw = pd.DataFrame(
+        {"avg_log2FC": [1.0, -1.0], "p_val_adj": [0.01, 0.02]},
+        index=["X", "Y"],
+    )
+    de = scat.pl.normalize_external_de(raw)
+    assert de.loc["X", "logFC"] == pytest.approx(1.0)
+    assert de.loc["Y", "p_adj"] == pytest.approx(0.02)
+
+
+def test_build_membership_from_external_deseq2():
+    a = pd.DataFrame(
+        {
+            "Gene": ["G0", "G1", "G2", "G8"],
+            "log2FoldChange": [1.0, 1.0, 1.0, -1.0],
+            "padj": [1e-3, 1e-3, 1e-3, 1e-3],
+        }
+    )
+    b = pd.DataFrame(
+        {
+            "gene": ["G0", "G1", "G3", "G9"],
+            "log2FoldChange": [1.0, 1.0, 1.0, -1.0],
+            "p.adjust": [1e-3, 1e-3, 1e-3, 1e-3],
+        }
+    )
+    mem = scat.pl.build_gene_membership(
+        {"fracture": a, "osteomyelitis": b},
+        direction="separate",
+        pval_cutoff=0.05,
+        logfc_cutoff=0.5,
+    )
+    assert set(mem.index[mem["fracture::up"] == 1]) == {"G0", "G1", "G2"}
+    assert set(mem.index[mem["osteomyelitis::up"] == 1]) == {"G0", "G1", "G3"}
+    assert scat.pl.common_genes(mem, direction="up") == ["G0", "G1"]
+    assert scat.pl.common_genes(mem, direction="down") == []
+
+
+def test_already_filtered_skips_pvalue_gate():
+    # only logFC, no padj — pre-filtered DEG list
+    a = pd.DataFrame({"gene": ["U1", "D1"], "log2FoldChange": [2.0, -2.0]})
+    b = pd.DataFrame({"gene": ["U1", "D1"], "log2FoldChange": [1.5, -1.5]})
+    mem = scat.pl.build_gene_membership(
+        {"A": a, "B": b},
+        direction="separate",
+        logfc_cutoff=0.5,
+        already_filtered=True,
+    )
+    assert set(mem.index[mem["A::up"] == 1]) == {"U1"}
+    assert set(mem.index[mem["A::down"] == 1]) == {"D1"}
+    assert scat.pl.common_genes(mem, direction="up") == ["U1"]
+    assert scat.pl.common_genes(mem, direction="down") == ["D1"]
+
+
+def test_p_type_nominal_vs_adj():
+    """p_type chooses p_val vs p_adj when both columns exist."""
+    df = pd.DataFrame(
+        {
+            "logFC": [1.0, 1.0, -1.0],
+            "p_val": [1e-4, 0.04, 1e-4],
+            "p_adj": [0.2, 0.04, 0.2],  # only middle gene is adj-significant
+        },
+        index=["U_nom", "U_both", "D_nom"],
+    )
+    mem_adj = scat.pl.build_gene_membership(
+        {"A": df},
+        direction="separate",
+        pval_cutoff=0.05,
+        logfc_cutoff=0.5,
+        p_type="adj",
+    )
+    assert set(mem_adj.index[mem_adj["A::up"] == 1]) == {"U_both"}
+    assert set(mem_adj.index[mem_adj["A::down"] == 1]) == set()
+
+    mem_nom = scat.pl.build_gene_membership(
+        {"A": df},
+        direction="separate",
+        pval_cutoff=0.05,
+        logfc_cutoff=0.5,
+        p_type="nominal",
+    )
+    assert set(mem_nom.index[mem_nom["A::up"] == 1]) == {"U_nom", "U_both"}
+    assert set(mem_nom.index[mem_nom["A::down"] == 1]) == {"D_nom"}
+
+
+def test_collect_gene_sets_two_and_three(three_de):
+    mem2 = scat.pl.build_gene_membership(
+        {"fracture": three_de["A"], "osteomyelitis": three_de["B"]},
+        direction="separate",
+        pval_cutoff=0.05,
+        logfc_cutoff=0.5,
+    )
+    gs2 = scat.pl.collect_gene_sets(mem2)
+    assert "fracture_up" in gs2 and "osteomyelitis_down" in gs2
+    assert "common_up" in gs2 and "common_down" in gs2
+    assert set(gs2["common_up"]) == {"G0", "G1"}
+    assert set(gs2["common_down"]) == {"G8", "G9"}
+
+    mem3 = scat.pl.build_gene_membership(
+        three_de, direction="separate", pval_cutoff=0.05, logfc_cutoff=0.5
+    )
+    gs3 = scat.pl.collect_gene_sets(mem3)
+    assert set(gs3["common_up"]) == {"G0", "G1"}
+    assert set(gs3["common_down"]) == {"G8", "G9"}
+    # three conditions → 3 up + 3 down + 2 common = 8 keys
+    assert len(gs3) == 8

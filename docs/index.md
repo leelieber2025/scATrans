@@ -21,6 +21,30 @@ on a transcription-versus-stabilization axis.
 
 No nascent layers? You can still run DE, enrichment, and plotting.
 
+```text
+ spliced + unspliced AnnData
+             │
+             ▼
+    ┌──────────────────┐
+    │ 1. DE             │   selects the gene list (Wilcoxon / PyDESeq2 / …)
+    │    (defines it)   │
+    └──────────────────┘
+             │  DE-selected genes only
+             ▼
+    ┌──────────────────┐
+    │ 2. Mechanism      │   unspliced-excess residual →
+    │    (annotates it) │   transcription- vs stabilization-driven (soft, per gene)
+    └──────────────────┘
+             │  optional: gene_sets={program: [genes]}
+             ▼
+    ┌──────────────────┐
+    │ 3. Program table  │   pooled, induction-matched / permutation-calibrated
+    │    (claims here)  │   → the level to report, not single genes
+    └──────────────────┘
+```
+
+Step 1 decides *which* genes; steps 2–3 decide *how* — never the reverse.
+
 ## Where to go
 
 | Goal | Page |
@@ -42,11 +66,18 @@ No nascent layers? You can still run DE, enrichment, and plotting.
 
 ### Default call
 
+No data yet? `scat.datasets.load_toy()` returns a synthetic AnnData with
+`spliced`/`unspliced` layers already in place, so the block below runs as-is,
+no download needed. Swap in your own AnnData once it works; if it lacks
+nascent layers, see {doc}`tutorials/t_prepare_spliced_unspliced`.
+
 ```python
 import scatrans as scat
 
+adata = scat.datasets.load_toy()  # or your own AnnData
+
 result = scat.partition_de_by_mechanism(
-    adata,  # needs spliced/unspliced or mature/nascent layers
+    adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",

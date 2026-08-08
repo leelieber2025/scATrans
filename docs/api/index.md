@@ -263,13 +263,15 @@ single contrast or when faceting with `facet_by_cluster=True`.
 
 `gene_upsetplot` is the **gene-level** UpSet (companion to the term-level
 `enrich_upsetplot`): it shows how genes overlap across several DE results or
-gene lists. Feed it either a `{name: de_df}` mapping (filtered internally) or a
-pre-built membership matrix from `build_gene_membership`; in the default
-`direction="separate"` mode each DE result contributes a `name::up` and
-`name::down` set, so common-up and common-down genes appear as their own
-intersection columns. `common_genes(membership, direction="up"|"down")` pulls
-those intersection genes back out as a list ready for `run_enrichment`. Colors
-are fully customizable (`set_color`, `intersection_color`, `dot_color`,
+gene lists (scATrans or external DESeq2/Seurat/CSV tables; aliases via
+`normalize_external_de`). Feed it either a `{name: de_df}` mapping (filtered
+internally) or a pre-built membership matrix from `build_gene_membership`; in
+the default `direction="separate"` mode each DE result contributes a
+`name::up` and `name::down` set, so common-up and common-down genes appear as
+their own intersection columns. `common_genes(membership, direction="up"|"down")`
+or `collect_gene_sets(membership)` (per-condition lists + `common_up` /
+`common_down` for any number of conditions) pull those genes out for enrichment.
+Colors are fully customizable (`set_color`, `intersection_color`, `dot_color`,
 `inactive_color`, `line_color`; the intersection/dot colors also accept a
 per-column list to highlight specific intersections). The same color parameters
 were added to `enrich_upsetplot`; `bias_diagnostic_plot`
@@ -292,6 +294,8 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.gene_upsetplot
    pl.build_gene_membership
    pl.common_genes
+   pl.collect_gene_sets
+   pl.normalize_external_de
    pl.enrich_vennplot
    pl.gseaplot
    pl.active_score_rankplot

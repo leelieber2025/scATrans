@@ -8,16 +8,19 @@ files or re-running cells.
 
 | If you want… | Open |
 |--------------|------|
+| **No `spliced`/`unspliced` layers yet** — velocyto, kb-python, STARsolo, alevin-fry, or labeling data | {doc}`t_prepare_spliced_unspliced` |
 | Full DE → mechanism story (human LPS-PBMC) | {doc}`t_gse226488_partition_mechanism` |
 | Same API with real DE hits (mouse, 3 vs 3) | {doc}`t_ga_active_transcription` |
 | Underpowered design (empty DE list on purpose) | {doc}`t_ec_active_transcription` |
-| DE + enrichment, no nascent layers | {doc}`t_ec_standalone_de_enrichment` |
+| DE + enrichment, no nascent layers | {doc}`t_gse96583_standalone_de_enrichment` |
 | Plot gallery only | {doc}`t_synthetic_visualization` |
 | Gene overlap across DE backends | {doc}`t_ec_gene_upset` |
 
 **If you are new:** read {doc}`../quickstart`, then either
 {doc}`t_gse226488_partition_mechanism` or {doc}`t_ga_active_transcription`.
-Open the SCI/EC notebook only if you want the empty-list lesson.
+Open the SCI/EC notebook only if you want the empty-list lesson. If your
+`AnnData` does not have nascent layers at all, start with
+{doc}`t_prepare_spliced_unspliced` instead.
 
 SCI (EC) and GA share the same entry point (`partition_de_by_mechanism`).
 Whether genes are selected depends on the design, not on the function name.
@@ -45,14 +48,16 @@ path, for example `sc.read_h5ad("../../EC.h5ad")`.
 |------|---------|
 | `GSE226488_PBMC_tutorial_subset.h5ad` | LPS-PBMC |
 | `GA_test.h5ad` | GA |
-| `EC.h5ad` | SCI partition, standalone DE, gene UpSet |
+| `EC.h5ad` | SCI partition, gene UpSet |
+| `kang_ifnb_tutorial_subset.h5ad` | Standalone DE + enrichment |
 
 These files are large and are not on PyPI. Citations: {doc}`../references`.
 Without them you can still read the HTML on Read the Docs. The visualization
 gallery does not need an external file.
 
 Rough runtime with data on disk: LPS / GA about 10–30 min (calibration is
-slower); EC / UpSet about 2–15 min; synthetic plots about 1–3 min.
+slower); EC / UpSet about 2–15 min; standalone DE + enrichment about 5–15 min;
+synthetic plots about 1–3 min.
 
 ---
 
@@ -60,6 +65,16 @@ slower); EC / UpSet about 2–15 min; synthetic plots about 1–3 min.
 
 ::::{grid} 1 1 2 2
 :gutter: 3
+
+:::{grid-item-card} Preparing spliced/unspliced data
+:link: t_prepare_spliced_unspliced
+:link-type: doc
+
+velocyto / kb-python / STARsolo / alevin-fry → AnnData layers, plus merging
+and sanity checks.
++++
+Start here if you have no nascent layers yet
+:::
 
 :::{grid-item-card} Partition — LPS-PBMC (GSE226488)
 :link: t_gse226488_partition_mechanism
@@ -89,7 +104,7 @@ Same API; DE finds nothing — that is the point. Sample- vs cell-level table.
 :::
 
 :::{grid-item-card} DE + enrichment (no nascent layers)
-:link: t_ec_standalone_de_enrichment
+:link: t_gse96583_standalone_de_enrichment
 :link-type: doc
 
 Wilcoxon / PyDESeq2 / Memento, ORA, GO, KEGG, GSEA, plots.
@@ -120,10 +135,11 @@ Overlap of gene lists from different DE backends.
 :hidden: true
 :maxdepth: 1
 
+t_prepare_spliced_unspliced
 t_gse226488_partition_mechanism
 t_ga_active_transcription
 t_ec_active_transcription
-t_ec_standalone_de_enrichment
+t_gse96583_standalone_de_enrichment
 t_synthetic_visualization
 t_ec_gene_upset
 ```

@@ -7,15 +7,14 @@ bias diagnostics, phase portraits, heatmaps, etc.). The default style aims for
 clean vector output (PDF/SVG), minimal non-data ink, and readable labels
 suitable for scientific journals.
 
-Design and implementation details draw heavily from high-quality patterns in
-OmicVerse (https://github.com/omicverse/omicverse) and gseapy, including:
-- constrained_layout + careful bbox handling for colorbars + legends (no more
-  overlapping "two legend parts")
-- direct `s=` fixed-size controls + min/max + diagnostics for dense plots
-- gradient coloring and clean ranked barplots
-- outward spine offsets, patch legends, balanced gene labeling
-- consistent ax= embedding, return (fig, ax), and save_path behavior
-- modern adjustText usage and sensible defaults for journal figures
+Design and implementation details draw from high-quality patterns in:
+
+- **cnsplots** (https://github.com/faridrashidi/cnsplots) — Cell/Nature/Science
+  journal aesthetics: fine spines, compact ticks, curated qualitative palettes
+  (Nature / Cell / Science / Okabe–Ito / Tol), diverging colormaps, panel labels
+- OmicVerse (https://github.com/omicverse/omicverse) and gseapy — constrained
+  layout, ``s=`` size control, dense-scatter diagnostics, ranked barplots
+- ggVolcano — two-sided volcano color conventions
 
 Internal `set_style()` is called by plotting functions **only when use_style=True**.
 Default is now use_style=False to avoid surprising global rcParams changes in notebooks
@@ -28,8 +27,8 @@ and shared environments.
 - All plotting functions still respect use_style= , ax=, figsize=, save_path=, show= for
   consistency.
 - Display defaults are notebook-oriented (dpi=150, modest figsize/fonts). Pass
-  ``context="paper"`` on major plotters for journal-sized defaults, or override kwargs.
-  ``save_path`` always writes at least 300 dpi so exports stay sharp.
+  ``context="paper"`` or ``context="cns"`` on major plotters for journal-sized
+  defaults, or override kwargs. ``save_path`` always writes at least 300 dpi.
 """
 
 from __future__ import annotations
@@ -45,7 +44,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib.colors import Normalize
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.rcsetup import cycler
 from scipy import sparse
 
 from ._utils import (
@@ -62,7 +62,8 @@ logger.addHandler(logging.NullHandler())
 
 # ---------------------------------------------------------------------------
 # Display defaults (notebook / RTD friendly). Journal export: context="paper"
-# or save_path= (always written at least at _DEFAULT_SAVE_DPI).
+# or context="cns" (Cell/Nature/Science multi-panel), or save_path= (always
+# written at least at _DEFAULT_SAVE_DPI).
 # ---------------------------------------------------------------------------
 _DEFAULT_DPI = 150
 _DEFAULT_SAVE_DPI = 300
@@ -75,6 +76,12 @@ _DEFAULT_TOP_N_COMET = 8
 _DEFAULT_TOP_N_VOLCANO = 6
 _DEFAULT_TOP_N_RANK = 15
 _DEFAULT_TOP_N_ENRICH = 12
+# Continuous defaults (cnsplots-inspired diverging / sequential maps)
+_DEFAULT_CMAP_DIVERGING = "scat_BuRd"
+_DEFAULT_CMAP_SEQUENTIAL = "scat_YlGnBu"
+_DEFAULT_POINT_EDGE = "none"  # soft dense clouds; set "#444444" for outlines
+_DEFAULT_POINT_EDGEWIDTH = 0.0
+_DEFAULT_REF_LINE = "#9A9A9A"
 
 _CONTEXT_PRESETS: dict[str, dict[str, object]] = {
     "notebook": {
@@ -84,12 +91,292 @@ _CONTEXT_PRESETS: dict[str, dict[str, object]] = {
         "label_fontsize": _DEFAULT_LABEL_FONTSIZE,
     },
     "paper": {
-        "figsize": (8.0, 6.0),
+        "figsize": (7.2, 5.4),
         "dpi": _DEFAULT_SAVE_DPI,
-        "fontsize": 12,
-        "label_fontsize": 10,
+        "fontsize": 10,
+        "label_fontsize": 8,
+    },
+    # Compact Cell/Nature/Science multi-panel panels (inspired by cnsplots)
+    "cns": {
+        "figsize": (3.5, 3.0),
+        "dpi": _DEFAULT_SAVE_DPI,
+        "fontsize": 8,
+        "label_fontsize": 7,
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Color system inspired by cnsplots (journal qualitative + custom continuous)
+# https://github.com/faridrashidi/cnsplots — BSD-3-Clause; hex values reimplemented
+# here without the palettable dependency so scatrans stays lightweight.
+# ---------------------------------------------------------------------------
+# Named accents (Ecotyper1-adjacent; good for categorical highlights)
+RED = "#D6372E"
+BLUE = "#5189BB"
+GREEN = "#70B460"
+PURPLE = "#985EA8"
+ORANGE = "#F08F35"
+YELLOW = "#FADD4B"
+BROWN = "#9C5732"
+PINK = "#E787E5"
+GRAY = "#A3A3A3"
+VIOLET = "#442288"
+CHOCOLATE = "#662506"
+TEAL = "#00A087"
+INK = "#111111"
+
+_QUALITATIVE_PALETTES: dict[str, list[str]] = {
+    # Default categorical cycle (Ecotyper1-like, cnsplots default)
+    "default": [
+        RED,
+        BLUE,
+        GREEN,
+        PURPLE,
+        ORANGE,
+        YELLOW,
+        GRAY,
+        "#B7D3E5",
+        "#E6D8C2",
+    ],
+    "ecotyper1": [
+        RED,
+        BLUE,
+        GREEN,
+        PURPLE,
+        ORANGE,
+        YELLOW,
+        GRAY,
+        "#B7D3E5",
+        "#E6D8C2",
+    ],
+    # ggsci / journal-inspired qualitative sets
+    "nature": [
+        "#E64B35",
+        "#4DBBD5",
+        "#00A087",
+        "#3C5488",
+        "#F39B7F",
+        "#8491B4",
+        "#91D1C2",
+        "#DC0000",
+        "#7E6148",
+        "#B09C85",
+    ],
+    "cell": [
+        "#C84C3A",
+        "#2F7E8F",
+        "#E1A22E",
+        "#4E5A8A",
+        "#5F9862",
+        "#D07A6A",
+        "#8B6FA8",
+        "#7B8C9E",
+        "#B85F7A",
+        "#6B6B6B",
+    ],
+    "science": [
+        "#3B4992",
+        "#EE0000",
+        "#008B45",
+        "#631879",
+        "#008280",
+        "#BB0021",
+        "#5F559B",
+        "#A20056",
+        "#808180",
+        "#1B1919",
+    ],
+    "nejm": [
+        "#BC3C29",
+        "#0072B5",
+        "#E18727",
+        "#20854E",
+        "#7876B1",
+        "#6F99AD",
+        "#FFDC91",
+        "#EE4C97",
+    ],
+    "lancet": [
+        "#00468B",
+        "#ED0000",
+        "#42B540",
+        "#0099B4",
+        "#925E9F",
+        "#FDAF91",
+        "#AD002A",
+        "#ADB6B6",
+        "#1B1919",
+    ],
+    "jama": [
+        "#374E55",
+        "#DF8F44",
+        "#00A1D5",
+        "#B24745",
+        "#79AF97",
+        "#6A6599",
+        "#80796B",
+    ],
+    "jco": [
+        "#0073C2",
+        "#EFC000",
+        "#868686",
+        "#CD534C",
+        "#7AA6DC",
+        "#003C67",
+        "#8F7700",
+        "#3B3B3B",
+        "#A73030",
+        "#4A6990",
+    ],
+    "okabe_ito": [
+        "#E69F00",
+        "#56B4E9",
+        "#009E73",
+        "#F0E442",
+        "#0072B2",
+        "#D55E00",
+        "#CC79A7",
+        "#000000",
+    ],
+    "tol_bright": [
+        "#4477AA",
+        "#EE6677",
+        "#228833",
+        "#CCBB44",
+        "#66CCEE",
+        "#AA3377",
+        "#BBBBBB",
+    ],
+    "tol_muted": [
+        "#332288",
+        "#88CCEE",
+        "#44AA99",
+        "#117733",
+        "#999933",
+        "#DDCC77",
+        "#CC6677",
+        "#882255",
+        "#AA4499",
+        "#DDDDDD",
+    ],
+    # scATrans domain: down / ns / up (volcano categories)
+    "volcano": ["#5189BB", GRAY, RED],
+    "mechanism": ["#3C5488", "#00A087", "#E64B35", "#F39B7F", GRAY],
+}
+
+_CONTINUOUS_CMAP_DATA: dict[str, list[list[float]]] = {
+    # Blue–white–red diverging (cnsplots BuRd_custom style)
+    "scat_BuRd": [
+        [0.0588, 0.3412, 0.6157],
+        [0.1843, 0.4471, 0.7059],
+        [0.3451, 0.5529, 0.7843],
+        [0.5412, 0.6902, 0.8667],
+        [0.7294, 0.8275, 0.9333],
+        [0.8863, 0.9255, 0.9765],
+        [1.0000, 1.0000, 1.0000],
+        [0.9882, 0.9020, 0.8863],
+        [0.9412, 0.7412, 0.6980],
+        [0.8745, 0.5255, 0.4706],
+        [0.7961, 0.3137, 0.2784],
+        [0.7137, 0.1216, 0.1686],
+        [0.6196, 0.0588, 0.1373],
+    ],
+    # White–yellow–orange–red sequential
+    "scat_YlOrRd": [
+        [1.00, 1.00, 1.00],
+        [1.00, 1.00, 0.85],
+        [1.00, 0.94, 0.50],
+        [1.00, 0.85, 0.30],
+        [0.996, 0.55, 0.10],
+        [0.988, 0.25, 0.02],
+        [0.80, 0.02, 0.01],
+        [0.50, 0.00, 0.00],
+    ],
+    # Yellow–green–blue sequential (enrichment-friendly)
+    "scat_YlGnBu": [
+        [1.00, 1.00, 0.80],
+        [0.87, 0.96, 0.62],
+        [0.64, 0.89, 0.62],
+        [0.40, 0.81, 0.72],
+        [0.21, 0.70, 0.77],
+        [0.13, 0.55, 0.78],
+        [0.13, 0.39, 0.70],
+        [0.05, 0.18, 0.52],
+    ],
+}
+
+_CMAPS_REGISTERED = False
+
+
+def _register_scat_colormaps() -> None:
+    """Register scatrans continuous colormaps once (safe to call repeatedly)."""
+    global _CMAPS_REGISTERED
+    if _CMAPS_REGISTERED:
+        return
+    for name, data in _CONTINUOUS_CMAP_DATA.items():
+        if name not in mpl.colormaps:
+            cmap = LinearSegmentedColormap.from_list(name, data, N=256)
+            mpl.colormaps.register(cmap, name=name)
+            # reverse alias
+            rev = f"{name}_r"
+            if rev not in mpl.colormaps:
+                mpl.colormaps.register(cmap.reversed(), name=rev)
+    _CMAPS_REGISTERED = True
+
+
+def list_palettes() -> list[str]:
+    """Return available qualitative palette names (plus continuous cmap names)."""
+    _register_scat_colormaps()
+    return sorted(_QUALITATIVE_PALETTES) + sorted(_CONTINUOUS_CMAP_DATA)
+
+
+def palette(name: str = "default", n: int | None = None) -> list[str]:
+    """
+    Return a qualitative hex color list by name.
+
+    Names include journal-inspired sets also used by cnsplots / ggsci:
+    ``nature``, ``cell``, ``science``, ``nejm``, ``lancet``, ``jama``, ``jco``,
+    ``okabe_ito``, ``tol_bright``, ``tol_muted``, ``ecotyper1`` / ``default``,
+    ``volcano``, ``mechanism``.
+
+    Parameters
+    ----------
+    name
+        Palette key (case-insensitive; hyphens/spaces accepted).
+    n
+        If given, cycle or truncate to this many colors.
+    """
+    key = str(name).lower().strip().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "npg": "nature",
+        "ggsci_npg": "nature",
+        "eco": "ecotyper1",
+        "cns": "nature",
+        "okabeito": "okabe_ito",
+        "colorblind": "okabe_ito",
+        "tol": "tol_bright",
+    }
+    key = aliases.get(key, key)
+    if key not in _QUALITATIVE_PALETTES:
+        raise ValueError(f"Unknown palette {name!r}. Available: {sorted(_QUALITATIVE_PALETTES)}")
+    colors = list(_QUALITATIVE_PALETTES[key])
+    if n is None:
+        return colors
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if n <= len(colors):
+        return colors[:n]
+    # cycle
+    return [colors[i % len(colors)] for i in range(n)]
+
+
+def get_cmap(name: str | None = None):
+    """Resolve a continuous colormap (registers scatrans maps on first use)."""
+    _register_scat_colormaps()
+    if name is None:
+        name = _DEFAULT_CMAP_DIVERGING
+    return mpl.colormaps[name]
 
 
 def _normalize_plot_context(context: str | None) -> str | None:
@@ -103,6 +390,11 @@ def _normalize_plot_context(context: str | None) -> str | None:
         "print": "paper",
         "publication": "paper",
         "pub": "paper",
+        "journal": "paper",
+        "nature": "cns",
+        "cell": "cns",
+        "science": "cns",
+        "multipanel": "cns",
     }
     key = aliases.get(key, key)
     if key not in _CONTEXT_PRESETS:
@@ -143,87 +435,119 @@ def _gene_label_fontsize(label_fontsize: float | None, fontsize: float) -> float
 def set_style(
     fontfamily="sans-serif",
     fonts=None,
-    linewidth=1.0,
-    labelsize=11,
-    titlesize=12,
-    ticksize=9,
-    legendsize=9,
+    linewidth=0.5,
+    labelsize=10,
+    titlesize=10,
+    ticksize=8,
+    legendsize=8,
     dpi_preview=150,
     dpi_save=300,
+    palette_name: str = "default",
+    color_map: str | None = None,
+    title_fontweight: str | int = "bold",
     **kwargs,
 ):
     """
-    Apply a clean, minimal style suitable for scientific publication figures.
+    Apply a clean, journal-ready style (Cell / Nature / Science inspired).
 
-    Key characteristics (inspired by professional single-cell visualization
-    libraries such as OmicVerse):
+    Visual defaults follow the cnsplots design language
+    (https://github.com/faridrashidi/cnsplots):
 
-    - Vector-friendly output (Type 42 fonts for easy editing of PDF/SVG in
-      Illustrator, Affinity, etc.)
+    - Fine black spines (0.5 pt) with top/right hidden
+    - Short compact ticks (length 2, width 0.6)
+    - Helvetica / Arial first; PDF Type 42 + SVG text (not paths)
+    - Curated qualitative color cycle (``palette_name``)
+    - Compact frameless legends, no grid, white canvas
+    - Editable vector export for Illustrator / Affinity
 
-    - Minimal non-data ink (no top/right spines)
-    - Consistent, readable sizes for journal figures (typically 11 pt labels)
-    - White background, high contrast, no unnecessary grids
-
-    It is recommended to call this once near the beginning of an analysis
-    script or notebook if you want package style. Plotting functions no longer call
-    it by default (use_style=False). Pass use_style=True or use style_context()
-    to opt in per call or per block.
-
-    If you want to limit the scope of style changes, either:
-      * call `scat.pl.set_style()` once yourself and then pass use_style=False to individual
-        plotting calls, or
-      * use `with scat.pl.style_context(...): ...` around blocks of code (including calls
-        to scat.pl.* functions inside the block).
+    Call once near the beginning of a script/notebook, or use
+    ``use_style=True`` / ``style_context()`` for scoped application.
 
     Parameters
     ----------
     fontfamily, fonts
-        Control the font stack. Arial/Helvetica are preferred for journals.
+        Control the font stack. Helvetica/Arial preferred for journals.
     linewidth
-        Base width for axes, ticks and spines.
+        Axis spine width (cnsplots default 0.5).
     labelsize, titlesize, ticksize, legendsize
         Font sizes in points.
     dpi_preview, dpi_save
         DPI used for on-screen display vs. saved files.
+    palette_name
+        Qualitative cycle name from :func:`palette` (e.g. ``"nature"``,
+        ``"cell"``, ``"okabe_ito"``).
+    color_map
+        Default ``image.cmap`` for continuous data (default ``scat_BuRd``).
+    title_fontweight
+        Weight for axes titles (default ``"bold"``).
     **kwargs
         Any additional matplotlib rcParams (will override the defaults).
     """
+    _register_scat_colormaps()
     if fonts is None:
-        fonts = ["Arial", "Helvetica", "DejaVu Sans"]
+        fonts = ["Helvetica", "Helvetica Neue", "Arial", "DejaVu Sans"]
+    if color_map is None:
+        color_map = _DEFAULT_CMAP_DIVERGING
+    try:
+        cycle_colors = palette(palette_name)
+    except ValueError:
+        logger.warning("Unknown palette_name=%r; falling back to 'default'.", palette_name)
+        cycle_colors = palette("default")
+
     rc_updates = {
         "font.family": fontfamily,
         "font.sans-serif": fonts,
-        # Critical for publication: editable vector text
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
-        # Clean, high-contrast, minimal style
+        "svg.fonttype": "none",
         "axes.linewidth": linewidth,
-        "axes.edgecolor": "#1f1f1f",
-        "axes.labelcolor": "#1f1f1f",
-        "xtick.color": "#1f1f1f",
-        "ytick.color": "#1f1f1f",
-        "xtick.major.width": linewidth * 0.8,
-        "ytick.major.width": linewidth * 0.8,
+        "axes.edgecolor": "black",
+        "axes.labelcolor": "black",
+        "axes.labelpad": 2,
+        "axes.titlepad": 4,
+        "axes.titleweight": title_fontweight,
+        "axes.xmargin": 0.05,
+        "axes.ymargin": 0.05,
+        "xtick.color": "black",
+        "ytick.color": "black",
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+        "xtick.major.size": 2.0,
+        "ytick.major.size": 2.0,
+        "xtick.major.pad": 1.5,
+        "ytick.major.pad": 1.5,
         "xtick.direction": "out",
         "ytick.direction": "out",
+        "xtick.bottom": True,
+        "ytick.left": True,
         "legend.frameon": False,
+        "legend.markerscale": 0.7,
+        "legend.handlelength": 0.9,
+        "legend.handleheight": 0.7,
+        "legend.handletextpad": 0.4,
+        "legend.borderaxespad": 0.3,
         "figure.facecolor": "white",
         "axes.facecolor": "white",
         "figure.dpi": dpi_preview,
         "savefig.dpi": dpi_save,
         "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.02,
         "savefig.transparent": False,
         "axes.titlesize": titlesize,
         "axes.labelsize": labelsize,
         "xtick.labelsize": ticksize,
         "ytick.labelsize": ticksize,
         "legend.fontsize": legendsize,
+        "legend.title_fontsize": labelsize,
         "figure.titlesize": titlesize + 1,
-        # Reduce visual clutter (consistent with high-end scRNA-seq figures)
         "axes.grid": False,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "axes.prop_cycle": cycler(color=cycle_colors),
+        "image.cmap": color_map,
+        "lines.linewidth": 1.0,
+        "lines.markersize": 4.0,
+        "patch.linewidth": 0.5,
     }
     rc_updates.update(kwargs)
     mpl.rcParams.update(rc_updates)
@@ -237,6 +561,8 @@ def set_style(
             "axes.linewidth": linewidth,
         },
     )
+    with suppress(Exception):
+        sns.set_palette(cycle_colors)
 
 
 @contextmanager
@@ -257,6 +583,117 @@ def style_context(**kwargs):
 def _style_context_if(use_style: bool):
     """Safe context (nullcontext when not using style)."""
     return style_context() if use_style else nullcontext()
+
+
+def setup_ax(
+    ax,
+    *,
+    labelsize: float | None = None,
+    ticksize: float | None = None,
+    title_fontweight: str | int = "bold",
+    axes_linewidth: float = 0.5,
+    despine: bool = True,
+    outward: float | None = None,
+    grid: bool = False,
+) -> None:
+    """
+    Polish an existing axes to match scatrans / cnsplots journal styling.
+
+    Useful after seaborn, scanpy, or ad-hoc matplotlib draws so spines, ticks,
+    and label colors stay consistent.
+
+    Parameters
+    ----------
+    outward
+        If set (e.g. ``4``), offset left/bottom spines outward in points for a
+        "floating axis" look. Default ``None`` keeps spines flush with the
+        data box (recommended). Pass ``outward=4`` only when you want the gap.
+    """
+    if despine:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    for spine_name in ("top", "right", "bottom", "left"):
+        ax.spines[spine_name].set_linewidth(axes_linewidth)
+        ax.spines[spine_name].set_color("black")
+    if outward is not None:
+        if ax.spines["left"].get_visible():
+            ax.spines["left"].set_position(("outward", outward))
+        if ax.spines["bottom"].get_visible():
+            ax.spines["bottom"].set_position(("outward", outward))
+    tick_kwargs = {
+        "axis": "both",
+        "which": "major",
+        "length": 2.0,
+        "width": 0.6,
+        "pad": 1.5,
+        "colors": "black",
+        "direction": "out",
+    }
+    if ticksize is not None:
+        tick_kwargs["labelsize"] = ticksize
+    ax.tick_params(**tick_kwargs)
+    if labelsize is not None:
+        ax.xaxis.label.set_size(labelsize)
+        ax.yaxis.label.set_size(labelsize)
+    ax.xaxis.label.set_color("black")
+    ax.yaxis.label.set_color("black")
+    if ax.get_title():
+        ax.title.set_fontweight(title_fontweight)
+        ax.title.set_color("black")
+    ax.grid(grid)
+    if grid:
+        ax.set_axisbelow(True)
+
+
+def add_panel_label(
+    ax,
+    label: str = "A",
+    *,
+    fontsize: float = 11,
+    fontweight: str | int = "bold",
+    x: float = -0.12,
+    y: float = 1.05,
+    color: str = "black",
+    **text_kwargs,
+):
+    """
+    Add a bold multipanel letter (A, B, C, …) in axes coordinates.
+
+    Inspired by cnsplots ``add_panel_label`` for journal multi-panel figures.
+    Returns the matplotlib Text artist.
+    """
+    kw = {
+        "transform": ax.transAxes,
+        "fontsize": fontsize,
+        "fontweight": fontweight,
+        "color": color,
+        "ha": "right",
+        "va": "bottom",
+        "clip_on": False,
+    }
+    kw.update(text_kwargs)
+    return ax.text(x, y, str(label), **kw)
+
+
+def _style_colorbar(cbar, *, labelsize: float | None = None) -> None:
+    """Minimal colorbar polish: hide outline, thin ticks, black labels."""
+    if cbar is None:
+        return
+    with suppress(Exception):
+        cbar.outline.set_visible(False)
+    cbar.ax.tick_params(length=2.0, width=0.5, colors="black", labelsize=labelsize)
+    with suppress(Exception):
+        cbar.ax.yaxis.label.set_color("black")
+
+
+def _scatter_edge_kwargs(
+    edgecolors: str | None = None,
+    linewidth: float | None = None,
+) -> dict:
+    """Shared scatter edge defaults (soft clouds by default)."""
+    ec = _DEFAULT_POINT_EDGE if edgecolors is None else edgecolors
+    lw = _DEFAULT_POINT_EDGEWIDTH if linewidth is None else linewidth
+    return {"edgecolors": ec, "linewidths": lw}
 
 
 def _maybe_repel_labels(
@@ -309,7 +746,7 @@ def _maybe_repel_labels(
         texts,
         x=x,
         y=y,
-        arrowprops={"arrowstyle": "-", "color": "#666666", "lw": 0.8, "alpha": 0.8},
+        arrowprops={"arrowstyle": "-", "color": "#8A8A8A", "lw": 0.55, "alpha": 0.75},
         ax=ax,
     )
 
@@ -514,11 +951,11 @@ def comet_plot(
     max_size=180,
     s: float
     | None = None,  # fixed point size (overrides variable sizing by active_score); common control in omicverse-style APIs
-    alpha: float = 0.85,  # point transparency (omicverse often uses ~0.5 for clean dense plots)
+    alpha: float = 0.8,  # point transparency (soft clouds; cnsplots-like density)
     figsize=_DEFAULT_FIGSIZE,
     dpi=_DEFAULT_DPI,
     fontsize=_DEFAULT_FONTSIZE,
-    cmap="coolwarm",
+    cmap=_DEFAULT_CMAP_DIVERGING,
     ax=None,
     show: bool = True,
     use_style: bool = False,
@@ -648,6 +1085,7 @@ def comet_plot(
                 len(plot_df),
             )
 
+        _register_scat_colormaps()
         scatter = ax.scatter(
             x=plot_df["logFC"],
             y=plot_df[residual_col],
@@ -655,13 +1093,12 @@ def comet_plot(
             s=sizes,
             cmap=cmap,
             alpha=alpha,
-            edgecolors="#444444",
-            linewidth=0.5,
             zorder=3,
+            **_scatter_edge_kwargs(),
         )
 
-        ax.axhline(0, color="#999999", linestyle="--", linewidth=1, alpha=0.5, zorder=1)
-        ax.axvline(0, color="#999999", linestyle="--", linewidth=1, alpha=0.5, zorder=1)
+        ax.axhline(0, color=_DEFAULT_REF_LINE, linestyle="--", linewidth=0.7, alpha=0.65, zorder=1)
+        ax.axvline(0, color=_DEFAULT_REF_LINE, linestyle="--", linewidth=0.7, alpha=0.65, zorder=1)
 
         label_pool = plot_df
         if min_label_score is not None and "active_score" in label_pool.columns:
@@ -676,7 +1113,7 @@ def comet_plot(
                 f"{idx}",
                 fontsize=lbl_fs,
                 fontweight="normal",
-                color="#222222",
+                color=INK,
                 bbox={"boxstyle": "square,pad=0.1", "fc": "none", "ec": "none"},
             )
             texts.append(txt)
@@ -692,20 +1129,17 @@ def comet_plot(
         ax.set_xlabel("Log2 Fold Change", fontsize=fontsize)
         ax.set_ylabel("Bias-corrected Unspliced Residual", fontsize=fontsize)
         if title:
-            ax.set_title(title, fontsize=fontsize + 1, pad=10)
+            ax.set_title(title, fontsize=fontsize + 1, pad=8, fontweight="bold")
 
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.03, aspect=20)
         cbar.set_label(
             "Active Score",
-            fontsize=max(8, fontsize - 1),
+            fontsize=max(7, fontsize - 1),
             rotation=270,
             labelpad=12,
         )
-        cbar.outline.set_visible(False)
-
-        sns.despine(ax=ax, top=True, right=True)
-        ax.spines["left"].set_position(("outward", 6))
-        ax.spines["bottom"].set_position(("outward", 6))
+        _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
         # constrained_layout at creation + bbox_inches on save handles colorbar cleanly.
         # (avoid tight_layout after colorbar)
@@ -729,7 +1163,7 @@ def volcano_3d(
     figsize=(6.5, 5.0),
     dpi=_DEFAULT_DPI,
     fontsize=_DEFAULT_FONTSIZE,
-    cmap="coolwarm",
+    cmap=_DEFAULT_CMAP_DIVERGING,
     ax=None,
     show: bool = True,
     use_style: bool = False,
@@ -819,6 +1253,7 @@ def volcano_3d(
                 len(plot_df),
             )
 
+        _register_scat_colormaps()
         scatter = ax.scatter(
             plot_df["logFC"],
             plot_df["neg_log_pval"],
@@ -827,9 +1262,8 @@ def volcano_3d(
             s=sizes,
             cmap=cmap,
             alpha=alpha,
-            edgecolors="#444444",
-            linewidth=0.4,
             zorder=3,
+            **_scatter_edge_kwargs(),
         )
 
         for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
@@ -877,6 +1311,7 @@ def volcano_3d(
         ax.view_init(elev=20, azim=-55)
 
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, pad=0.1, aspect=15)
+        _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
         cbar.set_label(
             "Active Score",
             fontsize=max(9, fontsize - 2),
@@ -907,7 +1342,7 @@ def enrich_dotplot(
     x="GeneRatio",
     color_by="Adjusted P-value",
     size_by="Count",
-    cmap="viridis_r",
+    cmap=_DEFAULT_CMAP_SEQUENTIAL,
     dot_max: float | None = None,
     dot_min: float | None = None,
     smallest_dot: float = 0.0,
@@ -1304,9 +1739,13 @@ def enrich_dotplot(
                 plot_df["_color_value"] = np.arange(len(plot_df), dtype=float)
                 color_col = "_color_value"
 
-        # For GSEA NES, prefer diverging colormap if user kept default
-        if color_col == "NES" and cmap == "viridis_r":
-            cmap = "RdBu_r"
+        # For GSEA NES, prefer diverging colormap if user kept sequential default
+        if color_col == "NES" and cmap in (
+            "viridis_r",
+            _DEFAULT_CMAP_SEQUENTIAL,
+            "scat_YlGnBu",
+        ):
+            cmap = _DEFAULT_CMAP_DIVERGING
 
         # Ensure x_col is numeric (user may pass x="FoldEnrichment" that is string/NA in some outputs)
         if x_col in plot_df.columns:
@@ -1397,25 +1836,27 @@ def enrich_dotplot(
             fig = ax.figure
             _created_fig = False
 
+        _register_scat_colormaps()
         scatter = ax.scatter(
             x=plot_df[x_col],
             y=plot_df["Term_Clean"],
             s=sizes,
             c=plot_df[color_col],
             cmap=cmap,
-            edgecolors="#333333",
-            linewidth=0.5,
-            alpha=0.9,
+            edgecolors="white",
+            linewidths=0.4,
+            alpha=0.92,
+            zorder=3,
         )
 
-        ax.set_xlabel(x_label, fontsize=fontsize, labelpad=8)
+        ax.set_xlabel(x_label, fontsize=fontsize, labelpad=6)
         ax.set_ylabel("", fontsize=fontsize)
 
         if title:
-            ax.set_title(title, fontsize=fontsize + 1, pad=12)
+            ax.set_title(title, fontsize=fontsize + 1, pad=10, fontweight="bold")
 
-        ax.xaxis.grid(True, linestyle="--", color="#DDDDDD", alpha=0.8, zorder=0)
-        ax.yaxis.grid(True, linestyle=":", color="#EEEEEE", alpha=0.5, zorder=0)
+        ax.xaxis.grid(True, linestyle="--", color="#E8E8E8", alpha=0.9, zorder=0)
+        ax.yaxis.grid(True, linestyle=":", color="#F0F0F0", alpha=0.7, zorder=0)
         ax.set_axisbelow(True)
 
         # Colorbar (p.adjust or equivalent) - compact placement on the right.
@@ -1424,8 +1865,8 @@ def enrich_dotplot(
         cbar_label = color_col
         if color_col == "Adjusted P-value":
             cbar_label = "Adjusted P-value (smaller = more sig.)"
-        cbar.set_label(cbar_label, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14)
-        cbar.outline.set_visible(False)
+        cbar.set_label(cbar_label, fontsize=max(7, fontsize - 1), rotation=270, labelpad=14)
+        _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
 
         # Size legend using proxy artists (keeps accurate representation of our custom _scale_sizes
         # including dot_max / smallest_dot controls, which is more reliable than raw legend_elements).
@@ -1504,10 +1945,10 @@ def enrich_dotplot(
                         [],
                         [],
                         s=s_for_rv,
-                        c="#555555",
-                        alpha=0.7,
-                        edgecolors="#333333",
-                        linewidths=0.5,
+                        c=GRAY,
+                        alpha=0.75,
+                        edgecolors="white",
+                        linewidths=0.4,
                     )
                     handles.append(h)
                     if size_col == "Count":
@@ -1550,7 +1991,17 @@ def enrich_dotplot(
             # Never let legend problems break the main plot
             pass
 
-        sns.despine(ax=ax, top=True, right=True, left=False, bottom=False)
+        # Keep light grid (dotplot convention) but match journal spine/tick polish
+        setup_ax(
+            ax,
+            labelsize=fontsize,
+            ticksize=max(7, fontsize - 2),
+            outward=None,
+            grid=False,
+        )
+        ax.xaxis.grid(True, linestyle="--", color="#E8E8E8", alpha=0.9, zorder=0)
+        ax.yaxis.grid(True, linestyle=":", color="#F0F0F0", alpha=0.7, zorder=0)
+        ax.set_axisbelow(True)
 
         # Do NOT call tight_layout() here. With constrained_layout + manual bbox_to_anchor legends
         # it frequently causes the colorbar and size legend to fight / overlap.
@@ -1761,13 +2212,16 @@ def compare_dotplot(
         from matplotlib.colors import LinearSegmentedColormap
 
         is_pval_color = color_c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
+        _register_scat_colormaps()
         if cmap == "auto":
+            # p-value: red (sig) → blue (ns); else sequential journal map
             eff_cmap = (
                 LinearSegmentedColormap.from_list(
-                    "cp_red_blue", ["#B2182B", "#F4A582", "#92C5DE", "#2166AC"]
+                    "cp_red_blue",
+                    ["#B2182B", "#F4A582", "#F7F7F7", "#92C5DE", "#2166AC"],
                 )
                 if is_pval_color
-                else "viridis"
+                else _DEFAULT_CMAP_SEQUENTIAL
             )
         else:
             eff_cmap = cmap
@@ -1791,7 +2245,7 @@ def compare_dotplot(
             _created = False
 
         ax.set_axisbelow(True)
-        ax.grid(True, which="major", linestyle="--", color="#DDDDDD", alpha=0.7, zorder=0)
+        ax.grid(True, which="major", linestyle="--", color="#E8E8E8", alpha=0.85, zorder=0)
         scatter = ax.scatter(
             xs,
             ys,
@@ -1799,8 +2253,8 @@ def compare_dotplot(
             c=cvals,
             cmap=eff_cmap,
             norm=norm,
-            edgecolors="#333333",
-            linewidths=0.5,
+            edgecolors="white",
+            linewidths=0.35,
             alpha=0.95,
             zorder=3,
         )
@@ -1815,8 +2269,18 @@ def compare_dotplot(
             ax.set_xticklabels(clusters, fontsize=fontsize)
         # Horizontal cluster labels collide once names are long or numerous (e.g.
         # "DE_pseudobulk", "pseudobulk_unique"). Auto-rotate so labels stay legible;
-        # short, few labels are left horizontal.
-        if max((len(str(cl)) for cl in clusters), default=0) > 6 or len(clusters) > 4:
+        # short, few labels are left horizontal. Compare estimated label width to
+        # the width actually available per column (from the figure width used
+        # above) rather than a flat character-count threshold: a fixed threshold
+        # like ">6 chars" rotates ordinary short names (e.g. "Monocyte" vs "CD4T")
+        # that fit fine unrotated with few clusters, and rotating a two-line
+        # "name\n(count)" tick label at 30 degrees makes those cases collide worse,
+        # not better.
+        avail_col_width_in = figsize0[0] / max(len(clusters), 1)
+        est_label_width_in = (
+            max((len(str(cl)) for cl in clusters), default=0) * fontsize * 0.65 / 72.0
+        )
+        if len(clusters) > 4 or est_label_width_in > avail_col_width_in * 0.8:
             for lab in ax.get_xticklabels():
                 lab.set_rotation(30)
                 lab.set_ha("right")
@@ -1831,15 +2295,22 @@ def compare_dotplot(
         ax.set_yticklabels([_clean(t) for t in ordered][::-1], fontsize=max(7, fontsize - 1))
         ax.set_xlabel("")
         if title:
-            ax.set_title(title, fontsize=fontsize + 1, pad=10)
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
+            ax.set_title(title, fontsize=fontsize + 1, pad=8, fontweight="bold")
+        setup_ax(
+            ax,
+            labelsize=fontsize,
+            ticksize=max(7, fontsize - 1),
+            outward=None,
+            grid=False,
+        )
         ax.tick_params(length=0)
+        ax.grid(True, which="major", linestyle="--", color="#E8E8E8", alpha=0.85, zorder=0)
+        ax.set_axisbelow(True)
 
         # colorbar
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.35, aspect=14, pad=0.02)
-        cbar.set_label(color_c, fontsize=max(8, fontsize - 1), rotation=270, labelpad=14)
-        cbar.outline.set_visible(False)
+        cbar.set_label(color_c, fontsize=max(7, fontsize - 1), rotation=270, labelpad=14)
+        _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
 
         # size legend
         if size_c is not None and finite_s.size and np.nanmax(finite_s) > np.nanmin(finite_s):
@@ -1850,7 +2321,7 @@ def compare_dotplot(
             for rv in reps:
                 s_rv = s_min + (rv - lo) / (hi - lo) * (s_max - s_min)
                 handles.append(
-                    ax.scatter([], [], s=s_rv, c="#888888", edgecolors="#333333", linewidths=0.5)
+                    ax.scatter([], [], s=s_rv, c=GRAY, edgecolors="white", linewidths=0.4)
                 )
                 labels.append(f"{int(rv)}" if size_c == "Count" else f"{rv:.2g}")
             ax.legend(
@@ -1876,11 +2347,11 @@ def enrich_upsetplot(
     min_count: int = 1,
     max_terms: int = 40,
     title: str = "Enriched Term Overlap (UpSet-style)",
-    set_color: str = "#4477AA",
-    intersection_color: str = "#44AA77",
-    dot_color: str = "#CC3311",
-    inactive_color: str = "#DDDDDD",
-    line_color: str = "#555555",
+    set_color: str = BLUE,
+    intersection_color: str = TEAL,
+    dot_color: str = RED,
+    inactive_color: str = "#E6E6E6",
+    line_color: str = "#666666",
     figsize: tuple[float, float] = (8.5, 4.8),
     dpi: int = _DEFAULT_DPI,
     fontsize: int = _DEFAULT_FONTSIZE,
@@ -2037,8 +2508,8 @@ def enrich_upsetplot(
             y_pos,
             [set_sizes[c] for c in clusters_sorted],
             color=set_color,
-            edgecolor="black",
-            height=0.6,
+            edgecolor="none",
+            height=0.62,
         )
         ax_set.set_yticks(y_pos)
         ax_set.set_yticklabels(clusters_sorted, fontsize=fontsize - 1)
@@ -2058,7 +2529,7 @@ def enrich_upsetplot(
             inter_labels.append("\n".join(names) if names else "∅")
             inter_vals.append(size)
         x = np.arange(len(inter_vals))
-        ax_inter.bar(x, inter_vals, color=intersection_color, edgecolor="black")
+        ax_inter.bar(x, inter_vals, color=intersection_color, edgecolor="none")
         ax_inter.set_ylabel("Intersection size", fontsize=fontsize)
         ax_inter.set_xticks([])
         ax_inter.set_title(title, fontsize=fontsize + 2, fontweight="bold", pad=6)
@@ -2087,7 +2558,7 @@ def enrich_upsetplot(
                     [col_idx, col_idx],
                     [min(active), max(active)],
                     color=line_color,
-                    lw=1.5,
+                    lw=1.1,
                     zorder=1,
                 )
             for row_idx in range(len(clusters_sorted)):
@@ -2098,8 +2569,8 @@ def enrich_upsetplot(
                         s=140,
                         c=dot_color,
                         zorder=2,
-                        edgecolors="black",
-                        linewidths=0.5,
+                        edgecolors="none",
+                        linewidths=0.0,
                     )
                 else:
                     ax_mat.scatter(
@@ -2126,6 +2597,228 @@ def enrich_upsetplot(
 # ---------------------------------------------------------------------------
 # Gene-level UpSet (multiple DE results / gene lists)
 # ---------------------------------------------------------------------------
+
+# Column-name aliases for external DE tables (DESeq2 / edgeR / Seurat / limma / ...).
+# Matching is case-insensitive on the *stripped* column name.
+_LOGFC_ALIASES: tuple[str, ...] = (
+    "logfc",
+    "log2foldchange",
+    "log2fc",
+    "log2_fc",
+    "avg_log2fc",
+    "avg_logfc",
+    "avglog2fc",
+    "lfc",
+    "logfoldchanges",
+    "logfoldchange",
+    "log_fc",
+    "log.fc",
+)
+_PADJ_ALIASES: tuple[str, ...] = (
+    "p_adj",
+    "padj",
+    "p.adjust",
+    "p_adjust",
+    "fdr",
+    "qval",
+    "q_value",
+    "qvalue",
+    "pvals_adj",
+    "p_val_adj",
+    "p.adj",
+    "adj.p.val",
+    "adj_p_val",
+    "adj.pvalue",
+    "adj_pvalue",
+    "adj_p_value",
+    "fdr_qval",
+)
+_PVAL_ALIASES: tuple[str, ...] = (
+    "p_val",
+    "pval",
+    "pvalue",
+    "p_value",
+    "p.value",
+    "pvals",
+    "p.val",
+    "p",
+)
+_GENE_ALIASES: tuple[str, ...] = (
+    "gene",
+    "genes",
+    "gene_name",
+    "gene_symbol",
+    "genesymbol",
+    "symbol",
+    "feature",
+    "features",
+    "names",
+    "gene_id",
+    "geneid",
+)
+
+
+def _match_column(columns: Iterable[Any], aliases: tuple[str, ...]) -> str | None:
+    """Return the first column whose casefold name is in ``aliases``."""
+    alias_set = {a.casefold() for a in aliases}
+    for c in columns:
+        key = str(c).strip().casefold().replace(" ", "_")
+        # also try raw casefold without space->underscore for names like "P.Value"
+        raw = str(c).strip().casefold()
+        if key in alias_set or raw in alias_set:
+            return str(c)
+    return None
+
+
+def normalize_external_de(
+    de_df: pd.DataFrame,
+    *,
+    gene_col: str | None = None,
+    logfc_col: str | None = None,
+    padj_col: str | None = None,
+    pval_col: str | None = None,
+    already_filtered: bool = False,
+    copy: bool = True,
+) -> pd.DataFrame:
+    """Normalize an external DE table to scATrans conventions for UpSet / filtering.
+
+    Accepts common DESeq2 / Seurat / limma / edgeR column names and returns a
+    DataFrame with:
+
+    - **index** = gene symbols (from ``gene_col`` or an existing gene-like index)
+    - **logFC** column (required unless the table is already a pure gene list)
+    - **p_adj** column when any adjusted-p column is found (or filled with 0 if
+      ``already_filtered=True`` / no p-value columns, so magnitude-only filtering works)
+
+    Parameters
+    ----------
+    de_df : pd.DataFrame
+        External differential-expression table.
+    gene_col, logfc_col, padj_col, pval_col : str or None
+        Explicit column names. When ``None``, aliases are auto-detected.
+    already_filtered : bool
+        If True (or when no p-value column exists), missing ``p_adj`` is filled
+        with 0 so every row passes the adjusted-p gate and only ``logFC`` /
+        direction cutoffs apply. Useful for pre-thresholded DEG lists.
+    copy : bool
+        Return a copy (default). Set False only when you own the input frame.
+
+    Returns
+    -------
+    pd.DataFrame
+        Index = genes; columns at least ``logFC`` and usually ``p_adj``.
+
+    Examples
+    --------
+    >>> # DESeq2 results.csv with gene in a column
+    >>> de = normalize_external_de(raw, gene_col="gene", logfc_col="log2FoldChange")
+    >>> mem = build_gene_membership({"A": de, "B": de2}, direction="separate")
+    """
+    if not isinstance(de_df, pd.DataFrame):
+        raise TypeError(f"de_df must be a DataFrame, got {type(de_df).__name__}")
+    if de_df.empty:
+        out = de_df.copy() if copy else de_df
+        if "logFC" not in out.columns:
+            out = out.copy()
+            out["logFC"] = pd.Series(dtype=float)
+        if "p_adj" not in out.columns:
+            out["p_adj"] = pd.Series(dtype=float)
+        return out
+
+    df = de_df.copy() if copy else de_df
+
+    # --- gene index ---
+    gcol = gene_col
+    if gcol is None:
+        gcol = _match_column(df.columns, _GENE_ALIASES)
+    if gcol is not None:
+        if gcol not in df.columns:
+            raise KeyError(f"gene_col={gcol!r} not in columns {list(df.columns)}")
+        genes = df[gcol].astype(str)
+        # drop the gene column from values if it would collide, keep other cols
+        df = df.drop(columns=[gcol], errors="ignore")
+        df.index = genes
+    else:
+        # index already gene-like: keep it; warn if it looks like a RangeIndex of ints
+        if isinstance(df.index, pd.RangeIndex) or (
+            pd.api.types.is_integer_dtype(df.index) and "logFC" not in df.columns
+        ):
+            logger.warning(
+                "normalize_external_de: no gene column detected and index looks numeric; "
+                "pass gene_col=... (e.g. 'gene' / 'Gene') so membership uses symbols."
+            )
+        df.index = df.index.astype(str)
+
+    # de-duplicate genes (keep first)
+    if df.index.has_duplicates:
+        n_dup = int(df.index.duplicated().sum())
+        logger.warning(
+            "normalize_external_de: dropping %d duplicate gene row(s) (keep first).", n_dup
+        )
+        df = df[~df.index.duplicated(keep="first")]
+
+    # --- logFC ---
+    lcol = logfc_col
+    if lcol is None and "logFC" in df.columns:
+        lcol = "logFC"
+    if lcol is None:
+        lcol = _match_column(df.columns, _LOGFC_ALIASES)
+    if lcol is None:
+        raise ValueError(
+            "normalize_external_de: could not find a logFC column. "
+            f"Columns={list(df.columns)}. Pass logfc_col= explicitly "
+            "(e.g. 'log2FoldChange', 'avg_log2FC')."
+        )
+    if lcol != "logFC":
+        if "logFC" in df.columns and lcol != "logFC":
+            # prefer explicit / detected alias over a pre-existing empty logFC
+            pass
+        df["logFC"] = pd.to_numeric(df[lcol], errors="coerce")
+    else:
+        df["logFC"] = pd.to_numeric(df["logFC"], errors="coerce")
+
+    # --- p_adj / p_val ---
+    acol = padj_col
+    if acol is None and "p_adj" in df.columns:
+        acol = "p_adj"
+    if acol is None:
+        acol = _match_column(df.columns, _PADJ_ALIASES)
+    vcol = pval_col
+    if vcol is None and "p_val" in df.columns:
+        vcol = "p_val"
+    if vcol is None:
+        vcol = _match_column(df.columns, _PVAL_ALIASES)
+
+    if acol is not None:
+        df["p_adj"] = pd.to_numeric(df[acol], errors="coerce")
+    if vcol is not None:
+        df["p_val"] = pd.to_numeric(df[vcol], errors="coerce")
+
+    has_p = "p_adj" in df.columns or "p_val" in df.columns
+    if not has_p or already_filtered:
+        if "p_adj" not in df.columns:
+            df["p_adj"] = 0.0
+            logger.info(
+                "normalize_external_de: no adjusted p-value column "
+                "(or already_filtered=True); filled p_adj=0 so only logFC/direction filters apply."
+            )
+        elif already_filtered:
+            # still ensure finite values
+            df["p_adj"] = pd.to_numeric(df["p_adj"], errors="coerce").fillna(0.0)
+
+    # fill non-finite with neutral DE values so filter_active_genes is robust
+    df["logFC"] = df["logFC"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if "p_adj" in df.columns:
+        df["p_adj"] = df["p_adj"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        if already_filtered:
+            # already_filtered means user trusts the rows; keep them past p gate
+            df["p_adj"] = 0.0
+    if "p_val" in df.columns:
+        df["p_val"] = df["p_val"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+    return df
+
+
 def _dir_gene_set(
     de_df: pd.DataFrame,
     direction: str,
@@ -2133,25 +2826,46 @@ def _dir_gene_set(
     pval_cutoff: float,
     padj_cutoff: float | None,
     logfc_cutoff: float,
+    p_type: str = "auto",
+    gene_col: str | None = None,
+    logfc_col: str | None = None,
+    padj_col: str | None = None,
+    pval_col: str | None = None,
+    already_filtered: bool = False,
+    normalize: bool = True,
 ) -> set[str]:
     """Filter one DE table to a directional gene set via :func:`filter_active_genes`.
 
     Lazily imported to avoid any pl<->tl import cycle. ``direction`` is one of
     ``"up"`` / ``"down"`` / ``"both"`` (mapped to ``logfc_direction``).
+    External tables are normalized first (column aliases + gene index).
+    ``p_type`` selects adjusted vs nominal p (see :func:`filter_active_genes`).
     """
     from .tl.filter import filter_active_genes  # lazy: no circular import
+
+    work = de_df
+    if normalize:
+        work = normalize_external_de(
+            de_df,
+            gene_col=gene_col,
+            logfc_col=logfc_col,
+            padj_col=padj_col,
+            pval_col=pval_col,
+            already_filtered=already_filtered,
+        )
 
     kwargs: dict[str, Any] = {
         "logfc_direction": direction,
         "logfc_cutoff": logfc_cutoff,
+        "p_type": p_type,
     }
-    # Prefer explicit padj_cutoff; else fall back to the legacy pval_cutoff name
-    # (filter_active_genes filters p_adj when present, else p_val).
+    # Prefer explicit padj_cutoff; else fall back to the legacy pval_cutoff name.
+    # Which column is gated is controlled by p_type (adj / nominal / auto).
     if padj_cutoff is not None:
         kwargs["padj_cutoff"] = padj_cutoff
     else:
         kwargs["pval_cutoff"] = pval_cutoff
-    sub = filter_active_genes(de_df, **kwargs)
+    sub = filter_active_genes(work, **kwargs)
     return set(sub.index.astype(str))
 
 
@@ -2161,9 +2875,16 @@ def build_gene_membership(
     direction: str = "separate",
     pval_cutoff: float = 0.05,
     padj_cutoff: float | None = None,
+    p_type: str = "auto",
     logfc_cutoff: float = 0.0,
     up_suffix: str = "::up",
     down_suffix: str = "::down",
+    gene_col: str | None = None,
+    logfc_col: str | None = None,
+    padj_col: str | None = None,
+    pval_col: str | None = None,
+    already_filtered: bool = False,
+    normalize: bool = True,
 ) -> pd.DataFrame:
     """Turn several DE results (or ready-made gene lists) into a gene x set membership matrix.
 
@@ -2171,12 +2892,17 @@ def build_gene_membership(
     tables cannot be fed to an UpSet plot directly, they must first be reduced to
     directional gene *sets* and stacked into a 0/1 membership matrix.
 
+    **External tables are welcome.** By default each DataFrame is passed through
+    :func:`normalize_external_de`, which maps common aliases
+    (``log2FoldChange`` / ``avg_log2FC`` → ``logFC``, ``padj`` / ``p.adjust`` →
+    ``p_adj``, ``gene`` / ``Gene`` → index) so DESeq2 / Seurat / limma exports
+    work without manual rename.
+
     Parameters
     ----------
     de_results : Mapping[str, DataFrame | Iterable[str]]
-        ``{name: de_df}`` (primary use) or ``{name: [gene, ...]}``. DE tables are
-        the output of :func:`scatrans.differential_expression` / ``active_score``
-        (index = gene, columns include ``logFC`` and ``p_val`` / ``p_adj``).
+        ``{name: de_df}`` (primary use) or ``{name: [gene, ...]}``. DE tables may
+        be scATrans output **or** external tools (gene as index or column).
         A plain gene list/set is taken as-is (already filtered; ``direction`` is
         ignored for that entry and it becomes a single set under ``name``).
     direction : {"separate", "up", "down", "both"}
@@ -2191,9 +2917,28 @@ def build_gene_membership(
     pval_cutoff, padj_cutoff, logfc_cutoff : float
         Thresholds forwarded to :func:`filter_active_genes` (only applied to
         DataFrame inputs). ``padj_cutoff`` wins when both p-value cutoffs are given.
+    p_type : {"auto", "adj", "nominal"}
+        Which p-value column to gate on (forwarded to :func:`filter_active_genes`):
+
+        - ``"auto"`` (default): ``p_adj`` if present, else ``p_val``
+        - ``"adj"``: always adjusted p (``p_adj``) — FDR-controlled lists
+        - ``"nominal"``: always raw p (``p_val``) — exploratory / underpowered designs
+
+        Aliases: ``padj`` / ``p_adj`` → adj; ``pval`` / ``p_val`` → nominal.
     up_suffix, down_suffix : str
         Column-name suffixes used in ``"separate"`` mode (also what
         :func:`common_genes` looks for when ``direction=`` is passed there).
+    gene_col, logfc_col, padj_col, pval_col : str or None
+        Optional explicit column names for external tables (forwarded to
+        :func:`normalize_external_de`). Leave as ``None`` for auto-detect.
+    already_filtered : bool
+        If True, treat rows as pre-thresholded DEGs (p-value gate always passes;
+        only logFC direction/magnitude is applied). Also useful when the table
+        has no p-value column.
+    normalize : bool
+        If True (default), run :func:`normalize_external_de` on every DataFrame
+        input. Set False only for already-normalized scATrans tables when you
+        want to skip the (cheap) alias scan.
 
     Returns
     -------
@@ -2203,6 +2948,7 @@ def build_gene_membership(
 
     See Also
     --------
+    normalize_external_de : standalone external-table normalizer.
     gene_upsetplot : plot the matrix as an UpSet figure.
     common_genes : pull the common-up / common-down intersection genes for enrichment.
 
@@ -2215,6 +2961,12 @@ def build_gene_membership(
     >>> gene_upsetplot(membership=mem, save_path="gene_upset.png")
     >>> up = common_genes(mem, direction="up")     # genes up in *every* model
     >>> enr = run_enrichment(up, adata=adata)       # feed straight into enrichment
+
+    >>> # DESeq2-style CSV (gene column + log2FoldChange + padj)
+    >>> mem = build_gene_membership(
+    ...     {"fracture": deseq_df, "osteo": seurat_df},
+    ...     direction="separate", pval_cutoff=0.05, logfc_cutoff=0.25,
+    ... )
     """
     if not isinstance(de_results, Mapping):
         raise ValueError(
@@ -2227,6 +2979,16 @@ def build_gene_membership(
             f"direction must be one of 'separate'/'up'/'down'/'both', got {direction!r}."
         )
 
+    norm_kw: dict[str, Any] = {
+        "gene_col": gene_col,
+        "logfc_col": logfc_col,
+        "padj_col": padj_col,
+        "pval_col": pval_col,
+        "already_filtered": already_filtered,
+        "normalize": normalize,
+        "p_type": p_type,
+    }
+
     gene_sets: dict[str, set[str]] = {}
     for raw_name, val in de_results.items():
         name = str(raw_name)
@@ -2238,6 +3000,7 @@ def build_gene_membership(
                     pval_cutoff=pval_cutoff,
                     padj_cutoff=padj_cutoff,
                     logfc_cutoff=logfc_cutoff,
+                    **norm_kw,
                 )
                 gene_sets[f"{name}{down_suffix}"] = _dir_gene_set(
                     val,
@@ -2245,6 +3008,7 @@ def build_gene_membership(
                     pval_cutoff=pval_cutoff,
                     padj_cutoff=padj_cutoff,
                     logfc_cutoff=logfc_cutoff,
+                    **norm_kw,
                 )
             else:
                 gene_sets[name] = _dir_gene_set(
@@ -2253,6 +3017,7 @@ def build_gene_membership(
                     pval_cutoff=pval_cutoff,
                     padj_cutoff=padj_cutoff,
                     logfc_cutoff=logfc_cutoff,
+                    **norm_kw,
                 )
         elif isinstance(val, pd.Series):
             gene_sets[name] = set(val.astype(str).tolist())
@@ -2339,6 +3104,99 @@ def common_genes(
     return membership.index[mask.values].astype(str).tolist()
 
 
+def collect_gene_sets(
+    membership: pd.DataFrame,
+    *,
+    include_common: bool = True,
+    up_suffix: str = "::up",
+    down_suffix: str = "::down",
+    min_sets: int | None = None,
+) -> dict[str, list[str]]:
+    """Collect per-condition up/down gene lists (+ common) from a membership matrix.
+
+    Designed for scATrans DE DataFrames after :func:`build_gene_membership`
+    with ``direction="separate"``. Works for **2, 3, or any number** of conditions:
+    each membership column ``name::up`` / ``name::down`` becomes a list under
+    keys ``name_up`` / ``name_down``. When ``include_common=True``, also adds
+    ``common_up`` and ``common_down`` (strict intersection across all conditions,
+    or relaxed via ``min_sets``).
+
+    Parameters
+    ----------
+    membership : pd.DataFrame
+        Output of :func:`build_gene_membership` (0/1 gene x set).
+    include_common : bool
+        If True (default), append ``common_up`` / ``common_down``.
+    up_suffix, down_suffix : str
+        Must match the suffixes used in :func:`build_gene_membership`.
+    min_sets : int or None
+        Forwarded to :func:`common_genes` for the common_* lists only.
+        ``None`` = gene must appear in every condition (strict common).
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Ordered: each condition's up, each condition's down, then common_up /
+        common_down (if requested).
+
+    Examples
+    --------
+    >>> # two scATrans DE tables
+    >>> mem = build_gene_membership(
+    ...     {"fracture": de1, "osteomyelitis": de2}, direction="separate"
+    ... )
+    >>> gs = collect_gene_sets(mem)
+    >>> gs.keys()
+    dict_keys(['fracture_up', 'osteomyelitis_up', 'fracture_down',
+               'osteomyelitis_down', 'common_up', 'common_down'])
+
+    >>> # three tables — same API
+    >>> mem3 = build_gene_membership(
+    ...     {"D1": de_d1, "D7": de_d7, "D14": de_d14}, direction="separate"
+    ... )
+    >>> gs3 = collect_gene_sets(mem3)
+    """
+    if not isinstance(membership, pd.DataFrame):
+        raise ValueError("membership must be the DataFrame from build_gene_membership().")
+
+    cols = [str(c) for c in membership.columns]
+    up_cols = [c for c in cols if c.endswith(up_suffix)]
+    down_cols = [c for c in cols if c.endswith(down_suffix)]
+
+    def _list_for(col: str) -> list[str]:
+        if col not in membership.columns:
+            return []
+        return membership.index[membership[col].astype(bool)].astype(str).tolist()
+
+    def _clean(col: str, suffix: str) -> str:
+        base = col[: -len(suffix)] if col.endswith(suffix) else col
+        tag = "up" if suffix == up_suffix else "down"
+        return f"{base}_{tag}"
+
+    out: dict[str, list[str]] = {}
+    for c in up_cols:
+        out[_clean(c, up_suffix)] = _list_for(c)
+    for c in down_cols:
+        out[_clean(c, down_suffix)] = _list_for(c)
+
+    if include_common:
+        out["common_up"] = common_genes(
+            membership,
+            direction="up",
+            min_sets=min_sets,
+            up_suffix=up_suffix,
+            down_suffix=down_suffix,
+        )
+        out["common_down"] = common_genes(
+            membership,
+            direction="down",
+            min_sets=min_sets,
+            up_suffix=up_suffix,
+            down_suffix=down_suffix,
+        )
+    return out
+
+
 def gene_upsetplot(
     de_results: Mapping[str, Any] | None = None,
     *,
@@ -2346,16 +3204,23 @@ def gene_upsetplot(
     direction: str = "separate",
     pval_cutoff: float = 0.05,
     padj_cutoff: float | None = None,
+    p_type: str = "auto",
     logfc_cutoff: float = 0.0,
+    gene_col: str | None = None,
+    logfc_col: str | None = None,
+    padj_col: str | None = None,
+    pval_col: str | None = None,
+    already_filtered: bool = False,
+    normalize: bool = True,
     min_subset_size: int = 1,
     max_intersections: int = 20,
     sort_by: str = "size",
     title: str = "Gene Overlap (UpSet)",
-    set_color: str = "#4477AA",
-    intersection_color: str = "#44AA77",
-    dot_color: str = "#CC3311",
-    inactive_color: str = "#DDDDDD",
-    line_color: str = "#555555",
+    set_color: str = BLUE,
+    intersection_color: str = TEAL,
+    dot_color: str = RED,
+    inactive_color: str = "#E6E6E6",
+    line_color: str = "#666666",
     figsize: tuple[float, float] = (8.5, 4.8),
     dpi: int = _DEFAULT_DPI,
     fontsize: int = _DEFAULT_FONTSIZE,
@@ -2374,10 +3239,18 @@ def gene_upsetplot(
     ``name::up`` and ``name::down`` set, so common-up and common-down genes appear
     as their own intersection columns in one figure.
 
+    External DE tables (DESeq2 / Seurat / limma, etc.) are auto-normalized unless
+    ``normalize=False``. Pass ``gene_col`` / ``logfc_col`` / ``padj_col`` when
+    auto-detect fails.
+
     Parameters
     ----------
-    de_results, direction, pval_cutoff, padj_cutoff, logfc_cutoff
+    de_results, direction, pval_cutoff, padj_cutoff, p_type, logfc_cutoff
         Forwarded to :func:`build_gene_membership` when ``membership`` is None.
+        ``p_type`` selects adjusted (``"adj"``) vs nominal (``"nominal"``) p,
+        or ``"auto"`` (prefer ``p_adj``).
+    gene_col, logfc_col, padj_col, pval_col, already_filtered, normalize
+        Also forwarded to :func:`build_gene_membership` for external-table support.
     membership : pd.DataFrame or None
         Pre-built gene x set matrix; bypasses the internal build step.
     min_subset_size : int
@@ -2440,7 +3313,14 @@ def gene_upsetplot(
                 direction=direction,
                 pval_cutoff=pval_cutoff,
                 padj_cutoff=padj_cutoff,
+                p_type=p_type,
                 logfc_cutoff=logfc_cutoff,
+                gene_col=gene_col,
+                logfc_col=logfc_col,
+                padj_col=padj_col,
+                pval_col=pval_col,
+                already_filtered=already_filtered,
+                normalize=normalize,
             )
 
         if membership is None or membership.empty or membership.shape[1] == 0:
@@ -2493,8 +3373,8 @@ def gene_upsetplot(
             y_pos,
             [set_sizes[c] for c in sets_sorted],
             color=set_color,
-            edgecolor="black",
-            height=0.6,
+            edgecolor="none",
+            height=0.62,
         )
         ax_set.set_yticks(y_pos)
         ax_set.set_yticklabels(sets_sorted, fontsize=fontsize - 1)
@@ -2509,7 +3389,7 @@ def gene_upsetplot(
         inter_vals = [int(v) for v in inter_sizes.values]
         x = np.arange(len(inter_vals))
         bar_colors = [_color_at(intersection_color, i, len(inter_vals)) for i in x]
-        ax_inter.bar(x, inter_vals, color=bar_colors, edgecolor="black")
+        ax_inter.bar(x, inter_vals, color=bar_colors, edgecolor="none")
         ax_inter.set_ylabel("Intersection", fontsize=fontsize)
         ax_inter.set_xticks([])
         ax_inter.set_xlim(-0.5, len(inter_vals) - 0.5)
@@ -2533,7 +3413,7 @@ def gene_upsetplot(
                     [col_idx, col_idx],
                     [min(active), max(active)],
                     color=line_color,
-                    lw=1.5,
+                    lw=1.1,
                     zorder=1,
                 )
             active_c = _color_at(dot_color, col_idx, len(inter_sizes))
@@ -2545,8 +3425,8 @@ def gene_upsetplot(
                         s=140,
                         c=active_c,
                         zorder=2,
-                        edgecolors="black",
-                        linewidths=0.5,
+                        edgecolors="none",
+                        linewidths=0.0,
                     )
                 else:
                     ax_mat.scatter(
@@ -2682,7 +3562,7 @@ def enrich_vennplot(
             return fig, ax
 
         # Simple circle positions for 2-3-4 sets
-        default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+        default_colors = palette("nature", n=4)
         cols = colors or default_colors[:n]
 
         position_map: dict[int, list[tuple[float, float, float]]] = {
@@ -2856,8 +3736,8 @@ def gseaplot(
     title: str | None = None,
     figsize: tuple[float, float] = (6.5, 5.5),
     dpi: int = 300,
-    color: str = "#88C544",
-    cmap: str = "seismic",
+    color: str = TEAL,
+    cmap: str = _DEFAULT_CMAP_DIVERGING,
     ax: Any | None = None,
     show: bool = True,
     use_style: bool = False,
@@ -3065,12 +3945,14 @@ def gseaplot(
 
         # 1. RES curve
         x = np.arange(len(RES))
-        ax1.plot(x, RES, color=color, linewidth=1.5, label="Running ES")
-        ax1.axhline(0, color="black", linewidth=0.5, linestyle="--")
-        ax1.fill_between(x, RES, 0, alpha=0.2, color=color)
+        _register_scat_colormaps()
+        ax1.plot(x, RES, color=color, linewidth=1.35, label="Running ES")
+        ax1.axhline(0, color=INK, linewidth=0.5, linestyle="--", alpha=0.7)
+        ax1.fill_between(x, RES, 0, alpha=0.18, color=color)
         ax1.set_ylabel("Enrichment Score (ES)", fontsize=9)
         ax1.set_title(title or (used_term or "GSEA Plot"), fontsize=11, fontweight="bold")
         ax1.legend(loc="upper left", frameon=False, fontsize=8)
+        setup_ax(ax1, labelsize=9, ticksize=8, outward=None)
 
         # annotate
         if not np.isnan(nes):
@@ -3088,7 +3970,7 @@ def gseaplot(
         # 2. Hits ticks
         ax2.set_ylim(-0.5, 0.5)
         if hits:
-            ax2.vlines(hits, -0.3, 0.3, colors=color, linewidth=0.8)
+            ax2.vlines(hits, -0.3, 0.3, colors=color, linewidth=0.55, alpha=0.9)
         ax2.set_yticks([])
         ax2.set_ylabel("Hits", fontsize=8, rotation=0, ha="right", va="center")
         sns.despine(ax=ax2, top=True, right=True, left=True, bottom=True)
@@ -3099,19 +3981,17 @@ def gseaplot(
         norm = Normalize(vmin=min(rank_vals), vmax=max(rank_vals))
         colors = plt.get_cmap(cmap)(norm(rank_vals))
         ax3.bar(x, rank_vals, color=colors, width=1.0, edgecolor="none")
-        ax3.axhline(0, color="black", linewidth=0.5)
+        ax3.axhline(0, color=INK, linewidth=0.5, alpha=0.7)
         ax3.set_ylabel("Ranked\nmetric", fontsize=8)
         ax3.set_xlabel("Rank in Ordered Dataset", fontsize=9)
         ax3.set_xlim(-0.5, len(x) - 0.5)
 
         # labels for pos/neg
         len(x) // 2
-        ax3.text(0.02, 0.95, pheno_pos, transform=ax3.transAxes, fontsize=8, color="red")
-        ax3.text(
-            0.98, 0.05, pheno_neg, transform=ax3.transAxes, ha="right", fontsize=8, color="blue"
-        )
+        ax3.text(0.02, 0.95, pheno_pos, transform=ax3.transAxes, fontsize=8, color=RED)
+        ax3.text(0.98, 0.05, pheno_neg, transform=ax3.transAxes, ha="right", fontsize=8, color=BLUE)
 
-        sns.despine(ax=ax3, top=True, right=True)
+        setup_ax(ax3, labelsize=8, ticksize=7, outward=None)
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
         # return the main ax (RES) for consistency, or the fig and list
@@ -3160,19 +4040,20 @@ def _apply_ggvolcano_theme(ax, *, show_grid: bool = True) -> None:
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("black")
-        spine.set_linewidth(0.8)
+        spine.set_linewidth(0.55)
+    ax.tick_params(length=2.0, width=0.55, colors="black", direction="out")
     if show_grid:
-        ax.grid(True, linestyle="-", linewidth=0.6, color="#E5E5E5", alpha=0.85, zorder=0)
+        ax.grid(True, linestyle="-", linewidth=0.45, color="#EAEAEA", alpha=0.9, zorder=0)
     ax.set_axisbelow(True)
 
 
 def _volcano_ggvolcano_cutoff_lines(
-    ax, *, logfc_cutoff: float, pval_cutoff: float, color: str = "#333333"
+    ax, *, logfc_cutoff: float, pval_cutoff: float, color: str = "#555555"
 ) -> None:
     y_cut = float(_safe_neg_log10(pval_cutoff))
     for x in (-logfc_cutoff, logfc_cutoff):
-        ax.axvline(x, color=color, linestyle="--", linewidth=0.9, alpha=0.75, zorder=1)
-    ax.axhline(y_cut, color=color, linestyle="--", linewidth=0.9, alpha=0.75, zorder=1)
+        ax.axvline(x, color=color, linestyle="--", linewidth=0.7, alpha=0.75, zorder=1)
+    ax.axhline(y_cut, color=color, linestyle="--", linewidth=0.7, alpha=0.75, zorder=1)
 
 
 def _volcano_collect_labels(
@@ -3211,11 +4092,11 @@ def volcano_plot(
     max_size=160,
     s: float
     | None = None,  # fixed point size (overrides variable sizing by score or pval); direct control like in omicverse.pl
-    alpha: float = 0.75,
+    alpha: float = 0.72,
     figsize=_DEFAULT_FIGSIZE,
     dpi=_DEFAULT_DPI,
     fontsize=_DEFAULT_FONTSIZE,
-    cmap="coolwarm",
+    cmap=_DEFAULT_CMAP_DIVERGING,
     logfc_cutoff=0.5,
     pval_cutoff=0.05,
     color_by="unspliced_excess_residual",
@@ -3535,7 +4416,7 @@ def volcano_plot(
                 down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
                 color_values = np.where(up_mask, 2, np.where(down_mask, 1, 0))
                 cbar_label = None
-                colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]
+                colors_for_scatter = [GRAY, BLUE, RED]
         else:
             if color_by not in ("active_score", "unspliced_excess_residual", "velocity_residual"):
                 logger.warning(
@@ -3546,8 +4427,8 @@ def volcano_plot(
             down_mask = (plot_df["logFC"] < -logfc_cutoff) & (plot_df["p_adj"] < pval_cutoff)
             color_values = np.where(up_mask, 2, np.where(down_mask, 1, 0))  # 2=up, 1=down, 0=ns
             cbar_label = None
-            # Use explicit nice colors similar to common ggVolcano / EnhancedVolcano
-            colors_for_scatter = ["#808080", "#1f77b4", "#d62728"]  # ns, down, up
+            # Journal-inspired ns / down / up (cnsplots Ecotyper accents)
+            colors_for_scatter = [GRAY, BLUE, RED]  # ns, down, up
 
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
@@ -3582,14 +4463,14 @@ def volcano_plot(
                 len(plot_df),
             )
 
+        _register_scat_colormaps()
         scatter_kwargs = {
             "x": plot_df["logFC"],
             "y": plot_df["neg_log_pval"],
             "s": sizes,
             "alpha": alpha,
-            "edgecolors": "#444444",
-            "linewidth": 0.4,
             "zorder": 3,
+            **_scatter_edge_kwargs(),
         }
         if colors_for_scatter is not None:
             # Classic up/down/ns: provide explicit color list (do not pass c= together with color=)
@@ -3601,21 +4482,21 @@ def volcano_plot(
 
         ax.axhline(
             float(_safe_neg_log10(pval_cutoff)),
-            color="#d62728",
+            color=RED,
             linestyle="--",
-            linewidth=1.2,
-            alpha=0.85,
+            linewidth=0.8,
+            alpha=0.8,
             label=f"p_adj = {pval_cutoff}",
         )
         ax.axvline(
             logfc_cutoff,
-            color="#d62728",
+            color=RED,
             linestyle="--",
-            linewidth=1.2,
-            alpha=0.85,
+            linewidth=0.8,
+            alpha=0.8,
             label=f"logFC = {logfc_cutoff}",
         )
-        ax.axvline(-logfc_cutoff, color="#1f77b4", linestyle="--", linewidth=1.0, alpha=0.7)
+        ax.axvline(-logfc_cutoff, color=BLUE, linestyle="--", linewidth=0.75, alpha=0.7)
 
         # --- gene labeling: top_n + manual genes; respects label_by ---
         label_df = _volcano_collect_labels(
@@ -3635,8 +4516,8 @@ def volcano_plot(
                 str(idx),
                 fontsize=lbl_fs,
                 fontweight="normal",
-                color="#222222",
-                bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": "none", "alpha": 0.7},
+                color=INK,
+                bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": "none", "alpha": 0.75},
             )
             texts.append(txt)
 
@@ -3651,23 +4532,21 @@ def volcano_plot(
         ax.set_xlabel("Log2 Fold Change", fontsize=fontsize)
         ax.set_ylabel("-Log10(adj. P-value)", fontsize=fontsize)
         if title:
-            ax.set_title(title, fontsize=fontsize + 1, pad=10)
+            ax.set_title(title, fontsize=fontsize + 1, pad=8, fontweight="bold")
 
         if colors_for_scatter is None and cbar_label is not None:
             cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.02, aspect=20)
             cbar.set_label(
                 cbar_label,
-                fontsize=max(8, fontsize - 1),
+                fontsize=max(7, fontsize - 1),
                 rotation=270,
                 labelpad=12,
             )
-            cbar.outline.set_visible(False)
+            _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
         else:
-            ax.legend(loc="upper left", frameon=False, fontsize=fontsize - 1)
+            ax.legend(loc="upper left", frameon=False, fontsize=max(7, fontsize - 1))
 
-        sns.despine(ax=ax, top=True, right=True)
-        ax.spines["left"].set_position(("outward", 6))
-        ax.spines["bottom"].set_position(("outward", 6))
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
         # Note: constrained_layout=True at creation handles colorbar placement cleanly.
         # Avoid tight_layout after colorbar/legends.
@@ -3687,9 +4566,9 @@ def bias_diagnostic_plot(
     fontsize=_DEFAULT_FONTSIZE,
     show_regression=True,
     point_size=10,
-    raw_color="#1f77b4",
-    corrected_color="#2ca02c",
-    trend_color="#d62728",
+    raw_color=BLUE,
+    corrected_color=TEAL,
+    trend_color=RED,
     axes=None,
     show: bool = True,
     use_style: bool = False,
@@ -3759,7 +4638,7 @@ def bias_diagnostic_plot(
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
     y_raw = plot_df[delta_col]
-    ax1.scatter(x, y_raw, s=point_size, alpha=0.5, c=raw_color, edgecolors="none")
+    ax1.scatter(x, y_raw, s=point_size, alpha=0.45, c=raw_color, edgecolors="none", rasterized=True)
     if show_regression:
         from scipy.stats import linregress
 
@@ -3771,14 +4650,14 @@ def bias_diagnostic_plot(
                 slope * x_line + intercept,
                 "--",
                 color=trend_color,
-                lw=1.5,
+                lw=1.1,
                 label="Trend (raw)",
             )
         except Exception:
             pass
     ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
     ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize)
-    ax1.set_title("Before Bias Correction", fontsize=fontsize + 1)
+    ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
     # Clarify that the drawn trend is 1D length-only (actual fit uses length+intron)
     ax1.text(
         0.02,
@@ -3788,19 +4667,21 @@ def bias_diagnostic_plot(
         ha="left",
         va="bottom",
         fontsize=max(7, fontsize - 3),
-        color="#555555",
+        color=GRAY,
     )
-    ax1.legend(frameon=False)
-    sns.despine(ax=ax1)
+    ax1.legend(frameon=False, fontsize=max(7, fontsize - 2))
+    setup_ax(ax1, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
     # Right: After correction
     y_res = plot_df[residual_col]
-    ax2.scatter(x, y_res, s=point_size, alpha=0.5, c=corrected_color, edgecolors="none")
-    ax2.axhline(0, color=trend_color, linestyle="--", lw=1.2, alpha=0.8)
+    ax2.scatter(
+        x, y_res, s=point_size, alpha=0.45, c=corrected_color, edgecolors="none", rasterized=True
+    )
+    ax2.axhline(0, color=trend_color, linestyle="--", lw=0.9, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
     ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize)
-    ax2.set_title("After Bias Correction", fontsize=fontsize + 1)
-    sns.despine(ax=ax2)
+    ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+    setup_ax(ax2, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
     if title:
         fig.suptitle(title, fontsize=fontsize + 2, fontweight="bold", y=1.02)
@@ -3830,7 +4711,7 @@ def enrich_barplot(
     ax=None,
     show: bool = True,
     use_style: bool = False,
-    cmap: str = "viridis_r",
+    cmap: str = _DEFAULT_CMAP_SEQUENTIAL,
     **kwargs,
 ):
     """Horizontal barplot of top enrichment terms (true bars, not a dotplot alias).
@@ -3974,27 +4855,28 @@ def enrich_barplot(
         labels = [lab if len(lab) <= 60 else lab[:57] + "…" for lab in labels]
         widths = df["_bar_x"].to_numpy(dtype=float)
 
+        _register_scat_colormaps()
         if color_vals is not None and color_vals.notna().any():
             norm = plt.Normalize(
                 vmin=float(np.nanmin(color_vals)), vmax=float(np.nanmax(color_vals))
             )
             cmap_obj = plt.get_cmap(cmap)
             colors = cmap_obj(norm(color_vals.to_numpy(dtype=float)))
-            bars = ax.barh(y, widths, color=colors, edgecolor="none", height=0.75)
+            bars = ax.barh(y, widths, color=colors, edgecolor="white", linewidth=0.35, height=0.72)
             sm = plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm)
             sm.set_array([])
             cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
-            cbar.set_label(cbar_label, fontsize=fontsize - 1)
-            cbar.ax.tick_params(labelsize=fontsize - 2)
+            cbar.set_label(cbar_label, fontsize=max(7, fontsize - 1))
+            _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
         else:
-            bars = ax.barh(y, widths, color="#4C72B0", edgecolor="none", height=0.75)
+            bars = ax.barh(y, widths, color=BLUE, edgecolor="white", linewidth=0.35, height=0.72)
 
         ax.set_yticks(y)
-        ax.set_yticklabels(labels, fontsize=fontsize - 1)
+        ax.set_yticklabels(labels, fontsize=max(7, fontsize - 1))
         ax.set_xlabel(x_label, fontsize=fontsize)
-        ax.set_title(title, fontsize=fontsize + 1, fontweight="bold")
-        ax.tick_params(axis="x", labelsize=fontsize - 1)
-        sns.despine(ax=ax)
+        ax.set_title(title, fontsize=fontsize + 1, fontweight="bold", pad=8)
+        ax.tick_params(axis="x", labelsize=max(7, fontsize - 1))
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
         _ = bars  # used for drawing; silence unused in some linters
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
@@ -4020,7 +4902,7 @@ def active_score_rankplot(
 
     Improvements inspired by omicverse bulk/perturbation ranked visualizations:
     - Gradient coloring by active_score magnitude.
-    - Clean outward-offset spines.
+    - Clean despine + optional outward spines via setup_ax(outward=...).
     - Value annotations on bars.
     - Good `ax=` embedding support and constrained layout.
 
@@ -4064,15 +4946,15 @@ def active_score_rankplot(
         fig = ax.figure
         _created = False
 
-    # Gradient coloring by score (omicverse-style ranked emphasis)
+    # Gradient coloring by score (journal sequential map)
+    _register_scat_colormaps()
     vmin = float(plot_df["active_score"].min())
     vmax = float(plot_df["active_score"].max())
     if vmin == vmax:
         vmax = vmin + 1e-9  # avoid singular Normalize when all scores identical
     norm = Normalize(vmin=vmin, vmax=vmax)
-    # Prefer pyplot registry (avoids mypy/stub issues with matplotlib.cm.viridis)
-    _viridis = plt.get_cmap("viridis")
-    colors = [_viridis(float(v)) for v in norm(plot_df["active_score"].to_numpy(dtype=float))]
+    _cmap = plt.get_cmap(_DEFAULT_CMAP_SEQUENTIAL)
+    colors = [_cmap(float(v)) for v in norm(plot_df["active_score"].to_numpy(dtype=float))]
 
     bars = sns.barplot(
         data=plot_df,
@@ -4082,8 +4964,8 @@ def active_score_rankplot(
         palette=colors,
         hue=plot_df.index,
         legend=False,
-        edgecolor="#333333",
-        linewidth=0.5,
+        edgecolor="white",
+        linewidth=0.4,
     )
 
     # Add value labels on bars (clean, small). Use data range for offset (works for negative scores too).
@@ -4104,20 +4986,21 @@ def active_score_rankplot(
             f"{val:.2f}",
             va="center",
             ha=ha,
-            fontsize=8,
-            color="#222222",
+            fontsize=max(7, fontsize - 2),
+            color=INK,
         )
 
     ax.set_xlabel("Active Score", fontsize=fontsize)
     ax.tick_params(axis="y", labelsize=_gene_label_fontsize(label_fontsize, fontsize))
     ax.tick_params(axis="x", labelsize=max(7, fontsize - 1))
     ax.set_ylabel("")
-    ax.set_title(kwargs.get("title", "Top Active Drivers (rank)"), fontsize=fontsize + 1, pad=8)
-
-    # Outward spines (omicverse bulk style)
-    sns.despine(ax=ax, top=True, right=True)
-    ax.spines["left"].set_position(("outward", 8))
-    ax.spines["bottom"].set_position(("outward", 8))
+    ax.set_title(
+        kwargs.get("title", "Top Active Drivers (rank)"),
+        fontsize=fontsize + 1,
+        pad=8,
+        fontweight="bold",
+    )
+    setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
     _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
     return fig, ax
@@ -4178,10 +5061,12 @@ def active_genes_heatmap(
 
 
 def set_nature_style(**kwargs):
-    """Legacy alias for set_style() kept for backward compatibility.
+    """Apply Nature-inspired journal style (ggsci NPG palette + cnsplots rc).
 
-    Accepts the same kwargs as set_style (font sizes, dpi etc).
+    Backward-compatible alias that defaults ``palette_name="nature"``.
+    Accepts the same kwargs as :func:`set_style`.
     """
+    kwargs.setdefault("palette_name", "nature")
     return set_style(**kwargs)
 
 
@@ -4291,13 +5176,27 @@ def velocity_phase_portraits(
                     color = None
 
         if color is not None and np.asarray(color).size == len(s):
-            ax.scatter(s, u, c=color, cmap="tab20", s=8, alpha=0.6, edgecolors="none")
+            # qualitative cycle (Nature-like) instead of tab20 rainbow
+            n_cats = int(np.max(color)) + 1 if np.size(color) else 1
+            cat_colors = palette("nature", n=max(n_cats, 1))
+            from matplotlib.colors import ListedColormap
+
+            ax.scatter(
+                s,
+                u,
+                c=color,
+                cmap=ListedColormap(cat_colors),
+                s=7,
+                alpha=0.55,
+                edgecolors="none",
+                rasterized=True,
+            )
         else:
-            ax.scatter(s, u, c="#2ca02c", s=8, alpha=0.6, edgecolors="none")
+            ax.scatter(s, u, c=TEAL, s=7, alpha=0.55, edgecolors="none", rasterized=True)
         ax.set_xlabel("Spliced", fontsize=9)
         ax.set_ylabel("Unspliced", fontsize=9)
         ax.set_title(str(g), fontsize=10, fontweight="bold")
-        sns.despine(ax=ax)
+        setup_ax(ax, labelsize=9, ticksize=8)
 
     # Hide unused subplots
     for j in range(i + 1, len(axes)):
@@ -4316,14 +5215,14 @@ def velocity_phase_portraits(
                     len(groups),
                     groupby,
                 )
-            cmap = plt.get_cmap("tab20")
+            legend_colors = palette("nature", n=min(20, len(groups)))
             handles = [
                 Line2D(
                     [0],
                     [0],
                     marker="o",
                     color="w",
-                    markerfacecolor=cmap(i % 20),
+                    markerfacecolor=legend_colors[i % len(legend_colors)],
                     markersize=5,
                     linestyle="None",
                     label=str(g),
@@ -4454,6 +5353,11 @@ __all__ = [
     "set_style",
     "set_nature_style",
     "style_context",
+    "setup_ax",
+    "add_panel_label",
+    "palette",
+    "list_palettes",
+    "get_cmap",
     "figure_export_context",
     "save_all_figures",
     "comet_plot",
@@ -4467,12 +5371,24 @@ __all__ = [
     "gene_upsetplot",
     "build_gene_membership",
     "common_genes",
+    "collect_gene_sets",
+    "normalize_external_de",
     "enrich_vennplot",
     "gseaplot",
     "active_score_rankplot",
     "active_genes_heatmap",
     "velocity_phase_portraits",
     "gamma_shrinkage_plot",
+    # named accent colors (cnsplots-inspired)
+    "RED",
+    "BLUE",
+    "GREEN",
+    "PURPLE",
+    "ORANGE",
+    "YELLOW",
+    "GRAY",
+    "TEAL",
+    "INK",
     # column name constants used by callers / docs
     "UNSPLICED_EXCESS_DELTA_COL",
     "UNSPLICED_EXCESS_RESIDUAL_COL",

@@ -105,6 +105,7 @@ def filter_active_genes(
     active_score_cutoff: Any = _NOT_PROVIDED,
     pval_cutoff: Any = _NOT_PROVIDED,
     padj_cutoff: Any = _NOT_PROVIDED,
+    p_type: str = "auto",
     unspliced_excess_residual_cutoff: Any = _NOT_PROVIDED,
     logfc_cutoff: Any = _NOT_PROVIDED,
     logfc_direction: str = "up",
@@ -184,11 +185,23 @@ def filter_active_genes(
     active_score_cutoff : float
         Minimum composite active transcription score (0-100).
     pval_cutoff : float
-        Legacy name for the **adjusted** p-value cutoff (filters ``p_adj`` when present,
-        else nominal ``p_val``). Prefer ``padj_cutoff`` for clarity.
+        Significance cutoff applied to the column selected by ``p_type`` (default
+        ``"auto"``: prefer ``p_adj``, else ``p_val``). Prefer ``padj_cutoff`` when
+        you intend adjusted-p filtering.
     padj_cutoff : float
-        Preferred name for the adjusted p-value cutoff. When both ``padj_cutoff`` and
-        ``pval_cutoff`` are provided, ``padj_cutoff`` wins.
+        Preferred name for the significance cutoff. When both ``padj_cutoff`` and
+        ``pval_cutoff`` are provided, ``padj_cutoff`` wins. Which column is tested
+        is controlled by ``p_type`` (not by this parameter name alone).
+    p_type : {"auto", "adj", "nominal"}
+        Which p-value column to filter on:
+
+        - ``"auto"`` (default): use ``p_adj`` when present, otherwise ``p_val``
+          (historical behaviour).
+        - ``"adj"`` / ``"padj"`` / ``"p_adj"``: always filter on adjusted p
+          (``p_adj``). Raises if the column is missing.
+        - ``"nominal"`` / ``"pval"`` / ``"p_val"``: always filter on nominal p
+          (``p_val``). Raises if the column is missing. Use this for exploratory
+          signatures when FDR is uninformative (e.g. very small designs).
     unspliced_excess_residual_cutoff : float
         Magnitude threshold for bias-corrected unspliced (nascent) excess residual.
         Interpreted with ``logfc_direction``: ``up`` → residual > cutoff; ``down`` →
@@ -480,17 +493,49 @@ def filter_active_genes(
     mask = pd.Series(True, index=df.index)
 
     # Core filters
-    # Prefer adjusted p-value when present (consistent with active_score internal significant mask
-    # and common user expectation). Fall back to nominal p_val only if p_adj is absent.
+    # p_type selects which significance column is gated by pval_cutoff / padj_cutoff.
+    p_type_raw = str(p_type).lower().strip() if p_type is not None else "auto"
+    if p_type_raw in {"auto", "default", ""}:
+        p_mode = "auto"
+    elif p_type_raw in {"adj", "padj", "p_adj", "fdr", "adjusted", "qval"}:
+        p_mode = "adj"
+    elif p_type_raw in {"nominal", "pval", "p_val", "raw", "unadjusted", "p"}:
+        p_mode = "nominal"
+    else:
+        raise ValueError(
+            f"p_type must be 'auto', 'adj', or 'nominal' (aliases: padj/p_adj, "
+            f"pval/p_val), got {p_type!r}."
+        )
+
     if "active_score" in df.columns and not _de_only:
         active_vals = pd.to_numeric(df["active_score"], errors="coerce")
         mask &= active_vals.notna() & (active_vals >= active_score_cutoff)
-    if "p_adj" in df.columns:
-        padj_vals = pd.to_numeric(df["p_adj"], errors="coerce")
-        mask &= padj_vals.notna() & (padj_vals < pval_cutoff)
-    elif "p_val" in df.columns:
-        pval_vals = pd.to_numeric(df["p_val"], errors="coerce")
-        mask &= pval_vals.notna() & (pval_vals < pval_cutoff)
+
+    def _apply_p_gate(col: str) -> None:
+        nonlocal mask
+        vals = pd.to_numeric(df[col], errors="coerce")
+        mask &= vals.notna() & (vals < pval_cutoff)
+
+    if p_mode == "adj":
+        if "p_adj" not in df.columns:
+            raise ValueError(
+                "p_type='adj' requires a 'p_adj' column; table has "
+                f"{list(df.columns)}. Use p_type='nominal' or 'auto'."
+            )
+        _apply_p_gate("p_adj")
+    elif p_mode == "nominal":
+        if "p_val" not in df.columns:
+            raise ValueError(
+                "p_type='nominal' requires a 'p_val' column; table has "
+                f"{list(df.columns)}. Use p_type='adj' or 'auto'."
+            )
+        _apply_p_gate("p_val")
+    else:
+        # auto: prefer adjusted p when present (historical / FDR-first default)
+        if "p_adj" in df.columns:
+            _apply_p_gate("p_adj")
+        elif "p_val" in df.columns:
+            _apply_p_gate("p_val")
     residual_col = (
         UNSPLICED_EXCESS_RESIDUAL_COL
         if UNSPLICED_EXCESS_RESIDUAL_COL in df.columns
