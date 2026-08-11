@@ -32,6 +32,7 @@ Docs: [Read the Docs](https://scatrans.readthedocs.io/en/latest/).
 - Python 3.9+ (tested 3.9–3.12)
 - An AnnData object with a condition column in `.obs`
 - For mechanism analysis: `spliced`/`unspliced` (or `mature`/`nascent`) layers
+- Nothing yet? `scat.datasets.load_toy()` ships a synthetic example — see [First run](#first-run).
 
 ## Install
 
@@ -45,11 +46,17 @@ Optional extras (PyDESeq2, GSEA, scVelo, …):
 
 ## First run
 
+No data on hand yet? This runs standalone, with no download, against a
+bundled synthetic example — good for checking your install works before
+touching real data:
+
 ```python
 import scatrans as scat
 
+adata = scat.datasets.load_toy()  # synthetic, spliced/unspliced included
+
 result = scat.partition_de_by_mechanism(
-    adata,  # needs spliced/unspliced or mature/nascent layers
+    adata,
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
@@ -57,11 +64,19 @@ result = scat.partition_de_by_mechanism(
     de="builtin",
     # sample_col="sample",   # set this when you have biological replicates
     # gene_sets=my_pathways, # optional pathway / program table
+    # induction_matched=True,
 )
 print(result.regime)           # data-quality check on unspliced capture
 print(result.selected.head())  # DE genes + soft mechanism labels
 print(result.summary())
+# Absolute program placement (optional):
+# scat.program_mechanism_permutation_calibrated(adata, gene_sets, de=frozen_de, ...)
 ```
+
+Swap in your own AnnData once that works end to end. Don't have
+`spliced`/`unspliced` (or `mature`/`nascent`) layers yet? See
+[Preparing spliced/unspliced data](https://scatrans.readthedocs.io/en/latest/tutorials/t_prepare_spliced_unspliced.html)
+for velocyto / kb-python / STARsolo / alevin-fry commands.
 
 That is the recommended entry point. Next:
 
@@ -77,8 +92,14 @@ That is the recommended entry point. Next:
 
 ## Citation
 
-Cite the Zenodo DOI above (and the manuscript when available). For analyses
-tied to package version **0.10.8**, pin `scatrans==0.10.8`. See `CITATION.cff`.
+Please cite the preprint:
+
+> Li, Z., James, A. W. & Li, S. scATrans: annotating single-cell differential
+> expression as transcription- or stabilization-weighted using unspliced RNA.
+> *bioRxiv* (2026). doi:10.64898/2026.08.03.740741
+
+For the software itself, cite the Zenodo DOI above. For analyses tied to
+package version **0.10.9**, use `scatrans==0.10.9`. See `CITATION.cff`.
 
 ## License
 

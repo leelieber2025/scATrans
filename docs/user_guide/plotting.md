@@ -68,14 +68,27 @@ Dense tables without `s=` log a warning suggesting fixed small points.
 
 ## Plotting style
 
+Journal-inspired defaults (fine black spines, compact ticks, curated
+palettes). Spines are **flush** with the data box by default — no floating
+gap at the lower-left. Optional floating axes remain available via
+`setup_ax(..., outward=4)`.
+
 ```python
 import scatrans as scat
-scat.pl.set_style()                 # once early (opt-in)
+scat.pl.set_style(palette_name="nature")   # once early (opt-in)
 # or (to limit scope):
-with scat.pl.style_context(linewidth=0.8):
+with scat.pl.style_context(palette_name="nature", linewidth=0.5):
     scat.pl.comet_plot(...)         # inside block or pass use_style=True
 # Default for pl.* functions is use_style=False (prevents surprising rcParams changes in notebooks).
+
+# Optional: floating L-axes (outward offset in points)
+fig, ax = scat.pl.comet_plot(all_results, show=False)
+scat.pl.setup_ax(ax, outward=4)     # only if you want the gap
 ```
+
+Helpers: `palette` / `list_palettes`, `get_cmap` (`scat_BuRd`, `scat_YlGnBu`),
+`setup_ax`, `add_panel_label`. Continuous defaults use `scat_BuRd` /
+`scat_YlGnBu` on major plotters.
 
 All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in
 multi-panel figures), `save_path=`, `show=`, `use_style=`, `figsize=`, and
@@ -138,11 +151,14 @@ so multipanel layouts do not clip an exterior legend.
 
 - `scat.pl.gene_upsetplot(...)` — the **gene-level** UpSet: how genes overlap
   across several DE results or gene lists (companion to the term-level
-  `enrich_upsetplot`). Pure matplotlib, no external `upsetplot` dependency. The
-  workflow is three small pieces:
+  `enrich_upsetplot`). Pure matplotlib, no external `upsetplot` dependency.
+  Accepts **scATrans DE tables** and **external** exports (DESeq2 / Seurat /
+  limma / CSV); column aliases are auto-mapped via `normalize_external_de`.
+  Works for 2, 3, or N conditions. Workflow:
 
   ```python
   # 1) tidy multiple DE results into a gene x set membership matrix
+  #    (scATrans logFC/p_adj OR external log2FoldChange/padj/avg_log2FC — both OK)
   mem = scat.pl.build_gene_membership(
       {"wilcoxon": de_wilcox, "ttest": de_ttest, "pseudobulk": de_pb},
       direction="separate",          # each DE -> name::up and name::down
@@ -150,14 +166,16 @@ so multipanel layouts do not clip an exterior legend.
   )
   # 2) draw it (common-up and common-down show up as their own columns)
   scat.pl.gene_upsetplot(membership=mem, save_path="gene_upset.png")
-  # 3) pull the intersection genes back out for enrichment
-  up   = scat.pl.common_genes(mem, direction="up")      # up in *every* method
-  down = scat.pl.common_genes(mem, direction="down")
-  enr  = scat.run_enrichment(up, adata=adata)           # straight into ORA
+  # 3) per-condition lists + common_up / common_down (any number of conditions)
+  gene_sets = scat.pl.collect_gene_sets(mem)
+  up, down = gene_sets["common_up"], gene_sets["common_down"]
+  enr = scat.run_enrichment(up, adata=adata)
   ```
 
   `build_gene_membership` also accepts ready-made `{name: [gene, ...]}` lists
-  (no thresholds applied). `common_genes(..., min_sets=2)` relaxes the strict
+  (no thresholds applied). Pass `gene_col` / `logfc_col` / `padj_col` when
+  auto-detect fails; `already_filtered=True` for pre-thresholded DEG tables
+  without p-values. `common_genes(..., min_sets=2)` relaxes the strict
   intersection to a "recovered by at least *k* sets" signature, and `sets=[...]`
   intersects an explicit subset of columns. Every visual element is recolorable
   (`set_color`, `intersection_color`, `dot_color`, `inactive_color`,
@@ -181,8 +199,8 @@ so multipanel layouts do not clip an exterior legend.
   with `cmap=` (when `effective_gamma` is present) or `color=` (single-color
   fallback).
 
-- `scat.pl.set_style()` and `scat.pl.style_context()` — control global
-  publication-style settings (vector fonts, minimal ink, etc.).
+- `scat.pl.set_style()` and `scat.pl.style_context()` — default figure
+  style (vector fonts, minimal ink, etc.).
 
 - `scat.pl.set_nature_style()` (legacy alias for `set_style`).
 

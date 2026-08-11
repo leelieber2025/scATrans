@@ -16,6 +16,7 @@ def test_version_string():
 def test_submodules_exposed():
     assert hasattr(scat, "pl")
     assert hasattr(scat, "qc")
+    assert hasattr(scat, "datasets")
 
 
 def test_generate_gene_features_cli_entry_importable():
@@ -62,7 +63,7 @@ def test_concat_compare_results_callable():
 
 def test_public_callables_have_docstrings():
     """Exported callables (not modules) should document user-facing behavior."""
-    skip = {"pl", "qc", "__version__", "PipelineResult", "WORKFLOW_PRESETS"}
+    skip = {"pl", "qc", "datasets", "__version__", "PipelineResult", "WORKFLOW_PRESETS"}
     for name in scat.__all__:
         if name in skip:
             continue

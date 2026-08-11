@@ -1,36 +1,56 @@
 # FAQ / Troubleshooting
 
-Also see {doc}`domain_assumptions` and {doc}`statistical_guidance`.
+First analysis: {doc}`quickstart`. Reporting columns:
+{doc}`statistical_guidance`. Assumptions: {doc}`domain_assumptions`.
 
 ## What should I call?
 
 | Goal | Function |
 |------|----------|
 | Default analysis (DE + mechanism) | {func}`~scatrans.partition_de_by_mechanism` |
+| Absolute program placement | {func}`~scatrans.program_mechanism_permutation_calibrated` |
 | DE only, no nascent layers | {func}`~scatrans.differential_expression` — {doc}`user_guide/standalone_de` |
 | Lower-level residual + DE table | {func}`~scatrans.active_score_simple` |
 
-One idea to keep straight: **DE chooses the gene list; the residual labels
-mechanism on that list.** The residual does not drop DE hits and is not meant
-to replace DE for discovery.
+DE chooses the gene list. The residual labels mechanism on that list; it does
+not drop DE hits or replace DE for discovery.
 
 | Topic | Practical rule |
 |-------|----------------|
-| Gene list | DE only (`result.selected`, or `filter_active_genes(..., select_by="de")`) |
-| Mechanism | Soft labels on selected genes; prefer `gene_sets=` for program-level calls |
-| Detection | Optional `add_nascent_score=True` — never drives mechanism labels |
-| Enrichment | Run ORA on the DE list, not on `mechanism_class` splits |
+| Gene list | DE only (`result.selected`) |
+| Mechanism | Soft per-gene labels; prefer `gene_sets=` for program-level calls |
+| Absolute placement | `program_mechanism_permutation_calibrated` (observed − label-shuffle null) |
+| Detection | Optional `add_nascent_score=True` — does not set mechanism labels |
+| Enrichment | On the DE list, not on `mechanism_class` splits |
+| Replicates | Set `sample_col` when you have libraries or donors |
 
-Per-gene mechanism labels are modest; pathway pooling is usually more useful.
-Signal tracks intron capture quality — check {func}`~scatrans.qc.regime_diagnosis`
-when capture looks thin or 3′-biased.
+If capture looks thin or extreme, run
+{func}`~scatrans.qc.regime_diagnosis`.
+
+## Which program test should I use?
+
+| Question | Tool |
+|----------|------|
+| Is the program shifted vs genome-wide background? | `gene_sets=` / `program_mechanism` |
+| Still true after matching on induction (logFC)? | `induction_matched=True` / `program_mechanism_induction_matched` |
+| Absolute place on the axis (empirical zero)? | `program_mechanism_permutation_calibrated` |
+
+For absolute placement, report `calibrated` (and usually `null_mean`). Some
+gene sets keep a structural offset under shuffled labels; that is what
+calibration removes. Always pass a frozen `de=` table. See
+{doc}`user_guide/workflow` and {doc}`method`.
 
 ## Do I need spliced/unspliced layers?
 
 **For mechanism partition, yes** (`spliced`/`unspliced` or `mature`/`nascent`).
 **For ordinary DE, no** — use {func}`~scatrans.differential_expression` on a
 count matrix. Enrichment and plotting work the same either way. Tutorial:
-{doc}`tutorials/t_ec_standalone_de_enrichment`.
+{doc}`tutorials/t_gse96583_standalone_de_enrichment`.
+
+Don't have those layers yet? {doc}`tutorials/t_prepare_spliced_unspliced`
+covers generating them with velocyto / kb-python / STARsolo / alevin-fry (or
+renaming labeling-based `new`/`old` counts) and merging them into an
+existing AnnData.
 
 ## Can the residual replace DE?
 

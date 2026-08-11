@@ -26,6 +26,7 @@ from .adaptive import (
     labeling_anchor,
 )
 from .bias import add_abundance_normalized_residual
+from .calibration import program_mechanism_permutation_calibrated
 from .de import (
     differential_expression,
     ensure_raw_counts,
@@ -63,6 +64,7 @@ __all__ = [
     "threshold_sensitivity",
     "program_mechanism",
     "program_mechanism_induction_matched",
+    "program_mechanism_permutation_calibrated",
     "nascent_activity_score",
     "partition_de_by_mechanism",
     "PartitionResult",

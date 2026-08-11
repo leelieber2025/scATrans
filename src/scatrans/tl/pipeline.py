@@ -460,15 +460,14 @@ def run_default_pipeline(
     annotate_mechanism: bool = False,
 ) -> PipelineResult:
     """
-    End-to-end recommended workflow for first-time users.
+    Convenience pipeline: score → filter → optional enrichment.
 
     .. note::
-       The tool's **primary workflow is now**
-       :func:`~scatrans.tl.partition_de_by_mechanism` — DE selects the changed
-       genes, scATrans partitions them into transcription- vs stabilization-driven.
-       The composite ``select_by="composite"`` ranking here is **deprecated** (it
-       mixes the DE and proxy legs and does not out-discover DE); prefer
-       ``partition_de_by_mechanism`` or ``select_by="de", annotate_mechanism=True``.
+       Prefer :func:`~scatrans.tl.partition_de_by_mechanism` for the
+       DE → mechanism path. The composite ``select_by="composite"`` ranking
+       here is **deprecated** (it mixes the DE and proxy legs and does not
+       out-discover DE); use ``partition_de_by_mechanism`` or
+       ``select_by="de", annotate_mechanism=True``.
 
     Steps: active scoring → ``filter_active_genes`` → optional GO enrichment.
     Uses "Disease"/"Control" convenience defaults for target/reference.

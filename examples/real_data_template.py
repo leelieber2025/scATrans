@@ -7,7 +7,7 @@ NOTE: the recommended primary workflow is `scat.partition_de_by_mechanism(...)`
 stabilization-driven; see examples/partition_de_by_mechanism_example.py and the
 Quickstart). This template instead demonstrates the **lower-level** `active_score`
 scorer and its diagnostics in detail, for users who want the residual / gamma /
-bias internals. It is NOT runnable out of the box — adapt paths / column names.
+bias internals. It is not runnable without edits — adapt paths / column names.
 
 Steps covered:
   1. Load AnnData with spliced/unspliced layers (velocyto, kb_python velocity, …)

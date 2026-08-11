@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-"""Example: the DE→mechanism PRIMARY workflow (partition_de_by_mechanism).
+"""Example: the DE→mechanism primary workflow (partition_de_by_mechanism).
 
-scATrans does NOT compete with differential expression for gene discovery. The
-recommended entry runs a standard DE to SELECT the changed genes, then partitions
-those genes into transcription-driven vs stabilization-driven by the nascent
-unspliced-excess signal — decisively at the program level.
+scATrans does not replace differential expression for gene discovery. The
+recommended entry runs a standard DE to select the changed genes, then
+annotates those genes as transcription-driven vs stabilization-driven from
+the nascent unspliced-excess residual. Program-level tables are preferred
+over hard per-gene claims.
 
 Two demos:
   (A) synthetic known-truth  — induced-by-transcription vs induced-by-stabilization

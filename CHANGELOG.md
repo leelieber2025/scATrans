@@ -4,6 +4,85 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.10] - 2026-08-07
+
+### Added
+- `scatrans.datasets` (new public submodule, scanpy-style): `load_toy()`
+  returns a small synthetic AnnData with `spliced`/`unspliced` layers, real
+  gene symbols (sampled from the bundled feature tables — no
+  `add_gene_features` mapping-rate warning), and simulated
+  transcription-driven / stabilization-driven / housekeeping / down gene
+  categories in `adata.var["ground_truth_mechanism"]`.
+  On default parameters, `partition_de_by_mechanism` labels DE-selected
+  genes consistently with those simulated categories (no external download).
+  Exported as `scat.datasets`. Tests: `tests/test_datasets.py`.
+
+### Fixed
+- `pl.compare_dotplot`: cluster x-tick labels rotated based on a flat
+  character-count threshold (`>6` chars), which mis-fired for ordinary short
+  names once there were only 2-3 clusters — e.g. "Monocyte" vs "CD4T" rotated
+  and collided into unreadable text even though there was ample horizontal
+  room. Rotation now compares estimated label width against the width
+  actually available per column (from the resolved figure width and
+  fontsize), so few-cluster comparisons with normal-length names stay
+  horizontal while many/long labels still rotate. Existing rotation tests
+  (`tests/test_pl_extended.py::test_compare_dotplot_rotates_long_cluster_labels`,
+  `::test_compare_dotplot_short_labels_stay_horizontal`) still pass.
+
+### Documentation
+- New tutorial {doc}`tutorials/t_prepare_spliced_unspliced`:
+  generating `spliced`/`unspliced` layers with velocyto / STARsolo /
+  kb-python / alevin-fry (pinned versions and commands), merging into an
+  existing AnnData (with a live barcode-suffix-mismatch demo), and the
+  `regime_diagnosis` sanity check, including a before/after simulated
+  contamination example.
+- `README.md` / `docs/index.md` / `docs/quickstart.md`: the first-run code
+  samples were not actually runnable (`adata` was undefined). Now use
+  `scat.datasets.load_toy()` so they work end to end with no download.
+- `docs/index.md`: added a text flow diagram (DE selects -> mechanism
+  annotates -> program-level claims) above the API tables.
+- Standalone DE + enrichment tutorial
+  ({doc}`tutorials/t_gse96583_standalone_de_enrichment`, renamed from
+  `t_ec_standalone_de_enrichment`) rebuilt on a new tutorial dataset,
+  `kang_ifnb_tutorial_subset.h5ad` (Kang et al. 2018 IFN-β PBMC, 8 donors,
+  GSE96583), replacing the underpowered 3-vs-3 `EC.h5ad` design for this
+  tutorial: genome-wide DE is now well-powered (thousands of significant
+  genes), so the full enrichment toolkit runs on a real significant
+  candidate list instead of a nominal-*p* workaround. `simplify_enrichment`
+  gained a concrete before/after example (which term got folded into which
+  representative) and a paired dotplot visualization; `compare_enrichment`
+  now compares two real cell types (Monocyte vs. CD4 T) instead of an
+  up/down split within one cluster. Enrichment dotplots in this notebook use
+  `color_by="neg_log10_padj"` instead of the default `"p.adjust"`: with many
+  strongly significant terms, the default linear p-value color scale
+  clusters almost every point at the same pale end of the colormap.
+- `docs/references.md`: added the Kang/GSE96583 tutorial-dataset citation
+  and provenance entry.
+- `CITATION.cff`: added a `preferred-citation` entry for the bioRxiv
+  preprint (now public); `README.md` Citation section updated to point to it
+  instead of "manuscript when available".
+
+## [0.10.9] - 2026-07-25
+
+### Added
+- `program_mechanism_permutation_calibrated` (`tl/calibration.py`): program mean
+  `transcription_support` minus the same program's mean under shuffled condition
+  labels (absolute mechanism-axis placement). Requires frozen `de=`; returns
+  `calibrated`, `z`, and a Phipson–Smyth `(b+1)/(n+1)` p-value. Exported from
+  `scatrans` / `scatrans.tl`. Tests: `tests/test_calibration.py`.
+
+### Fixed
+- Label checks now use the same normalization as `active_score` (strip,
+  `"1.0"`↔`"1"`), so `target_group` matching no longer rejects valid contrasts.
+
+### Documentation
+- Docs aligned with manuscript package **0.10.9**: Methods
+  subsection *Permutation-calibrated program placement*, locked GSE226488
+  calibration numbers (ARE null ≈ −2.81), `null_sd` semantics, S4 return
+  fields, competitive vs induction-matched vs calibrated tools, pin
+  `scatrans==0.10.9` (method, workflow, FAQ, statistical guidance, API,
+  domain assumptions, README).
+
 ## [0.10.8] - 2026-07-22
 
 ### Added

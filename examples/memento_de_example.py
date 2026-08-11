@@ -1,17 +1,13 @@
 #!/usr/bin/env python
 """
-Example demonstrating Memento integration in scATrans.
+Example: using Memento as a DE backend in scATrans.
 
-Primary focus (main line):
-- Standard active transcription analysis with active_score on data that HAS spliced/unspliced layers.
-- How to choose between traditional DE (t-test / wilcoxon via de_method) and Memento inside the velocity workflow.
+Shows two setups:
+- Data with spliced/unspliced layers: `active_score` with `de_method` vs Memento
+- Counts only (no nascent layers): `differential_expression` with Memento
 
-Additional capability (shown at the end):
-- Using the package for pure differential expression when you have NO velocity data at all
-  (via the new differential_expression() entry point, which also supports Memento).
-
-This keeps the original scATrans active transcription story as the main narrative,
-while documenting the new Memento / general DE options as add-ons.
+For the recommended DE → mechanism path, see
+`examples/partition_de_by_mechanism_example.py`.
 
 Requires (for full demo):
   pip install "scatrans[memento]"   # pulls memento-de
@@ -28,12 +24,12 @@ print("=== scATrans + Memento Example ===")
 print(f"scATrans version: {scat.__version__}")
 
 # =============================================================================
-# PART 1: Main line — data WITH spliced/unspliced layers (recommended original workflow)
+# PART 1: Data WITH spliced/unspliced layers
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("PART 1: Original main workflow (data has velocity layers)")
-print("Focus: active_score + choosing DE backend (t-test vs Memento)")
+print("PART 1: active_score with velocity layers")
+print("Focus: choosing DE backend (t-test vs Memento)")
 print("=" * 70)
 
 np.random.seed(42)
@@ -115,14 +111,13 @@ meta = adata_m.uns.get("scatrans", {})
 print("Memento recorded in metadata:", meta.get("use_memento_de"), meta.get("memento_capture_rate"))
 
 # =============================================================================
-# PART 2: Additional capability — pure DE when you have NO velocity data
+# PART 2: Pure DE when you have NO velocity / nascent layers
 # =============================================================================
 
 print("\n" + "=" * 70)
-print("PART 2: Additional / non-primary use case")
-print("Data has NO spliced/unspliced layers at all.")
-print("Use differential_expression() + downstream enrichment/plotting.")
-print("This is supported but is not the original intended main workflow.")
+print("PART 2: differential_expression without nascent layers")
+print("Data has no spliced/unspliced layers.")
+print("Use differential_expression() + enrichment/plotting.")
 print("=" * 70)
 
 # Plain count AnnData (no velocity layers whatsoever)
@@ -196,5 +191,7 @@ if len(cands) > 0:
         print("Plot call note:", e)
 
 print("\n=== Example completed successfully ===")
-print("Remember: The primary, recommended usage remains active_score on velocity data.")
-print("differential_expression + Memento is a powerful additional capability for general DE work.")
+print("Recommended DE→mechanism entry: scat.partition_de_by_mechanism(...).")
+print(
+    "This script only shows Memento as one DE backend for active_score / differential_expression."
+)

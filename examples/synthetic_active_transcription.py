@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Synthetic example demonstrating the core scATrans workflow.
+Synthetic example for the lower-level active_score path and plotting.
 
-This script generates random velocity-like data, runs active_score,
-and produces publication-style plots (including use of ax= for multi-panel
-figures). It uses only synthetic data and requires no external h5ad files.
+Generates random velocity-like data, runs active_score, and draws a few
+plots (including ax= for multi-panel figures). No external h5ad files.
+
+For the recommended DE → mechanism API, see
+examples/partition_de_by_mechanism_example.py.
 
 Run:
     python examples/synthetic_active_transcription.py
@@ -16,7 +18,6 @@ import scanpy as sc
 
 import scatrans as scat
 
-# Use the improved professional style (inspired by OmicVerse etc.)
 scat.pl.set_style()
 
 print("Generating synthetic AnnData with spliced/unspliced layers...")

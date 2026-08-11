@@ -1,26 +1,59 @@
 # Quickstart
 
-## Before you start
+Install the package, run one analysis, and read the main outputs. Links at the
+end point to fuller tutorials and the user guide.
 
-| You have… | Use |
-|-----------|-----|
-| AnnData with `spliced`/`unspliced` (or `mature`/`nascent`) layers | {func}`~scatrans.partition_de_by_mechanism` — start here |
-| Counts only (no nascent layers) | {func}`~scatrans.differential_expression` — {doc}`user_guide/standalone_de` |
+## 1. Install
 
-Python 3.9+, `pip install scatrans`. For replicate-aware DE backends, also
-install `pip install "scatrans[pseudobulk]"`.
-
-## One function for most users
-
-{func}`~scatrans.partition_de_by_mechanism`:
-
-1. Runs DE and keeps changed genes  
-2. Annotates each selected gene (transcription- vs. stabilization-driven)  
-3. Checks nascent-layer quality (`result.regime`)  
-4. Optionally pools genes into programs if you pass `gene_sets=`  
+```bash
+pip install scatrans
+# recommended when you have biological replicates:
+pip install "scatrans[pseudobulk]"
+```
 
 ```python
 import scatrans as scat
+print(scat.__version__)
+```
+
+### What data do you need?
+
+| You have… | Start with |
+|-----------|------------|
+| AnnData with `spliced`/`unspliced` (or `mature`/`nascent`) | `partition_de_by_mechanism` below |
+| Counts only (no nascent layers) | `differential_expression` — see [DE only](#de-only-no-nascent-layers) |
+| Raw reads, no nascent layers yet | {doc}`tutorials/t_prepare_spliced_unspliced` — generate them with velocyto / kb-python / STARsolo / alevin-fry first |
+
+If you plan to use PyDESeq2, Memento, or a full-gene enrichment background,
+snapshot raw counts before HVG / normalize:
+
+```python
+scat.store_raw_counts(adata, layer="counts")
+```
+
+## 2. Pick the call
+
+| Situation | Call |
+|-----------|------|
+| Default: DE + mechanism | `scat.partition_de_by_mechanism(...)` |
+| Biological replicates | Set `sample_col="sample"` (or donor / library ID) |
+| Curated gene programs | `gene_sets={...}`; use `induction_matched=True` if induction varies a lot |
+| Absolute program placement | After partition: `program_mechanism_permutation_calibrated` |
+| Optional detection score | `add_nascent_score=True` (does not change mechanism labels) |
+| No velocity layers | `differential_expression` + enrichment |
+
+DE builds the gene list. The residual only annotates mechanism on that list.
+
+## 3. Run the default path
+
+No AnnData handy? `scat.datasets.load_toy()` returns a small synthetic
+object with `spliced`/`unspliced` layers already set — swap in your own
+once the calls below run end to end.
+
+```python
+import scatrans as scat
+
+adata = scat.datasets.load_toy()  # or your own AnnData
 
 result = scat.partition_de_by_mechanism(
     adata,
@@ -29,82 +62,86 @@ result = scat.partition_de_by_mechanism(
     reference_group="Control",
     organism="mouse",  # or "human"
     de="builtin",
-    sample_col="sample",  # set when biological replicates exist
+    sample_col="sample",  # when you have replicates
     # gene_sets=my_pathways,
+    # induction_matched=True,
 )
 ```
 
 ### What to look at
 
 ```python
-print(result.regime)
-# e.g. {"regime": "ok", "reliability": 0.9, "message": ...}
-
-print(result.selected.head())
-# DE genes with soft mechanism columns (transcription_support, mechanism_class, …)
-
+print(result.regime)            # capture OK? reliability in [0, 1]
+print(len(result.selected))     # how many DE genes
+print(result.selected.head())   # logFC, p_adj, mechanism columns
 print(result.summary())
-# short program-first overview when gene_sets= was supplied
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `result.selected` | Your gene list (DE membership) plus mechanism labels |
-| `result.gene_table` | Full gene table from the run |
-| `result.programs` | Program-level table if you passed `gene_sets=` |
 | `result.regime` | Whether unspliced capture looks usable |
-| `result.meta` | Diagnostics and run settings |
+| `result.selected` | DE gene list plus soft mechanism labels |
+| `result.gene_table` | All scored genes |
+| `result.programs` | Only if you passed `gene_sets=` (relative to background) |
+| `result.programs_induction_matched` | Only if `induction_matched=True` |
+| `result.meta` | Version, DE source, thresholds, diagnostics |
 
-Gene features (length / intron) are filled in when missing. With enough
-replicates, the builtin DE path prefers pseudobulk + PyDESeq2; otherwise it
-falls back to single-cell Wilcoxon. More options: {doc}`user_guide/index`.
+Per-gene `mechanism_class` is a soft hint. Prefer program-level tables when you
+make stronger claims.
 
-### Enrichment on the selected list
+### Enrichment and plots
 
-Enrich the **DE list**, not mechanism-class subsets:
+Enrich the DE list (`result.selected`), not genes split by `mechanism_class`:
 
 ```python
-genes = result.selected.index.tolist()
 enrich = scat.run_enrichment(
-    genes,
+    result.selected.index.tolist(),
     gene_sets="GO_Biological_Process",
     organism="mouse",
     adata=adata,
 )
 scat.pl.enrich_dotplot(enrich, top_n=15)
-# scat.pl.comet_plot(result.gene_table, top_n=12)
 # scat.pl.volcano_plot(result.gene_table, top_n=10)
+# scat.pl.comet_plot(result.gene_table, top_n=12)
 ```
 
-## Good habits (two minutes)
+### Absolute program placement (optional)
 
-**Store raw counts early** if you will use PyDESeq2, Memento, or full-gene
-enrichment backgrounds:
+If you need placement against an empirical zero, not only “vs background”:
 
 ```python
-scat.store_raw_counts(adata, layer="counts")  # before HVG / normalize / log1p
+de = result.gene_table[["logFC", "p_adj", "p_val"]]
+cal = scat.program_mechanism_permutation_calibrated(
+    adata,
+    gene_sets=my_pathways,
+    de=de,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    restrict_to_selected=True,
+    n_perm=200,
+)
+print(cal[["observed_mean", "null_mean", "calibrated", "p_perm"]])
 ```
 
-**Check capture quality** (also run automatically inside partition):
+More detail: {doc}`user_guide/workflow`.
 
-```python
-r = scat.qc.regime_diagnosis(adata)
-print(r["regime"], r["reliability"], r["message"])
-```
+## 4. What next
 
-**Prefer pathway calls** over hard single-gene mechanism claims when
-induction is strong or capture is modest. See {doc}`faq`.
+| Goal | Page |
+|------|------|
+| Human LPS–PBMC example | {doc}`tutorials/t_gse226488_partition_mechanism` |
+| Mouse example with real DE hits | {doc}`tutorials/t_ga_active_transcription` |
+| Underpowered design (empty DE list) | {doc}`tutorials/t_ec_active_transcription` |
+| DE + enrichment only | {doc}`tutorials/t_gse96583_standalone_de_enrichment` |
+| Full workflow options | {doc}`user_guide/index` |
+| Column meanings for reporting | {doc}`statistical_guidance` |
+| Errors and API choice | {doc}`faq` |
 
-## Worked examples
+---
 
-| Goal | Go to |
-|------|--------|
-| Full human LPS-PBMC story | {doc}`tutorials/t_gse226488_partition_mechanism` |
-| Mouse design with real DE hits | {doc}`tutorials/t_ga_active_transcription` |
-| Underpowered design (empty list by design) | {doc}`tutorials/t_ec_active_transcription` |
-| DE only, no nascent layers | {doc}`tutorials/t_ec_standalone_de_enrichment` |
-
-## DE without nascent layers
+## DE only (no nascent layers)
 
 ```python
 adata, de_results = scat.differential_expression(
@@ -116,37 +153,12 @@ adata, de_results = scat.differential_expression(
 candidates = scat.filter_active_genes(de_results, select_by="de")
 ```
 
-Same enrichment and plotting helpers apply. Details:
+Enrichment and plotting work the same way:
 {doc}`user_guide/standalone_de`.
 
-## Raw-count snapshots (optional but useful)
+## Lower-level residual table (optional)
 
-Call `store_raw_counts` after load/QC and **before** HVG or normalization:
-
-- writes current `.X` to `layers["counts"]`
-- with `sidecar=True` (default), keeps a full-gene snapshot under
-  `adata.uns['scatrans']['raw_snapshot']` that survives subsetting and h5ad I/O
-
-```python
-adata_raw = scat.restore_raw_counts(adata, inplace=False)
-adata_full = scat.restore_raw_counts(adata, full_genes=True)  # pre-HVG universe
-```
-
-Large objects:
-
-```python
-scat.store_raw_counts(adata, sidecar="ondisk", snapshot_path="raw_snapshot.h5ad")
-```
-
-```{note}
-`save_raw=True` is deprecated. Prefer the sidecar snapshot and
-`restore_raw_counts(..., full_genes=True)`.
-```
-
-## Lower-level scoring (optional)
-
-Most users never need this. If you want the residual + DE table without the
-partition wrapper:
+Most users can skip this. Residual + DE without the partition wrapper:
 
 ```python
 adata_res, significant, all_results = scat.active_score_simple(
@@ -156,10 +168,9 @@ adata_res, significant, all_results = scat.active_score_simple(
     reference_group="Control",
     sample_col="sample",
 )
-# Build a DE list yourself:
 candidates = scat.filter_active_genes(all_results, select_by="de")
 ```
 
-The second return value (`significant`) is a strict residual+DE conjunction
-and is often empty — that is expected. Prefer `select_by="de"` or the primary
-partition API. Details: {doc}`user_guide/workflow`, {doc}`faq`.
+The second return value (`significant`) is a strict residual-and-DE filter and
+is often empty. That is expected. Prefer `result.selected` from partition.
+See {doc}`user_guide/workflow`.

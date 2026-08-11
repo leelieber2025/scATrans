@@ -1,8 +1,12 @@
 # Core Workflow
 
+If you have nascent layers and want the default DE-to-mechanism path, stay
+here. No nascent layers? {doc}`standalone_de`. Brand new to the package?
+{doc}`../quickstart`.
+
 ## Start here: `partition_de_by_mechanism`
 
-For almost every analysis, call this once:
+For most mechanism analyses, call this once:
 
 ```python
 import scatrans as scat
@@ -13,7 +17,7 @@ res = scat.partition_de_by_mechanism(
     target_group="Disease",
     reference_group="Control",
     organism="mouse",
-    de="builtin",          # method name, kwargs, precomputed DE table, or callable
+    de="builtin",          # or method name / kwargs / DE DataFrame / callable
     sample_col="sample",   # set when you have biological replicates
     # gene_sets=my_pathways,
     # induction_matched=True,
@@ -32,13 +36,61 @@ What it does, in order:
 ```python
 res.regime                         # capture quality
 res.selected                       # DE genes + mechanism labels
-res.programs                       # if gene_sets=
+res.programs                       # if gene_sets=  (relative vs background)
 res.programs_induction_matched     # if induction_matched=True
 res.summary()
 ```
 
-Under the hood this composes `active_score` → DE filter → mechanism helpers.
-You do not need to call those pieces yourself unless you want a custom path.
+Internally this composes `active_score` → DE filter → mechanism helpers.
+You do not need those pieces unless you want a custom path.
+
+### Common options
+
+| Option | When to use it |
+|--------|----------------|
+| `sample_col=...` | Biological replicates or libraries (preferred when available) |
+| `de="builtin"` | Default DE inside the call |
+| `de="wilcoxon"` / kwargs / DataFrame | A specific DE backend or your own DE table |
+| `gene_sets={...}` | Program-level relative tests → `res.programs` |
+| `induction_matched=True` | Induction strength varies a lot across genes |
+| `add_nascent_score=True` | Extra detection columns only |
+| Absolute placement | Separate call below (not a partition argument) |
+
+### Absolute program placement (permutation-calibrated)
+
+Competitive / induction-matched tables are **relative**. For absolute placement
+on the mechanism axis (manuscript recommendation), subtract the same program’s
+expectation under shuffled condition labels:
+
+```python
+de = res.gene_table[["logFC", "p_adj", "p_val"]]  # freeze membership
+cal = scat.program_mechanism_permutation_calibrated(
+    adata,
+    gene_sets=my_programs,
+    de=de,                         # required — freezes membership
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    restrict_to_selected=True,     # same membership as res.programs figures
+    n_perm=200,                    # package default; floor p ≈ 1/201; raise for a finer grid
+    random_state=0,
+    # block_col="donor",           # optional: shuffle within batch/donor
+)
+print(cal[["observed_mean", "null_mean", "calibrated", "p_perm"]])
+```
+
+| Column | Meaning |
+|--------|---------|
+| `observed_mean` | Mean `transcription_support` for the program |
+| `null_mean` | Same genes under shuffled labels (often ≠ 0) |
+| `calibrated` | `observed − null` — absolute displacement (usual report) |
+| `p_perm` | Permutation p (never zero; floor ≈ 1/(n+1)) |
+| `null_sd` / `z` | Optional: offset stability / standardized offset |
+
+Negative `calibrated` → more stabilization-weighted; positive → more
+transcription-weighted. Pass the **same** DE table as the observed run so
+membership stays fixed. Details: {doc}`../method`.
 
 ### Optional detection columns
 

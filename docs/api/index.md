@@ -26,6 +26,16 @@ layers. Scope and deprecated composite discovery ranking: {doc}`../faq`.
 | `flag_induction_confound` | `True` | Forwarded; high-induction stabilization calls get `induction_confounded` + lower confidence. |
 | `suppress_hard_labels_when_unreliable` | `True` | At low regime reliability, hard gene classes → `ambiguous`. |
 
+**Program absolute placement** (separate call; not a partition kwarg;
+package 0.10.9):
+{func}`~scatrans.program_mechanism_permutation_calibrated` — requires frozen
+`de=`. Returns per program: `n_genes`, `observed_mean`, `null_mean`, `null_sd`,
+`calibrated` ($=$ observed − null), `p_perm` (Phipson–Smyth),
+`n_perm_effective`, and optional `z`. Usual absolute-placement report:
+`calibrated` (+ `null_mean`); `p_perm` / `z` as needed. Use after partition
+for an absolute mechanism-axis zero (see {doc}`../user_guide/workflow`,
+{doc}`../method`).
+
 In the table below "both" means `active_score` and `differential_expression` (the
 low-level scorers). The convenience entry points `partition_de_by_mechanism` /
 `active_score_simple` / `run_default_pipeline` instead default
@@ -68,6 +78,7 @@ inspects cell/sample counts and suggests a preset.
    annotate_mechanism_class
    program_mechanism
    program_mechanism_induction_matched
+   program_mechanism_permutation_calibrated
    nascent_activity_score
    threshold_sensitivity
    differential_expression
@@ -132,8 +143,9 @@ unspliced fraction). Add-ons fail soft when columns are missing; invalid
 | `add_abundance_normalized_residual` | `unspliced_excess_residual_abnorm` | Demote abundance / nuclear-retention artifacts (e.g. *MALAT1*) |
 | `nascent_activity_score` | `nascent_poisson_z`, `dlog_unspliced` / `dlog_spliced`, `de_reproducible` / `de_repro_frac` | Pseudobulk variance-stabilized nascent **detection** score + spliced-side DE-reproducibility flag; opt-in on partition via `add_nascent_score=True` (**not** the mechanism residual) |
 | `annotate_mechanism_class` | `transcription_support`, `mechanism_class`, `mechanism_confidence`, `induction_confounded` | Soft per-gene labels (**annotation only**); optional high-precision preset; suppresses hard labels at low reliability |
-| `program_mechanism` | program-level DataFrame | Competitive pooling of support vs background |
-| `program_mechanism_induction_matched` | program-level DataFrame | Induction-controlled program tests (preferred for claims when induction varies) |
+| `program_mechanism` | program-level DataFrame | Competitive pooling of support vs background (relative) |
+| `program_mechanism_induction_matched` | program-level DataFrame | Induction-controlled program tests (preferred when induction varies) |
+| `program_mechanism_permutation_calibrated` | `n_genes`, `observed_mean`, `null_mean`, `null_sd`, `calibrated`, `p_perm`, `n_perm_effective` (+ `z`) | Absolute program placement (observed − label-shuffle null; frozen `de=`; S4 index) |
 | `threshold_sensitivity` | padj×logFC grid table | Report DE-list robustness instead of defending one cutoff |
 
 See {doc}`../user_guide/advanced` and {doc}`../statistical_guidance`.
@@ -251,13 +263,15 @@ single contrast or when faceting with `facet_by_cluster=True`.
 
 `gene_upsetplot` is the **gene-level** UpSet (companion to the term-level
 `enrich_upsetplot`): it shows how genes overlap across several DE results or
-gene lists. Feed it either a `{name: de_df}` mapping (filtered internally) or a
-pre-built membership matrix from `build_gene_membership`; in the default
-`direction="separate"` mode each DE result contributes a `name::up` and
-`name::down` set, so common-up and common-down genes appear as their own
-intersection columns. `common_genes(membership, direction="up"|"down")` pulls
-those intersection genes back out as a list ready for `run_enrichment`. Colors
-are fully customizable (`set_color`, `intersection_color`, `dot_color`,
+gene lists (scATrans or external DESeq2/Seurat/CSV tables; aliases via
+`normalize_external_de`). Feed it either a `{name: de_df}` mapping (filtered
+internally) or a pre-built membership matrix from `build_gene_membership`; in
+the default `direction="separate"` mode each DE result contributes a
+`name::up` and `name::down` set, so common-up and common-down genes appear as
+their own intersection columns. `common_genes(membership, direction="up"|"down")`
+or `collect_gene_sets(membership)` (per-condition lists + `common_up` /
+`common_down` for any number of conditions) pull those genes out for enrichment.
+Colors are fully customizable (`set_color`, `intersection_color`, `dot_color`,
 `inactive_color`, `line_color`; the intersection/dot colors also accept a
 per-column list to highlight specific intersections). The same color parameters
 were added to `enrich_upsetplot`; `bias_diagnostic_plot`
@@ -280,6 +294,8 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.gene_upsetplot
    pl.build_gene_membership
    pl.common_genes
+   pl.collect_gene_sets
+   pl.normalize_external_de
    pl.enrich_vennplot
    pl.gseaplot
    pl.active_score_rankplot

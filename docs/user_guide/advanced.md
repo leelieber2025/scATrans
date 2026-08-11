@@ -16,7 +16,17 @@ and suggests a filter preset. It runs automatically when `sample_col` or
 `use_pseudobulk=True` is set. Read the diagnostics block after changing any
 advanced option.
 
-## `use_permutation=True`
+## Two different permutations (do not confuse them)
+
+| API | Level | Purpose |
+|-----|-------|---------|
+| `active_score(use_permutation=True)` | **Gene** residual | Optional `unspliced_excess_fdr` under label shuffle |
+| {func}`~scatrans.program_mechanism_permutation_calibrated` | **Program** mean support | Absolute placement (`calibrated = observed − null`) |
+
+Primary mechanism partition does **not** need gene-wise residual permutation.
+Program absolute placement is documented under {doc}`workflow`.
+
+## `use_permutation=True` (gene-wise residual FDR)
 
 **Required for the built-in `significant` list** on the lower-level
 `active_score` path (via `unspliced_excess_fdr`). The primary
@@ -275,7 +285,7 @@ all_results, mdiag = scat.annotate_mechanism_class(
 # result = scat.run_default_pipeline(..., select_by="de", annotate_mechanism=True)
 # result.meta["regime"], result.meta["mechanism"]
 
-# Program-level (competitive Mann–Whitney on support vs background)
+# Program-level (competitive Mann–Whitney on support vs background) — relative
 prog = scat.program_mechanism(all_results, gene_sets={"IEG": ieg_list, "inflam": inflam_list})
 
 # Induction-controlled program tests (preferred when induction strength varies)
@@ -285,13 +295,20 @@ prog_im = scat.program_mechanism_induction_matched(
 )
 # Or: partition_de_by_mechanism(..., gene_sets=..., induction_matched=True)
 
+# Absolute placement (observed mean − same gene set under label shuffles)
+# cal = scat.program_mechanism_permutation_calibrated(
+#     adata, gene_sets, de=frozen_de, n_perm=200, restrict_to_selected=True,
+# )
+# Full example: {doc}`workflow`
+
 # Threshold robustness of a DE-selected list
 sens = scat.threshold_sensitivity(all_results)  # padj × logFC grid + Jaccard vs reference
 ```
 
 Per-gene labels are exploratory. Prefer `program_mechanism` and, when
-induction varies, `program_mechanism_induction_matched` for
-program-level transcription-versus-stabilization calls. Report
+induction varies, `program_mechanism_induction_matched` for relative
+program-level calls; use `program_mechanism_permutation_calibrated` for
+absolute placement (manuscript recommendation). Report
 `threshold_sensitivity` rather than relying on a single DE cutoff.
 Do not run ORA on genes split by `mechanism_class`.
 

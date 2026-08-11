@@ -75,25 +75,51 @@ scRNA-seq of human PBMCs under resting and stimulated conditions:
   (BioProject [PRJNA940428](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA940428)).
   Tutorial contrast: resting (e.g. GSM7077865) vs LPS 4 h (e.g. GSM7077866),
   10x Genomics 3′ v3.1.
-- Tutorial object: `GSE226488_PBMC_tutorial_subset.h5ad` at the repository
-  root (not shipped in the PyPI sdist). Build it by quantifying spliced and
-  unspliced counts (for example STARsolo with Velocyto-style output, or an
-  equivalent pipeline), assembling an AnnData with those layers, then
-  downsampling to a few thousand cells while keeping both conditions. Exact
-  steps depend on your aligner setup; the notebook **Reproduce** section
-  outlines the stages without assuming a fixed local path.
+- Tutorial object: place `GSE226488_PBMC_tutorial_subset.h5ad` (~4.4k cells)
+  at the repository root. Not on PyPI. Rebuild if needed by quantifying
+  spliced/unspliced, assembling AnnData with those layers and
+  `obs["condition"]` ∈ {`resting`, `LPS`}, then downsampling.
+
+### Kang IFN-β PBMC (`kang_ifnb_tutorial_subset.h5ad` — IFN-β vs. control, 8 donors)
+
+The standalone DE + enrichment tutorial ({doc}`tutorials/t_gse96583_standalone_de_enrichment`)
+uses a **downsampled** human PBMC object (3,840 cells; CD14+ Monocytes and
+CD4 T cells only, `.X` counts only — no velocity layers touched even though
+the source object has them) built from a widely reused multi-donor
+droplet scRNA-seq benchmark:
+
+> Kang, H.M., Subramaniam, M., Targ, S., et al. (2018).
+> **Multiplexed droplet single-cell RNA-sequencing using natural genetic
+> variation.**
+> *Nature Biotechnology* 36, 89–94.
+> DOI: [10.1038/nbt.4042](https://doi.org/10.1038/nbt.4042)
+
+- Raw data: GEO accession
+  [GSE96583](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE96583).
+  Eight genetically distinct donors, PBMCs resting vs. 6h IFN-β stimulation,
+  demultiplexed by natural genetic variation (`demuxlet`).
+- Tutorial object: place `kang_ifnb_tutorial_subset.h5ad` (~32 MB) at the
+  repository root. Not on PyPI. Built by restricting the public GEO object to
+  CD14+ Monocytes and CD4 T cells, dropping velocity layers, capping at 120
+  cells per (cell type, donor, condition) for a balanced, fast-to-run
+  subset, and `sc.pp.filter_genes(min_cells=10)`.
+- Chosen deliberately over the small 3-vs-3 `EC.h5ad` design for this
+  tutorial: with 8 donors per condition, genome-wide DE is well-powered
+  (thousands of genes at `p_adj<0.05` in Monocytes), so the enrichment demos
+  run on a real significant candidate list rather than a nominal-*p*
+  workaround. `EC.h5ad` remains the intentional low-power teaching example
+  in {doc}`tutorials/t_ec_active_transcription`.
 
 ### How tutorial data is distributed
 
 | Object | In git / PyPI? | Typical size |
 |--------|----------------|--------------|
 | Pre-rendered notebook HTML | Yes (docs build) | small |
-| `EC.h5ad`, `GA_test.h5ad`, GSE subset | Often **local only** (too large for default packaging) | tens–hundreds of MB |
+| `EC.h5ad`, `GA_test.h5ad`, `kang_ifnb_tutorial_subset.h5ad`, GSE226488 subset | Often **local only** (too large for default packaging) | tens–hundreds of MB |
 
 If you only need figures and tables, use the online tutorials. To re-run
-notebooks, place each `.h5ad` where the notebook loads it (paths are relative
-to `docs/tutorials/`, usually `../../<file>.h5ad`). See
-{doc}`tutorials/index` for which notebook uses which file.
+notebooks, put each `.h5ad` at the repository root (see
+{doc}`tutorials/index`).
 
 ---
 

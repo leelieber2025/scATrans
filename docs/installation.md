@@ -47,7 +47,14 @@ import scatrans as scat
 print(scat.__version__)
 ```
 
-Next: {doc}`quickstart`.
+## After install
+
+| Step | Page |
+|------|------|
+| First analysis | {doc}`quickstart` |
+| Which function / backend? | {doc}`faq` |
+| Real-data notebooks | {doc}`tutorials/index` |
+| Full workflow knobs | {doc}`user_guide/index` |
 
 ## Development install
 
