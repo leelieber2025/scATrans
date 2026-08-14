@@ -176,6 +176,10 @@ adata_res, significant, all_results = scat.active_score(
 - `pydeseq2` needs raw counts (`store_raw_counts`) and
   `pip install "scatrans[pseudobulk]"`.
 - `pseudobulk_de_backend="scanpy"` uses scanpy methods on aggregated profiles.
+- Aggregation is **internal**. The returned `adata_res` stays cell-level
+  (same `obs` columns, embeddings, and layers). Sample-level summary is in
+  `adata_res.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies
+  to `differential_expression` and the `*_simple` / pipeline wrappers.
 
 Change the scanpy test (cell-level or scanpy-on-pseudobulk):
 

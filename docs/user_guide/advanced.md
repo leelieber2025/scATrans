@@ -406,8 +406,10 @@ samples per group** and **≥6 total random-effect groups**; otherwise
 `active_score(..., use_mixed_model=True)` raises `ValueError`. With fewer
 replicates, use **`use_pseudobulk=True`** + `pseudobulk_de_backend="pydeseq2"`
 instead (and prefer `filter_active_genes(preset="pseudobulk")` or DE
-`p_adj` for significance). `recommend_workflow()` and `diagnose_design()`
-surface this automatically when `sample_col` is provided.
+`p_adj` for significance). Aggregation is internal — the returned AnnData
+stays cell-level; see `uns["scatrans"]["pseudobulk_obs"]`.
+`recommend_workflow()` and `diagnose_design()` surface this automatically
+when `sample_col` is provided.
 
 **Paired replicate designs:** When the same `sample_col` IDs appear in both
 conditions (e.g. `rep1`/`rep2` reused as labels in Disease and Control), the

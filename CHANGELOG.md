@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.12] - 2026-08-14
+
+### Fixed
+- **Pseudobulk no longer replaces the user's cell-level AnnData.**
+  `differential_expression` / `active_score` (and therefore
+  `*_simple`, `run_default_pipeline`, `partition_de_by_mechanism`) with
+  `use_pseudobulk=True` used to return the intermediate sample-level
+  object whose `obs` had only
+  `[sample_col, groupby, n_cells, total_counts, pb_x_source]`. Following
+  the documented `adata, res = scat.differential_expression(adata, ...)`
+  pattern wiped cell metadata, embeddings, graphs, and
+  `store_raw_counts` snapshots. Aggregation is now internal; the
+  returned object stays cell-level. Only the result table is written to
+  `.var` (same columns as the non-pseudobulk path). The sample-level
+  object is not pasted back. Sample-level summary is in
+  `adata.uns["scatrans"]["pseudobulk_obs"]`.
+- `_pseudobulk_with_layers` now copies extra `obs` columns that are
+  constant within each (sample, group) key (batch, sex, …) onto the
+  internal sample-level object. Cell-level columns that vary within a
+  key are omitted rather than silently reduced.
+- `_merge_scatrans_uns` keeps `raw_snapshot` and
+  `store_raw_counts_n_genes` across a DE / scoring run so a subsequent
+  `restore_raw_counts` still works.
+
+### Documentation
+- FAQ, workflow, API table, quickstart, standalone DE, and the GSE96583
+  tutorial now state that `use_pseudobulk=True` does not replace the
+  returned AnnData with the sample-level working object.
+
 ## [0.10.11] - 2026-08-12
 
 ### Fixed

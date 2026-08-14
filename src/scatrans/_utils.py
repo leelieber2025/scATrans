@@ -198,7 +198,13 @@ def _merge_scatrans_uns(
     existing: dict[str, Any],
     meta: dict[str, Any],
     *,
-    sticky_keys: tuple[str, ...] = ("raw_gene_list", "raw_gene_list_full", "history"),
+    sticky_keys: tuple[str, ...] = (
+        "raw_gene_list",
+        "raw_gene_list_full",
+        "raw_snapshot",
+        "store_raw_counts_n_genes",
+        "history",
+    ),
 ) -> dict[str, Any]:
     """Merge run metadata into ``adata.uns['scatrans']`` without sticky stale fields.
 
@@ -328,6 +334,8 @@ __all__ = [
     "_lambda_pval_for_active_score",
     "_composite_active_score_terms",
     "_pseudobulk_with_layers",
+    "_attach_gene_results",
+    "_obs_columns_constant_within_groups",
     "_fit_huber_bias_correction",
     "_resolve_aligned_raw_counts",
     "_get_raw_snapshot",
@@ -1125,6 +1133,33 @@ def _composite_active_score_terms(
     return s1, s2, s3
 
 
+_PB_COMPUTED_OBS = ("n_cells", "total_counts", "pb_x_source")
+
+
+def _obs_columns_constant_within_groups(
+    obs: pd.DataFrame,
+    group_key: pd.Series,
+    extra_cols: Iterable[str],
+) -> list[str]:
+    """Return extra obs columns that take a single non-NA value within each group.
+
+    Cell-level columns (n_genes, leiden, …) vary within a sample and are omitted.
+    Sample-level covariates (batch, sex, …) are constant per key and are kept.
+    """
+    keep: list[str] = []
+    key = pd.Series(group_key, index=obs.index)
+    for col in extra_cols:
+        if col not in obs.columns:
+            continue
+        try:
+            nunq = obs[col].groupby(key, sort=False, observed=True).nunique(dropna=True)
+        except (TypeError, ValueError):
+            continue
+        if len(nunq) > 0 and bool((nunq <= 1).all()):
+            keep.append(col)
+    return keep
+
+
 def _pseudobulk_with_layers(
     adata: ad.AnnData,
     sample_col: str,
@@ -1140,6 +1175,10 @@ def _pseudobulk_with_layers(
     layers: which .layers to aggregate and carry through (e.g. velocity layers).
             Default empty so pure-DE callers do not accidentally require spliced/unspliced.
     use_total_for_x=True requires spliced+unspliced to exist (independent of layers list).
+
+    Extra ``obs`` columns that are constant within each (sample, group) key
+    (batch, sex, …) are copied onto the sample-level object. Cell-level
+    columns that vary within a key are omitted rather than silently reduced.
     """
     if sample_col not in adata.obs.columns:
         raise ValueError(f"sample_col='{sample_col}' not found.")
@@ -1204,6 +1243,10 @@ def _pseudobulk_with_layers(
     pb_key = sample_labels + _pb_sep + group_labels
     unique_keys = pd.Index(pb_key.unique())
 
+    reserved_obs = {sample_col, groupby, *_PB_COMPUTED_OBS}
+    extra_cols = [c for c in adata.obs.columns if c not in reserved_obs]
+    sample_level_cols = _obs_columns_constant_within_groups(adata.obs, pb_key, extra_cols)
+
     X_rows, obs_rows = [], []
     layer_rows: dict[str, list] = {layer: [] for layer in layers}
 
@@ -1222,15 +1265,19 @@ def _pseudobulk_with_layers(
 
         sample_id, group_value = str(key).split(_pb_sep, 1)
         X_rows.append(sparse.csr_matrix(x_sum.reshape(1, -1)))
-        obs_rows.append(
-            {
-                sample_col: sample_id,
-                groupby: group_value,
-                "n_cells": n_cells,
-                "total_counts": float(x_sum.sum()),
-                "pb_x_source": x_source_name,
-            }
-        )
+        obs_row: dict[str, Any] = {
+            sample_col: sample_id,
+            groupby: group_value,
+            "n_cells": n_cells,
+            "total_counts": float(x_sum.sum()),
+            "pb_x_source": x_source_name,
+        }
+        if sample_level_cols:
+            sub = adata.obs.iloc[np.flatnonzero(mask)]
+            for col in sample_level_cols:
+                s = sub[col].dropna()
+                obs_row[col] = s.iloc[0] if len(s) else np.nan
+        obs_rows.append(obs_row)
         for layer in layers:
             l_sum = np.nan_to_num(_matrix_row_subset_sum_axis0(adata.layers[layer], mask))
             # Velocity layers (spliced/unspliced) can stay as summed float; only round for cleanliness
@@ -1267,6 +1314,25 @@ def _pseudobulk_with_layers(
             # Convenience alias used by PyDESeq2 counts= / layers['counts'] paths.
             adata_pb.uns["pb_counts_is_count_like"] = bool(layer_is_count_like["counts"])
     return adata_pb
+
+
+_PB_UNS_KEYS = (
+    "pb_x_is_count_like",
+    "pb_x_source_desc",
+    "pb_layer_is_count_like",
+    "pb_counts_is_count_like",
+)
+
+
+def _attach_gene_results(adata: ad.AnnData, results: pd.DataFrame) -> None:
+    """Write only the analysis table onto ``adata.var`` (aligned by gene name).
+
+    Does not copy a sample-level AnnData's X / layers / obs. Extra columns that
+    exist only on an intermediate object are left behind.
+    """
+    aligned = results.reindex(adata.var_names)
+    for col in aligned.columns:
+        adata.var[col] = aligned[col].to_numpy()
 
 
 def _is_bias_correction_enabled(val: Any) -> bool:

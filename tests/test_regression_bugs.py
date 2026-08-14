@@ -308,6 +308,181 @@ def test_strict_pydeseq2_counts_rejects_log_normalized_pseudobulk():
         )
 
 
+def _pb_obs_adata(*, extra_cell_cols: bool = True):
+    """Cell-level counts AnnData with sample-level and cell-level obs extras."""
+    rng = np.random.default_rng(21)
+    n_cells, n_genes = 48, 20
+    X = rng.negative_binomial(5, 0.35, size=(n_cells, n_genes)).astype(float)
+    adata = ad.AnnData(X)
+    # Matches the reported user pattern: groupby=treatment, sample_col=individual
+    adata.obs["sample"] = ["RTX"] * 24 + ["VEH"] * 24
+    adata.obs["individual"] = ["I0"] * 12 + ["I1"] * 12 + ["I2"] * 12 + ["I3"] * 12
+    # Sample-level covariates (constant within individual × treatment)
+    adata.obs["batch"] = ["b1"] * 12 + ["b2"] * 12 + ["b1"] * 12 + ["b2"] * 12
+    adata.obs["sex"] = ["F"] * 24 + ["M"] * 24
+    if extra_cell_cols:
+        # Cell-level columns that vary within a sample — must stay on the
+        # returned cell-level object, but must not be silently reduced on PB.
+        adata.obs["n_genes"] = rng.integers(200, 800, size=n_cells)
+        adata.obs["leiden"] = [f"c{i % 5}" for i in range(n_cells)]
+    adata.layers["spliced"] = X.copy()
+    adata.layers["unspliced"] = (X * 0.4).round()
+    adata.obsm["X_umap"] = rng.normal(size=(n_cells, 2))
+    return adata
+
+
+def test_pseudobulk_with_layers_keeps_constant_obs_drops_varying():
+    """Sample-level covariates survive aggregation; cell-level columns do not."""
+    adata = _pb_obs_adata()
+    pb = _pseudobulk_with_layers(
+        adata, sample_col="individual", groupby="sample", min_cells=1, min_counts=1
+    )
+    assert "batch" in pb.obs.columns
+    assert "sex" in pb.obs.columns
+    assert "n_genes" not in pb.obs.columns
+    assert "leiden" not in pb.obs.columns
+    assert set(pb.obs["batch"].astype(str)) <= {"b1", "b2"}
+    assert set(pb.obs["sex"].astype(str)) <= {"F", "M"}
+
+
+def test_differential_expression_pseudobulk_preserves_cell_level_obs():
+    """Regression: use_pseudobulk must not wipe extra obs columns on the return.
+
+    Documented usage is ``adata, res = scat.differential_expression(adata, ...)``.
+    Returning the sample-level working object dropped every obs column except
+    sample/groupby/n_cells/total_counts/pb_x_source.
+    """
+    adata = _pb_obs_adata()
+    caller_cols = list(adata.obs.columns)
+    caller_n = adata.n_obs
+    umap_before = adata.obsm["X_umap"].copy()
+
+    out, res = scat.differential_expression(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        min_cells=1,
+        min_counts=1,
+    )
+
+    # Caller object is isolated (copy_input=True).
+    assert list(adata.obs.columns) == caller_cols
+    assert adata.n_obs == caller_n
+    assert np.allclose(adata.obsm["X_umap"], umap_before)
+
+    # Returned object is still cell-level with every original obs column.
+    assert out.n_obs == caller_n
+    for col in caller_cols:
+        assert col in out.obs.columns, col
+    assert "X_umap" in out.obsm
+    assert "logFC" in out.var.columns
+    assert "logFC" in res.columns
+    assert "pb_x_source" not in out.obs.columns
+
+    pb_obs = out.uns["scatrans"]["pseudobulk_obs"]
+    assert len(pb_obs) < caller_n
+    assert "pb_x_source" in pb_obs.columns
+    assert "batch" in pb_obs.columns
+    assert "sex" in pb_obs.columns
+    assert out.uns["scatrans"]["use_pseudobulk"] is True
+    assert out.uns["scatrans"]["n_pseudobulk_samples"] == len(pb_obs)
+
+
+def test_active_score_pseudobulk_preserves_cell_level_obs():
+    """Same footgun on active_score (and therefore *_simple / pipeline / partition)."""
+    adata = _pb_obs_adata()
+    caller_cols = list(adata.obs.columns)
+    caller_n = adata.n_obs
+
+    out, _, allr = scat.active_score(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        use_permutation=False,
+        show_plot=False,
+        min_cells=1,
+        min_counts=1,
+        min_total_counts=1,
+    )
+
+    assert list(adata.obs.columns) == caller_cols
+    assert adata.n_obs == caller_n
+    assert out.n_obs == caller_n
+    for col in caller_cols:
+        assert col in out.obs.columns, col
+    assert "X_umap" in out.obsm
+    assert "spliced" in out.layers
+    assert "pb_x_source" not in out.obs.columns
+    assert "active_score" in allr.columns
+    assert "active_score" in out.var.columns
+    pb_obs = out.uns["scatrans"]["pseudobulk_obs"]
+    assert len(pb_obs) < caller_n
+    assert "batch" in pb_obs.columns
+    assert out.uns["scatrans"]["use_pseudobulk"] is True
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("pydeseq2") is None,
+    reason="pydeseq2 not installed",
+)
+def test_differential_expression_pydeseq2_preserves_cell_level_obs():
+    """User-reported path: use_pseudobulk=True + pydeseq2 must not wipe obs."""
+    adata = _pb_obs_adata()
+    scat.store_raw_counts(adata, layer="counts")
+    caller_cols = list(adata.obs.columns)
+    out, res = scat.differential_expression(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="pydeseq2",
+        de_preprocess="none",
+        pb_use_total_for_x=False,
+        min_cells=1,
+        min_counts=1,
+    )
+    assert list(adata.obs.columns) == caller_cols
+    assert out.n_obs == adata.n_obs
+    for col in caller_cols:
+        assert col in out.obs.columns, col
+    assert "logFC" in res.columns
+    assert "pb_x_source" not in out.obs.columns
+    assert "raw_snapshot" in out.uns["scatrans"]
+
+
+def test_merge_scatrans_uns_keeps_raw_snapshot_after_de():
+    """store_raw_counts snapshot must survive a subsequent DE run."""
+    adata = _pb_obs_adata(extra_cell_cols=False)
+    scat.store_raw_counts(adata, layer="counts")
+    assert "raw_snapshot" in adata.uns["scatrans"]
+
+    out, _ = scat.differential_expression(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        min_cells=1,
+        min_counts=1,
+    )
+    assert "raw_snapshot" in out.uns["scatrans"]
+
+
 def test_pseudobulk_with_layers_flags_non_count_source_before_rounding():
     """_pseudobulk_with_layers must check count-likeness pre-aggregation (round() always
     produces integer-looking sums, so a post-hoc check on the aggregated X would always pass)."""

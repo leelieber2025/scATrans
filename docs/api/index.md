@@ -45,7 +45,7 @@ low-level scorers). The convenience entry points `partition_de_by_mechanism` /
 |-----------|-----------|---------|---------|
 | `groupby` | both | `"condition"` | any `obs` column holding group labels |
 | `target_group` / `reference_group` | both | `None` (required for the low-level scorers) | must be set explicitly to two values in `adata.obs[groupby]`; tutorials often use e.g. `"GA"` / `"Ctrl"` |
-| `use_pseudobulk` + `sample_col` | both | `False` / `None` | aggregate to per-replicate pseudobulk before DE (needs `sample_col`) |
+| `use_pseudobulk` + `sample_col` | both | `False` / `None` | aggregate **internally** to per-replicate pseudobulk before DE (needs `sample_col`). The returned AnnData stays cell-level; sample table is `uns["scatrans"]["pseudobulk_obs"]` |
 | `pseudobulk_de_backend` | both | `"pydeseq2"` | `"pydeseq2"` (count-based DESeq2) or `"scanpy"` (rank_genes_groups on aggregated profiles) |
 | `de_method` | both | `"t-test_overestim_var"` | any `scanpy.tl.rank_genes_groups` method, e.g. `"wilcoxon"` |
 | `use_mixed_model` + `sample_col` | both | `False` | cell-level LMM with sample random intercept; needs ≥4 samples/group; `logFC` = sample-mean-of-means (not LMM coef); **incompatible with** `use_memento_de` |

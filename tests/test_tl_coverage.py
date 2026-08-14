@@ -451,9 +451,13 @@ def test_differential_expression_pseudobulk_on_de_only(adata_de_only):
     )
     assert "logFC" in res.columns
     assert "p_adj" in res.columns
-    assert ad.n_obs < adata_de_only.n_obs  # pseudobulked (after filtering)
-    # When no velocity layers, use_total_for_x should have been ignored and X used for agg
-    assert "pb_x_source" in ad.obs.columns
+    # Aggregation is internal: returned AnnData stays cell-level.
+    assert ad.n_obs == adata_de_only.n_obs
+    assert set(adata_de_only.obs.columns) <= set(ad.obs.columns)
+    assert ad.uns["scatrans"]["use_pseudobulk"] is True
+    pb_obs = ad.uns["scatrans"]["pseudobulk_obs"]
+    assert len(pb_obs) < adata_de_only.n_obs
+    assert "pb_x_source" in pb_obs.columns
 
 
 def test_prepare_log_normalized_expression_gap(adata_de_only):

@@ -161,9 +161,14 @@ adata, de_results = scat.differential_expression(
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
+    # use_pseudobulk=True, sample_col="sample",  # still returns cell-level adata
 )
 candidates = scat.filter_active_genes(de_results, select_by="de")
 ```
+
+`use_pseudobulk=True` aggregates internally; the returned `adata` stays
+cell-level. Sample-level summary:
+`adata.uns["scatrans"]["pseudobulk_obs"]`.
 
 Enrichment and plotting work the same way:
 {doc}`user_guide/standalone_de`.

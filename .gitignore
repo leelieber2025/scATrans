@@ -175,6 +175,7 @@ gene_features.parquet
 *.pdf
 *.png
 *.svg
+*.zip
 active_results/
 # Local manuscripts, analysis dumps, and other non-package files
 bak/

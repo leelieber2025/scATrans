@@ -18,7 +18,7 @@ tags:
   - gene set enrichment
   - active transcription
 license: Apache-2.0
-version: 0.10.11
+version: 0.10.12
 contact:
   - leelieber2025
 test_command: |

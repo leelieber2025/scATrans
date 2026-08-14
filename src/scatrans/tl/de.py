@@ -18,6 +18,7 @@ from .._utils import (
     _align_snapshot_bundle,
     _apply_de_preprocess,
     _as_contrast_categorical,
+    _attach_gene_results,
     _clear_log_preprocess_metadata,
     _get_raw_snapshot,
     _is_integer_counts_like,
@@ -641,6 +642,10 @@ def differential_expression(
           native memento_de_* / memento_dv_* columns.
         - adata.var is updated with the same columns for convenience.
         - Metadata is stored under adata.uns["scatrans"].
+        - When ``use_pseudobulk=True``, aggregation is internal. The returned
+          AnnData stays cell-level (same ``obs`` columns / embeddings / layers
+          as the working copy). Sample-level summary lives in
+          ``adata.uns["scatrans"]["pseudobulk_obs"]``.
     """
     _require_explicit_groups(target_group, reference_group, func_name="differential_expression")
 
@@ -756,7 +761,11 @@ def differential_expression(
         )
 
     # --- prepare data (pseudobulk if requested) ---
+    # Keep the cell-level working copy as the return object. Aggregation is
+    # only an internal DE matrix; returning the sample-level AnnData used to
+    # wipe the caller's obs down to sample/groupby/n_cells/total_counts/pb_x_source.
     adata = adata_input
+    adata_de = adata
 
     if use_pseudobulk:
         # sample_col is required above when use_pseudobulk=True
@@ -779,7 +788,7 @@ def differential_expression(
                 "Pseudobulk: aggregating layers['counts'] into .X for PyDESeq2 "
                 "(adata.X may be log-normalized)."
             )
-        adata = _pseudobulk_with_layers(
+        adata_de = _pseudobulk_with_layers(
             adata,
             sample_col,
             groupby,
@@ -792,34 +801,34 @@ def differential_expression(
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
-            adata.obs[groupby] = _as_contrast_categorical(
-                adata.obs[groupby], reference_group, target_group
+            adata_de.obs[groupby] = _as_contrast_categorical(
+                adata_de.obs[groupby], reference_group, target_group
             )
 
-    # Resolve counts AFTER any pseudobulk so the matrix matches current obs.
+    # Resolve counts AFTER any pseudobulk so the matrix matches the DE object.
     if counts is None and (
         use_memento_de or (use_pseudobulk and pseudobulk_de_backend == "pydeseq2")
     ):
-        counts = _resolve_aligned_raw_counts(adata, layer="counts", require_integer=True)
-        if counts is None and ("counts" in adata.layers or getattr(adata, "raw", None)):
+        counts = _resolve_aligned_raw_counts(adata_de, layer="counts", require_integer=True)
+        if counts is None and ("counts" in adata_de.layers or getattr(adata_de, "raw", None)):
             logger.warning(
                 "Count-based DE was requested but no safely aligned raw counts were found. "
                 "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
             )
     elif counts is not None and use_pseudobulk:
         # Cell-level counts= matrix is invalid after aggregation; prefer pb layer / .X.
-        if hasattr(counts, "shape") and getattr(counts, "shape", (0, 0))[0] != adata.n_obs:
+        if hasattr(counts, "shape") and getattr(counts, "shape", (0, 0))[0] != adata_de.n_obs:
             logger.info(
                 "differential_expression: counts= matrix is cell-level but data is now "
                 "pseudobulk; using aggregated layers['counts']/.X instead."
             )
-            counts = _resolve_aligned_raw_counts(adata, layer="counts", require_integer=True)
+            counts = _resolve_aligned_raw_counts(adata_de, layer="counts", require_integer=True)
 
     # DE preprocess
     # (Memento coercion to 'none' already performed early via _coerce_memento_de_preprocess)
 
     _apply_de_preprocess(
-        adata,
+        adata_de,
         de_preprocess,
         skip_auto=use_pseudobulk and pseudobulk_de_backend == "pydeseq2",
     )
@@ -829,7 +838,7 @@ def differential_expression(
     # --- run DE via the shared engine (Memento, scanpy, DESeq2, mixedlm all supported) ---
     logger.info("Performing differential expression analysis (differential_expression mode)...")
     de_df = _run_de_wrapper(
-        adata,
+        adata_de,
         groupby,
         target_group,
         reference_group,
@@ -850,11 +859,8 @@ def differential_expression(
         min_counts_per_gene=pydeseq2_min_counts,
     )
 
-    # Store results
-    adata.var["logFC"] = de_df["logFC"]
-    adata.var["p_val"] = de_df["p_val"]
-    adata.var["p_adj"] = de_df["p_adj"]
-
+    # Store results on the cell-level object (never the sample-level PB matrix).
+    _de_var_cols = ["logFC", "p_val", "p_adj"]
     for extra in [
         "mixedlm_coef",
         "delta_variance",
@@ -866,7 +872,8 @@ def differential_expression(
         "memento_p_adj_native",
     ]:
         if extra in de_df.columns:
-            adata.var[extra] = de_df[extra]
+            _de_var_cols.append(extra)
+    _attach_gene_results(adata, de_df[_de_var_cols])
 
     n_mixed_failed_de = (
         int(de_df.attrs.get("n_genes_failed_fit", 0))
@@ -922,9 +929,9 @@ def differential_expression(
     if "total_us_counts" in adata.var.columns:
         cols.append("total_us_counts")
     else:
-        # fallback: mean of current X (after any preprocess the user chose)
+        # Mean of the matrix DE actually used (PB sample sums when aggregated).
         try:
-            means = np.asarray(adata.X.mean(axis=0)).ravel()
+            means = np.asarray(adata_de.X.mean(axis=0)).ravel()
             adata.var["baseMean"] = means
             cols.append("baseMean")
         except Exception:
@@ -951,8 +958,20 @@ def differential_expression(
                 history = history[-5:]
     existing["history"] = history
 
+    if use_pseudobulk:
+        for k in (
+            "pb_x_is_count_like",
+            "pb_x_source_desc",
+            "pb_layer_is_count_like",
+            "pb_counts_is_count_like",
+        ):
+            if k in adata_de.uns:
+                adata.uns[k] = adata_de.uns[k]
+
     de_diagnostics: dict[str, Any] = {
         "n_cells": int(adata.n_obs),
+        "n_obs_for_de": int(adata_de.n_obs),
+        "n_pseudobulk_samples": int(adata_de.n_obs) if use_pseudobulk else None,
         "n_genes_input": int(adata.n_vars),
         "mixed_model": {
             "used": bool(use_mixed_model),
@@ -1021,6 +1040,9 @@ def differential_expression(
         "sample_col": sample_col if (use_mixed_model or use_pseudobulk) else None,
         "pb_x_layer": pb_x_layer if use_pseudobulk else None,
         "pb_use_total_for_x": pb_use_total_for_x if use_pseudobulk else None,
+        "n_pseudobulk_samples": int(adata_de.n_obs) if use_pseudobulk else None,
+        "pseudobulk_obs": adata_de.obs.copy() if use_pseudobulk else None,
+        "pb_x_source_desc": adata_de.uns.get("pb_x_source_desc") if use_pseudobulk else None,
         "use_delta_variance_pval": use_delta_variance_pval,
         "delta_var_pval_cutoff": delta_var_pval_cutoff,
         "mixed_model_pval": mixed_model_pval if use_mixed_model else None,

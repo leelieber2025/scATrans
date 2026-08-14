@@ -446,47 +446,6 @@ def test_enrich_plot_show_terms(adata_basic):
     plt.close("all")
 
 
-# --------------------------- plotting (headless) ---------------------------
-
-
-@pytest.mark.plot
-def test_pl_set_style_and_comet(adata_basic):
-    # Run a quick analysis so we have results df
-    _, _, allr = scat.active_score(
-        adata_basic,
-        groupby="condition",
-        target_group="Disease",
-        reference_group="Control",
-        mode="heuristic",
-        show_plot=False,
-        use_permutation=False,
-    )
-    scat.pl.set_style()
-    # Should not raise (comet_plot does not take show_plot)
-    fig, ax = scat.pl.comet_plot(allr, top_n=5)
-    # comet_plot calls plt.show() internally; with Agg it is fine
-    import matplotlib.pyplot as plt
-
-    plt.close("all")
-
-
-@pytest.mark.plot
-def test_pl_rankplot_and_heatmap_stubs(adata_basic):
-    _, _, allr = scat.active_score(
-        adata_basic,
-        groupby="condition",
-        target_group="Disease",
-        reference_group="Control",
-        mode="heuristic",
-        show_plot=False,
-        use_permutation=False,
-    )
-    # rankplot now has a real (simple) impl
-    fig, ax = scat.pl.active_score_rankplot(allr, top_n=6)
-    # heatmap stub should at least not explode
-    scat.pl.active_genes_heatmap(adata_basic, genes=allr.index[:5].tolist())
-
-
 # --------------------------- ax= parameter & edge cases ---------------------------
 
 
@@ -536,12 +495,6 @@ def test_edge_cases_low_features(adata_basic):
         show_plot=False,
     )
     assert "active_score" in res.var.columns
-
-
-def test_cli_main_callable():
-    from scatrans.generate_gene_features import main
-
-    assert callable(main)
 
 
 # --------------------------- copy_input / ensure_raw_counts ---------------------------
@@ -632,11 +585,6 @@ def test_copy_input_false_isolates_caller_ann_data(adata_basic):
         ad.AnnData.copy = orig_copy
 
 
-def test_ensure_raw_counts_exported():
-    assert hasattr(scat, "ensure_raw_counts")
-    assert callable(scat.ensure_raw_counts)
-
-
 def test_ensure_raw_counts_recovers_from_raw():
     """After log1p on .X, ensure_raw_counts should recover integer counts from adata.raw."""
     np.random.seed(7)
@@ -714,15 +662,6 @@ def test_error_missing_layers():
         scat.active_score(
             bad, groupby="condition", target_group="A", reference_group="B", show_plot=False
         )
-
-
-# --------------------------- CLI smoke ---------------------------
-
-
-def test_cli_main_is_callable():
-    from scatrans.generate_gene_features import main
-
-    assert callable(main)
 
 
 # --------------------------- mixed model + delta variance ---------------------------

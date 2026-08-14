@@ -201,6 +201,10 @@ def active_score_simple(
     - pseudobulk + PyDESeq2 when ``sample_col`` has at least 3 replicates per
       group; otherwise single-cell Wilcoxon DE
 
+    When the auto-selected backend uses pseudobulk, aggregation is internal:
+    the returned AnnData stays cell-level. Sample-level summary is in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``.
+
     For full control (permutation, advanced mode, mixed models, etc.) use
     :func:`active_score` directly.
 
@@ -250,6 +254,10 @@ def differential_expression_simple(
 
     Same backend auto-selection as :func:`active_score_simple`.
     For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
+
+    When the auto-selected backend uses pseudobulk, aggregation is internal:
+    the returned AnnData stays cell-level. Sample-level summary is in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``.
     """
     # Isolate so DE never mutates the caller's object (labels / preprocess).
     adata = adata_input.copy()

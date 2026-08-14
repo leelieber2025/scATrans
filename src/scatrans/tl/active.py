@@ -15,6 +15,7 @@ from .. import qc as _qc
 from .._de import _run_de_wrapper
 from .._permutation import run_permutation_test
 from .._utils import (
+    _PB_UNS_KEYS,
     UNSPLICED_EXCESS_DELTA_COL,
     UNSPLICED_EXCESS_FDR_COL,
     UNSPLICED_EXCESS_PVAL_COL,
@@ -22,6 +23,7 @@ from .._utils import (
     _apply_de_preprocess,
     _as_contrast_categorical,
     _as_var_dataframe,
+    _attach_gene_results,
     _composite_active_score_terms,
     _get_exponential_scale_lambda,
     _lambda_pval_for_active_score,
@@ -250,6 +252,11 @@ def active_score(
         during subsetting when possible, but **always isolate** before any write
         (groupby labels, ``de_preprocess`` on ``.X``, layer remap, ``.var`` columns)
         so the caller's AnnData is never modified in place.
+
+    When ``use_pseudobulk=True``, aggregation is internal. The returned AnnData
+    stays cell-level (same ``obs`` columns / embeddings / layers as the working
+    copy). Sample-level summary lives in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``.
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
@@ -580,6 +587,11 @@ def active_score(
         )
 
     # ==================== PSEUDOBULK (optional) ====================
+    # Keep the cell-level working copy as the return object. Aggregation is
+    # only an internal DE / velocity matrix; returning the sample-level
+    # AnnData used to wipe the caller's obs down to a handful of columns.
+    adata_cells = adata
+    n_cells_input = int(adata.n_obs)
     is_pseudobulk = False
     if use_pseudobulk:
         if sample_col is None:
@@ -982,7 +994,9 @@ def active_score(
     )
 
     diagnostics: dict[str, Any] = {
-        "n_cells": int(adata.n_obs),
+        "n_cells": n_cells_input,
+        "n_obs_for_de": int(adata.n_obs),
+        "n_pseudobulk_samples": int(adata.n_obs) if is_pseudobulk else None,
         "n_genes_input": int(adata.n_vars),
         "n_genes_with_valid_features": int(valid_feat.sum()),
         "unspliced_global_fraction": float(unspliced_fraction)
@@ -1326,6 +1340,7 @@ def active_score(
         use_permutation=use_permutation,
         n_perm=n_perm,
         show_plot=show_plot,
+        cell_adata=adata_cells if is_pseudobulk else None,
         groupby=groupby,
         target_group=target_group,
         reference_group=reference_group,
@@ -1378,6 +1393,7 @@ def _finalize_active_score_results(
     use_permutation: bool,
     n_perm: int,
     show_plot: bool,
+    cell_adata: ad.AnnData | None = None,
     **extra_metadata: Any,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
@@ -1517,7 +1533,11 @@ def _finalize_active_score_results(
         else "size_factor_normalized_spliced_unspliced"
     )
 
-    existing = dict(adata.uns.get("scatrans", {}))
+    # Write metadata onto the object we return (cell-level when PB was used).
+    returned = (
+        cell_adata if extra_metadata.get("is_pseudobulk") and cell_adata is not None else adata
+    )
+    existing = dict(returned.uns.get("scatrans", {}))
     # Keep a lightweight history so multiple calls don't completely overwrite previous runs
     history = existing.get("history", [])
     if "analysis" in existing:
@@ -1572,6 +1592,7 @@ def _finalize_active_score_results(
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
         "de_method": extra_metadata.get("de_method"),
         "use_pseudobulk": extra_metadata.get("is_pseudobulk", False),
+        "n_pseudobulk_samples": int(adata.n_obs) if extra_metadata.get("is_pseudobulk") else None,
         "pseudobulk_de_backend": extra_metadata.get("pseudobulk_de_backend"),
         "perm_de_backend": extra_metadata.get("perm_de_backend"),
         "use_memento_de": extra_metadata.get("use_memento_de"),
@@ -1630,6 +1651,19 @@ def _finalize_active_score_results(
         meta["permutation_approximation_note"] = note
 
     from .._utils import _merge_scatrans_uns
+
+    # Keep the cell-level object. Do not paste the sample-level AnnData
+    # (X / layers / obs / full .var) back — only the result table + run metadata.
+    if extra_metadata.get("is_pseudobulk") and cell_adata is not None:
+        _attach_gene_results(cell_adata, all_results)
+        for k in _PB_UNS_KEYS:
+            if k in adata.uns:
+                cell_adata.uns[k] = adata.uns[k]
+        meta["pseudobulk_obs"] = adata.obs.copy()
+        meta["n_pseudobulk_samples"] = int(adata.n_obs)
+        if "pb_x_source_desc" in adata.uns:
+            meta.setdefault("pb_x_source_desc", adata.uns["pb_x_source_desc"])
+        adata = cell_adata
 
     adata.uns["scatrans"] = _merge_scatrans_uns(existing, meta)
 

@@ -125,6 +125,22 @@ pip install "scatrans[gsea]"              # GSEA (gseapy)
 
 See {doc}`installation`.
 
+## `use_pseudobulk=True` wiped my `adata.obs`
+
+Older builds returned the intermediate sample-level object, so
+
+```python
+adata, de = scat.differential_expression(adata, use_pseudobulk=True, sample_col="...")
+```
+
+left `obs` with only `sample_col`, `groupby`, `n_cells`, `total_counts`, and
+`pb_x_source`. That is a bug. Current versions keep the **cell-level**
+AnnData (same `obs` columns, embeddings, layers). The DE table is the second
+return value. Sample-level summary is in
+`adata.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies to
+`active_score`, `*_simple`, `run_default_pipeline`, and
+`partition_de_by_mechanism`.
+
 ## PyDESeq2 / Memento complain about counts
 
 They need **raw integer counts**. If you already ran HVG + normalize + log1p,
