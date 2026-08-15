@@ -138,10 +138,17 @@ def extract_gene_lists(
             "padj",
             "pvals_adj",
             "p.adjust",
+            "p_adjust",
             "FDR",
             "fdr",
             "p_adj_BH",
             "FDR_qval",
+            "p_val_adj",
+            "p.adj",
+            "adj_p_val",
+            "adj_p_value",
+            "qval",
+            "q_value",
         )
         raw_cols = ("p_val", "pval", "pvals", "pvalue", "p")
         for col in adjusted_cols:
@@ -394,7 +401,7 @@ def compare_enrichment(
     shared_universe = universe
     shared_adata = adata
 
-    # If user gave adata but no explicit universe, we let the subcalls use the smart default,
+    # If adata is given without an explicit universe, subcalls use raw_gene_list when stored.
     # which is the desired "same background" behavior when the same adata object is passed.
     if shared_universe is None and shared_adata is None and verbose:
         # Nothing shared provided - each cluster will use its own default (usually gene set genes).

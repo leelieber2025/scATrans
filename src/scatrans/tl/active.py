@@ -15,6 +15,9 @@ from .. import qc as _qc
 from .._de import _run_de_wrapper
 from .._permutation import run_permutation_test
 from .._utils import (
+    _PB_UNS_KEYS,
+    LEGACY_VELOCITY_DELTA_COL,
+    LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
     UNSPLICED_EXCESS_FDR_COL,
     UNSPLICED_EXCESS_PVAL_COL,
@@ -22,6 +25,7 @@ from .._utils import (
     _apply_de_preprocess,
     _as_contrast_categorical,
     _as_var_dataframe,
+    _attach_gene_results,
     _composite_active_score_terms,
     _get_exponential_scale_lambda,
     _lambda_pval_for_active_score,
@@ -250,6 +254,12 @@ def active_score(
         during subsetting when possible, but **always isolate** before any write
         (groupby labels, ``de_preprocess`` on ``.X``, layer remap, ``.var`` columns)
         so the caller's AnnData is never modified in place.
+
+    When ``use_pseudobulk=True``, aggregation is internal. The returned AnnData
+    stays cell-level (same ``obs`` columns / embeddings / layers as the working
+    copy). Sample-level summary lives in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``. Cells whose ``groupby`` value
+    is not the target or reference stay on the returned object.
     """
     # ==================== EARLY VALIDATION (kept identical) ====================
     if mode not in {"heuristic", "advanced"}:
@@ -389,7 +399,9 @@ def active_score(
     logger.info("scATrans %s Analysis started. Mode: %s", VERSION, mode)
 
     # ==================== SUBSET & BASIC VALIDATION ====================
-    obs_filter = pd.Series(True, index=adata_input.obs_names)
+    # subset_col is user-requested and applies to the returned object.
+    # Restricting to target/reference is internal — unused groupby values stay.
+    user_filter = pd.Series(True, index=adata_input.obs_names)
     if subset_col is not None:
         if subset_col not in adata_input.obs.columns:
             raise ValueError(f"subset_col='{subset_col}' not found in adata.obs.columns")
@@ -400,7 +412,7 @@ def active_score(
         n_after = int(subset_mask.sum())
         if n_after == 0:
             raise ValueError(f"No cells remain after subsetting {subset_col}")
-        obs_filter &= subset_mask
+        user_filter &= subset_mask
         logger.info("Subsetted by %s (%d/%d cells remaining)", subset_col, n_after, n_before)
 
     if not adata_input.var_names.is_unique:
@@ -415,8 +427,6 @@ def active_score(
         target_group=str(target_group),
         reference_group=str(reference_group),
     )
-
-    obs_filter &= norm_groups.isin([target_group, reference_group])
 
     # Automatic design guidance for small-sample or replicate-structured data.
     # Capture + re-emit warnings (do not discard the return value) and store under
@@ -461,13 +471,9 @@ def active_score(
                 f"Available layers: {available_layers}"
             )
 
-    adata = _select_obs(adata_input, obs_filter, copy_input=copy_input)
+    adata = _select_obs(adata_input, user_filter, copy_input=copy_input)
     if adata.n_obs == 0:
-        raise ValueError(
-            "No cells match target/reference groups after filtering. "
-            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
-            f"against adata.obs['{groupby}'] (missing labels are excluded)."
-        )
+        raise ValueError("No cells remain after subsetting.")
     adata = _materialize_if_view(adata)
     # Hard isolation: never mutate the caller's object (labels / .X / layers / .var).
     if adata is adata_input:
@@ -477,7 +483,14 @@ def active_score(
                 "copy_input=False: isolated a working copy before mutation so the "
                 "caller's AnnData is left unchanged."
             )
-    adata.obs[groupby] = norm_groups.loc[obs_filter].values
+    work_mask = norm_groups.reindex(adata.obs_names).isin([target_group, reference_group])
+    work_mask = work_mask.fillna(False)
+    if int(work_mask.sum()) == 0:
+        raise ValueError(
+            "No cells match target/reference groups after filtering. "
+            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
+            f"against adata.obs['{groupby}'] (missing labels are excluded)."
+        )
 
     # Perform layer remapping on the working adata (copy_input=True isolates caller's object).
     if (
@@ -579,12 +592,34 @@ def active_score(
             int(adata.n_vars),
         )
 
-    # ==================== PSEUDOBULK (optional) ====================
+    # ==================== CONTRAST WORKING OBJECT / PSEUDOBULK ====================
+    # ``adata_cells`` is the cell-level return object (user-requested cells,
+    # including unused groupby values). Scoring runs on a contrast-only copy.
+    adata_cells = adata
+    work_mask = work_mask.reindex(adata.obs_names, fill_value=False)
+    if bool(work_mask.all()):
+        adata.obs[groupby] = norm_groups.reindex(adata.obs_names).values
+    else:
+        adata = adata[work_mask].copy()
+        adata.obs[groupby] = norm_groups.reindex(adata.obs_names).values
+    n_cells_input = int(adata.n_obs)
     is_pseudobulk = False
     if use_pseudobulk:
         if sample_col is None:
             raise ValueError("sample_col must be provided when use_pseudobulk=True")
         logger.info("Performing pseudobulk aggregation...")
+        if (
+            not pb_use_total_for_x
+            and pseudobulk_de_backend == "pydeseq2"
+            and "counts" not in adata.layers
+        ):
+            recovered = _resolve_aligned_raw_counts(adata, layer="counts", require_integer=True)
+            if recovered is not None:
+                adata.layers["counts"] = recovered
+                logger.info(
+                    "Pseudobulk: recovered integer counts from raw_snapshot into "
+                    "a temporary counts layer for aggregation."
+                )
         # Aggregate velocity layers; also carry counts when present so PyDESeq2 can
         # use raw counts after aggregation (not log1p .X).
         pb_layers = [ly for ly in ("spliced", "unspliced", "counts") if ly in adata.layers]
@@ -982,7 +1017,9 @@ def active_score(
     )
 
     diagnostics: dict[str, Any] = {
-        "n_cells": int(adata.n_obs),
+        "n_cells": n_cells_input,
+        "n_obs_for_de": int(adata.n_obs),
+        "n_pseudobulk_samples": int(adata.n_obs) if is_pseudobulk else None,
         "n_genes_input": int(adata.n_vars),
         "n_genes_with_valid_features": int(valid_feat.sum()),
         "unspliced_global_fraction": float(unspliced_fraction)
@@ -1326,6 +1363,7 @@ def active_score(
         use_permutation=use_permutation,
         n_perm=n_perm,
         show_plot=show_plot,
+        cell_adata=adata_cells,
         groupby=groupby,
         target_group=target_group,
         reference_group=reference_group,
@@ -1378,6 +1416,7 @@ def _finalize_active_score_results(
     use_permutation: bool,
     n_perm: int,
     show_plot: bool,
+    cell_adata: ad.AnnData | None = None,
     **extra_metadata: Any,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
@@ -1426,6 +1465,11 @@ def _finalize_active_score_results(
             cols.append(mc)
     if "gamma_shrinkage_weight" in adata.var.columns:
         cols.append("gamma_shrinkage_weight")
+    if "velocity_source" in adata.var.columns:
+        cols.append("velocity_source")
+    for legacy in (LEGACY_VELOCITY_DELTA_COL, LEGACY_VELOCITY_RESIDUAL_COL):
+        if legacy in adata.var.columns:
+            cols.append(legacy)
     cols = [c for c in cols if c in adata.var.columns]
 
     # Built-in significant list: DE significance + positive unspliced excess + permutation FDR.
@@ -1474,7 +1518,7 @@ def _finalize_active_score_results(
             logger.warning(
                 "Built-in 'significant' list is empty because use_permutation=False "
                 "(permutation FDR is required for that strict list). "
-                "This is expected — significant is intentionally strict and often empty. "
+                "This is expected: the built-in significant list is a strict conjunction and is often empty. "
                 "For exploratory gene lists use: "
                 "filter_active_genes(all_results, preset='heuristic')  # or 'pseudobulk' / "
                 "'permissive', or pass custom residual/score/FDR cutoffs. "
@@ -1517,7 +1561,9 @@ def _finalize_active_score_results(
         else "size_factor_normalized_spliced_unspliced"
     )
 
-    existing = dict(adata.uns.get("scatrans", {}))
+    # Write metadata onto the object we return (full cell-level copy).
+    returned = cell_adata if cell_adata is not None else adata
+    existing = dict(returned.uns.get("scatrans", {}))
     # Keep a lightweight history so multiple calls don't completely overwrite previous runs
     history = existing.get("history", [])
     if "analysis" in existing:
@@ -1572,6 +1618,7 @@ def _finalize_active_score_results(
         "delta_var_pval_cutoff": extra_metadata.get("delta_var_pval_cutoff"),
         "de_method": extra_metadata.get("de_method"),
         "use_pseudobulk": extra_metadata.get("is_pseudobulk", False),
+        "n_pseudobulk_samples": int(adata.n_obs) if extra_metadata.get("is_pseudobulk") else None,
         "pseudobulk_de_backend": extra_metadata.get("pseudobulk_de_backend"),
         "perm_de_backend": extra_metadata.get("perm_de_backend"),
         "use_memento_de": extra_metadata.get("use_memento_de"),
@@ -1630,6 +1677,20 @@ def _finalize_active_score_results(
         meta["permutation_approximation_note"] = note
 
     from .._utils import _merge_scatrans_uns
+
+    # Keep the cell-level object. Do not paste the sample-level / contrast-only
+    # working AnnData back — only the result table + run metadata.
+    if cell_adata is not None:
+        _attach_gene_results(cell_adata, all_results)
+        if extra_metadata.get("is_pseudobulk"):
+            for k in _PB_UNS_KEYS:
+                if k in adata.uns:
+                    cell_adata.uns[k] = adata.uns[k]
+            meta["pseudobulk_obs"] = adata.obs.copy()
+            meta["n_pseudobulk_samples"] = int(adata.n_obs)
+            if "pb_x_source_desc" in adata.uns:
+                meta.setdefault("pb_x_source_desc", adata.uns["pb_x_source_desc"])
+        adata = cell_adata
 
     adata.uns["scatrans"] = _merge_scatrans_uns(existing, meta)
 

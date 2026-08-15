@@ -38,9 +38,9 @@ scat.pl.volcano_plot(all_results, style="auto")
 and accepts `label_genes=[...]` for manual labels. Custom palettes: `fills=`
 / `colors=` (Down, Normal, Up hex tuples).
 
-All plotting functions support `ax=` / `axes=` for multi-panel figures and
-`save_path=` (files are written at **≥300 dpi** even when on-screen `dpi`
-is lower).
+Plotters support `ax=` / `axes=` for multi-panel figures and `save_path=`
+(files are written at **≥300 dpi** even when on-screen `dpi` is lower).
+Helpers such as `set_style` and `build_gene_membership` do not take `ax=`.
 
 ## Display defaults (notebook-first)
 
@@ -199,8 +199,8 @@ so multipanel layouts do not clip an exterior legend.
   with `cmap=` (when `effective_gamma` is present) or `color=` (single-color
   fallback).
 
-- `scat.pl.set_style()` and `scat.pl.style_context()` — control global
-  publication-style settings (vector fonts, minimal ink, etc.).
+- `scat.pl.set_style()` and `scat.pl.style_context()` — default figure
+  style (vector fonts, minimal ink, etc.).
 
 - `scat.pl.set_nature_style()` (legacy alias for `set_style`).
 

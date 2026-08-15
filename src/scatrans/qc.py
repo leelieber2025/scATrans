@@ -86,10 +86,10 @@ def regime_diagnosis(
     to pass to :func:`scatrans.tl.annotate_mechanism_class` (``reliability=``) so
     the per-gene mechanism confidence reflects data quality.
 
-    NOTE — scope: data-quality / gamma reliability from the global unspliced
-    fraction only. This does **not** classify dynamic versus steady-state regimes,
-    and high reliability means the proxy is not obviously corrupted — not that it
-    outperforms DE. Dynamic-vs-steady labeling is not implemented.
+    Scope: data-quality and gamma reliability from the global unspliced
+    fraction only. This does not classify dynamic versus steady-state
+    regimes. High reliability means the residual is not obviously corrupted
+    by capture artifacts; it does not mean the residual outperforms DE.
 
     Returns
     -------

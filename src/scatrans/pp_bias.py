@@ -155,8 +155,7 @@ def generate_gene_features_from_gtf(
         df = df.to_pandas()
         logger.info("Converted to Pandas DataFrame")
 
-    # 1. gene_length: proper union of exon intervals per gene (critical!)
-    # Previous code summed lengths across all transcripts → massive overcount for multi-isoform genes.
+    # gene_length: union of exon intervals (do not sum transcript lengths).
     exon = df[df["feature"] == "exon"].copy()
     if exon.empty:
         logger.warning(
@@ -440,9 +439,8 @@ def add_gene_features(
         logger.info("Using default for %s: %s", organism, pkg_filename)
 
     # Load the gene features table.
-    # CRITICAL for wheel installs: when using_package_data, pd.read_parquet MUST be
-    # performed inside the _open_package_data() context. as_file() extracts to a
-    # temp path that is deleted on __exit__ of the with block.
+    # Wheel installs: read the parquet inside the _open_package_data() context.
+    # as_file() extracts to a temporary path that is deleted on context exit.
     gf = None
     if using_package_data:
         try:

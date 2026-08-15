@@ -320,6 +320,23 @@ def test_label_normalization_matches_active_score(adata_basic):
     assert len(out2) == 2
 
 
+def test_third_group_labels_are_not_shuffled_into_contrast(adata_basic):
+    """Cells outside target/reference must keep their labels under the null."""
+    from scatrans.tl.calibration import _shuffle_within_blocks
+
+    labels = np.array(["Disease"] * 20 + ["Control"] * 20 + ["Other"] * 20)
+    norm = np.array(["Disease"] * 20 + ["Control"] * 20 + ["Other"] * 20)
+    mask = (norm == "Disease") | (norm == "Control")
+    rng = np.random.default_rng(0)
+    leaked = 0
+    for _ in range(30):
+        out = _shuffle_within_blocks(labels, None, rng, mask=mask)
+        leaked += int(((labels == "Other") & (out != "Other")).sum())
+        assert list(out[40:]) == ["Other"] * 20
+        assert sorted(out[:40]) == sorted(labels[:40])
+    assert leaked == 0
+
+
 def test_target_equals_reference_rejected(adata_basic):
     de = _de_for(adata_basic)
     with pytest.raises(ValueError, match="must be different"):

@@ -11,13 +11,13 @@
 
 ## What scATrans does
 
-Differential expression tells you **which** genes change. When you also have
-nascent or unspliced layers, scATrans helps you ask **how** those changes look
-on a transcription-versus-stabilization axis.
+Differential expression tells you **which** genes change. With nascent or
+unspliced layers, scATrans asks **how** those changes sit on a
+transcription-versus-stabilization axis.
 
-- Soft labels on individual genes are exploratory.
-- Stronger claims usually come from **gene programs**, not single genes.
-- DE still defines the gene list. scATrans does not replace DE for discovery.
+- Per-gene labels are exploratory.
+- Report mechanism at the **program** level when you can.
+- DE still defines the gene list.
 
 No nascent layers? You can still run DE, enrichment, and plotting.
 
@@ -39,7 +39,7 @@ No nascent layers? You can still run DE, enrichment, and plotting.
              ▼
     ┌──────────────────┐
     │ 3. Program table  │   pooled, induction-matched / permutation-calibrated
-    │    (claims here)  │   → the level to report, not single genes
+    │    (report here)  │   → the level to report, not single genes
     └──────────────────┘
 ```
 
@@ -89,7 +89,7 @@ result = scat.partition_de_by_mechanism(
 )
 print(result.regime)           # capture quality
 print(result.selected.head())  # DE genes + mechanism labels
-print(result.summary())
+print(result.summary())        # cutoffs and counts used for this run
 ```
 
 ### Which tool for which job

@@ -7,7 +7,7 @@ NOTE: the recommended primary workflow is `scat.partition_de_by_mechanism(...)`
 stabilization-driven; see examples/partition_de_by_mechanism_example.py and the
 Quickstart). This template instead demonstrates the **lower-level** `active_score`
 scorer and its diagnostics in detail, for users who want the residual / gamma /
-bias internals. It is NOT runnable out of the box — adapt paths / column names.
+bias internals. It is not runnable without edits — adapt paths / column names.
 
 Steps covered:
   1. Load AnnData with spliced/unspliced layers (velocyto, kb_python velocity, …)
@@ -51,7 +51,7 @@ if not DATA_PATH.is_file():
 adata = sc.read_h5ad(DATA_PATH)
 
 # ------------------------------------------------------------------
-# 2. Standalone pre-flight QC (HIGHLY RECOMMENDED)
+# 2. Standalone unspliced-fraction diagnostic
 # ------------------------------------------------------------------
 print("Running global unspliced fraction check...")
 ufrac = scat.qc.unspliced_global(adata, warn_threshold=0.5)
@@ -59,7 +59,7 @@ print(f"Global unspliced fraction: {ufrac:.2%}")
 # If this is > ~0.5 you should investigate library prep / alignment before trusting active transcription signals.
 
 # ------------------------------------------------------------------
-# 2.5 Preserve raw counts + original spliced/unspliced (CRITICAL for Memento DE and correct enrichment)
+# 2.5 Preserve raw counts and spliced/unspliced layers (needed for Memento DE and enrichment background)
 # ------------------------------------------------------------------
 # Call this early, before any HVG, normalize, or log1p. It saves the full post-QC gene set
 # raw counts (and raw velocity layers) so that later Memento, PyDESeq2, and enrichment

@@ -47,7 +47,7 @@ _HARD_MECHANISM_CLASSES = frozenset({"transcription-driven", "stabilization-driv
 _MECHANISM_CLASS_ORA_MSG = (
     "ORA on genes split by per-gene mechanism_class is induction-confounded at a "
     "single snapshot (highly induced genes accumulate mature mRNA and soft-label as "
-    "stabilization-driven regardless of true mechanism; Fig. 7 trap). Prefer: "
+    "stabilization-driven regardless of true mechanism). Prefer: "
     "(1) ORA on the full DE-selected list, (2) program_mechanism / "
     "program_mechanism_induction_matched on curated sets, or (3) the decoupled "
     "detection filter (nascent_z + de_reproducible). Pass "
@@ -87,7 +87,7 @@ def run_enrichment(
     universe: Iterable[Any] | None = None,
     background: Iterable[Any] | None = None,
     adata: Any
-    | None = None,  # NEW: if provided and no explicit universe, we try to use the preserved raw_gene_list
+    | None = None,  # If set and universe is omitted, use stored raw_gene_list when present.
     pval_cutoff: float | None = None,
     padj_cutoff: float | None = None,
     min_size: int = 5,
@@ -121,23 +121,18 @@ def run_enrichment(
     - If neither provided, universe = union of all genes present in the gene_sets
       (safe default, similar to clusterProfiler when no universe given).
 
-    New smart default (recommended):
-
-    - If you do not pass `universe` or `background`, but you pass an `adata` on which
-      `scat.store_raw_counts(adata)` was previously called, `run_enrichment` will
-      automatically use the preserved full measured gene list (`adata.uns["scatrans"]["raw_gene_list"]`)
-      as the background. This is the safest and most convenient behavior for
-      single-cell data.
-
-    - Explicit `universe=...` or `background=...` always takes precedence.
+    If `universe` and `background` are omitted and `adata` was previously passed
+    through `scat.store_raw_counts`, the stored measured gene list
+    (`adata.uns["scatrans"]["raw_gene_list"]`) is used as the background.
+    An explicit `universe` or `background` takes precedence.
 
     Historical note on `universe`:
     Passing `universe=adata.var_names.tolist()` after HVG subsetting is usually wrong.
     The background should be the genes that were actually measured in the experiment.
 
-    Returned DataFrame is rich: clusterProfiler-compatible columns + RichFactor,
-    string helpers, TermSize, neg_log10_padj, plus detailed `.attrs["universe_info"]`
-    and other diagnostics (including `gene_set_info` and `reason` on empty results).
+    The returned DataFrame uses clusterProfiler-compatible columns plus
+    RichFactor, TermSize, and `neg_log10_padj`. Diagnostics are stored on
+    `.attrs` (`universe_info`, `gene_set_info`, and `reason` when empty).
 
     gene_list : list-like, pd.Series, or pd.DataFrame
         Genes to test for over-representation. Besides plain lists, accepts DE / filter
@@ -145,8 +140,8 @@ def run_enrichment(
         ``filter_active_genes(...)``), or explicit ``gene`` / ``names`` columns.
 
     pval_cutoff / padj_cutoff : float
-        Cutoff applied to **adjusted p-values** (`p.adjust` column), **NOT** raw p-values.
-        IMPORTANT: Despite the name, pval_cutoff filters on the BH-adjusted p-value.
+        Cutoff applied to adjusted p-values (`p.adjust`), not raw p-values.
+        The legacy name ``pval_cutoff`` still filters the BH-adjusted column.
 
         - Preferred: use `padj_cutoff` explicitly.
         - `pval_cutoff` is deprecated for new code (warning emitted when used alone).
@@ -159,14 +154,12 @@ def run_enrichment(
         - "scatrans" (default): Prefer the bundled scATrans / clusterProfiler-derived sets.
         - "enrichr": Force the original Enrichr/gseapy libraries.
 
-        In most cases you do **not** need this parameter:
+        Defaults use the bundled sets (`organism` is sufficient for `run_kegg`).
+        To request a dated Enrichr library, pass the exact name (for example
+        `gene_sets="GO_Biological_Process_2021"` or `kegg_library="KEGG_2021"`).
+        Names that include a year suffix are treated as Enrichr requests.
 
-        - Default behavior uses the package's bundled sets (only organism needed for run_kegg).
-        - To pick a specific Enrichr historical version, just write the exact name
-          (e.g. gene_sets="GO_Biological_Process_2021" or kegg_library="KEGG_2021").
-          Names containing year suffixes are automatically treated as Enrichr requests.
-
-        The parameter is mainly for forcing one side when the auto-detection would
+        Use this parameter when auto-detection would
         choose differently.
 
     include_gene_list : bool, default False
@@ -182,7 +175,7 @@ def run_enrichment(
     background : optional
         Deprecated alias of `universe`. Use `universe` instead.
         If both are provided, raises ValueError.
-        In docs and examples we strongly prefer the term `universe`.
+        Documentation and examples use `universe`.
 
     allow_mechanism_class_ora : bool, default False
         When ``gene_list`` is a DataFrame with a ``mechanism_class`` column,

@@ -28,10 +28,13 @@ res = scat.partition_de_by_mechanism(
 What it does, in order:
 
 1. Checks nascent-layer quality (`res.regime`)
-2. Runs DE and keeps changed genes
-3. Scores the unspliced residual and soft-labels mechanism
+2. Runs DE and keeps changed genes (`padj < 0.05` and `logFC > 1.0` unless you
+   change the cutoffs)
+3. Scores the unspliced residual and labels mechanism
 4. Optionally builds a program table (`gene_sets=`)
 5. Optionally runs induction-matched program tests (`induction_matched=True`)
+
+`res.summary()` prints the cutoffs that were actually used.
 
 ```python
 res.regime                         # capture quality
@@ -41,14 +44,14 @@ res.programs_induction_matched     # if induction_matched=True
 res.summary()
 ```
 
-Under the hood this composes `active_score` → DE filter → mechanism helpers.
+Internally this composes `active_score` → DE filter → mechanism helpers.
 You do not need those pieces unless you want a custom path.
 
 ### Common options
 
 | Option | When to use it |
 |--------|----------------|
-| `sample_col=...` | Biological replicates or libraries (preferred when available) |
+| `sample_col=...` | Biological replicates or libraries. Auto-pseudobulk + PyDESeq2 only if ≥3 samples per group; otherwise Wilcoxon stays cell-level |
 | `de="builtin"` | Default DE inside the call |
 | `de="wilcoxon"` / kwargs / DataFrame | A specific DE backend or your own DE table |
 | `gene_sets={...}` | Program-level relative tests → `res.programs` |
@@ -145,10 +148,10 @@ This computes DE, the reference-corrected unspliced residual (optional Huber
 length/intron correction), and stores diagnostics in
 `adata_res.uns["scatrans"]["diagnostics"]`.
 
-The second return value (`significant`) is a strict DE **and** residual
-conjunction. It is often empty by design — use `all_results` with
-`filter_active_genes(..., select_by="de")` for production gene lists (or
-prefer partition above).
+The second return value (`significant`) is a strict DE and residual
+conjunction. It is often empty. Use `all_results` with
+`filter_active_genes(..., select_by="de")` for production gene lists, or
+prefer `partition_de_by_mechanism`.
 
 ### Pseudobulk and DE method
 
@@ -173,6 +176,10 @@ adata_res, significant, all_results = scat.active_score(
 - `pydeseq2` needs raw counts (`store_raw_counts`) and
   `pip install "scatrans[pseudobulk]"`.
 - `pseudobulk_de_backend="scanpy"` uses scanpy methods on aggregated profiles.
+- Aggregation is **internal**. The returned `adata_res` stays cell-level
+  (same `obs` columns, embeddings, and layers). Sample-level summary is in
+  `adata_res.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies
+  to `differential_expression` and the `*_simple` / pipeline wrappers.
 
 Change the scanpy test (cell-level or scanpy-on-pseudobulk):
 

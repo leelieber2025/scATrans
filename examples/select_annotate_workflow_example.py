@@ -4,20 +4,19 @@ Tutorial: the "DE selects, proxy annotates" workflow (scATrans >= this release).
 
 Demonstrates the decoupled workflow and every function it added:
 
-  1. scat.qc.regime_diagnosis(adata)         -- proxy-reliability pre-flight
-  2. run_default_pipeline(select_by="de",     -- DE SELECTS the gene list,
-                          annotate_mechanism=True)    proxy ANNOTATES mechanism
-  3. scat.threshold_sensitivity(...)          -- how list size moves with cutoffs
-  4. scat.program_mechanism(..., gene_sets)   -- threshold-free, program-level
-                                                 transcription-vs-stabilization call
+  1. scat.qc.regime_diagnosis(adata)         -- reliability diagnostic
+  2. run_default_pipeline(select_by="de",     -- DE selects the gene list;
+                          annotate_mechanism=True)    residual annotates mechanism
+  3. scat.threshold_sensitivity(...)          -- list size versus cutoffs
+  4. scat.program_mechanism(..., gene_sets)   -- program-level
+                                                 transcription-versus-stabilization test
 
-It runs TWO demos:
-  A) a small SYNTHETIC object with known ground truth (a transcription-driven and
-     a stabilization-driven program) -> shows the functions return the RIGHT calls;
-  B) the real scNT-seq KCl-neuron object if present
-     (~/cellranger/scNT_work/scNT_KCl_velocity_plus_labeled.h5ad) -> shows it runs
-     on real data AND how the regime pre-flight flags a low-unspliced-capture
-     dataset where the per-gene proxy direction should NOT be trusted.
+Two demonstrations:
+  A) a small synthetic object with known ground truth (a transcription-driven and
+     a stabilization-driven program);
+  B) the scNT-seq KCl-neuron object if present
+     (~/cellranger/scNT_work/scNT_KCl_velocity_plus_labeled.h5ad), including
+     how the regime diagnostic flags low unspliced capture.
 
 Run:
     python examples/select_annotate_workflow_example.py
@@ -110,7 +109,7 @@ def run_demo(adata, target, reference, gene_sets, title, caveat=None):
     print("#" * 72)
     print(f"{adata.n_obs} cells x {adata.n_vars} genes; contrast {target} vs {reference}")
 
-    # 1) pre-flight regime / proxy reliability
+    # 1) regime / proxy reliability diagnostic
     regime = scat.qc.regime_diagnosis(adata)
     print(
         f"\n1) regime_diagnosis: unspliced={regime['unspliced_fraction']:.1%}  "
@@ -175,8 +174,7 @@ def main():
     a, tgt, ref, gs = make_synthetic()
     run_demo(a, tgt, ref, gs, "A) SYNTHETIC (known ground truth)")
 
-    # B) real data (optional): shows it runs, and the regime pre-flight catching a
-    #    low-capture dataset where the per-gene proxy direction is unreliable.
+    # B) optional real data: the regime diagnostic flags low unspliced capture.
     if os.path.exists(SCNT_PATH):
         a2, tgt2, ref2, gs2 = load_real_scnt()
         run_demo(

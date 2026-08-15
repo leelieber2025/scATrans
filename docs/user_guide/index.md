@@ -21,8 +21,8 @@ covers the main options after that.
    `scat.store_raw_counts(adata, layer="counts")`.
 2. **Partition** — `scat.partition_de_by_mechanism(...)`. Check
    `result.regime` and `result.selected`.
-3. **Interpret** — use soft per-gene labels for exploration. For stronger
-   claims, pass `gene_sets=`, turn on `induction_matched=True`, and/or run
+3. **Interpret** — treat per-gene labels as exploratory. For claims, pass
+   `gene_sets=`, set `induction_matched=True`, and/or run
    `program_mechanism_permutation_calibrated`.
 4. **Enrich** — on `result.selected` only (not on `mechanism_class` subsets).
 5. **Plot and report** — `scat.pl.*`; see {doc}`../statistical_guidance` for
@@ -30,14 +30,17 @@ covers the main options after that.
 
 ## Defaults worth remembering
 
-| Topic | Usual practice |
-|-------|----------------|
-| Entry point | `partition_de_by_mechanism` → `PartitionResult` |
-| Gene list | DE membership (`result.selected`) |
-| Mechanism claims | Prefer program tables over single-gene classes |
-| Absolute placement | `program_mechanism_permutation_calibrated` with a frozen `de=` table |
-| Detection | Optional `add_nascent_score=True` — separate from mechanism |
-| Run metadata | `result.meta` and `adata.uns["scatrans"]` |
+These are the installed keyword defaults, not recommendations:
+
+| Call | Default |
+|------|---------|
+| `partition_de_by_mechanism` | `organism="mouse"`, `logfc_cutoff=1.0`, `padj_cutoff=0.05`, `sample_col=None` (pseudobulk only if ≥3 samples/group) |
+| `run_default_pipeline` | `select_by="composite"` (deprecated), `run_go_enrichment=True` |
+| `filter_active_genes` | `select_by="composite"`, `preset=None` (permissive) |
+
+Usual practice: use `partition_de_by_mechanism`, pass `sample_col` when you
+have replicates, treat `result.selected` as the gene list, and report
+mechanism at the program level. Full table: {doc}`../api/index`.
 
 Stuck? {doc}`../faq`.
 

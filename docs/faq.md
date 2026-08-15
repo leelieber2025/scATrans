@@ -18,7 +18,7 @@ not drop DE hits or replace DE for discovery.
 | Topic | Practical rule |
 |-------|----------------|
 | Gene list | DE only (`result.selected`) |
-| Mechanism | Soft per-gene labels; prefer `gene_sets=` for program-level calls |
+| Mechanism | Exploratory per-gene labels; prefer `gene_sets=` for program-level calls |
 | Absolute placement | `program_mechanism_permutation_calibrated` (observed − label-shuffle null) |
 | Detection | Optional `add_nascent_score=True` — does not set mechanism labels |
 | Enrichment | On the DE list, not on `mechanism_class` splits |
@@ -48,8 +48,8 @@ count matrix. Enrichment and plotting work the same either way. Tutorial:
 {doc}`tutorials/t_gse96583_standalone_de_enrichment`.
 
 Don't have those layers yet? {doc}`tutorials/t_prepare_spliced_unspliced`
-covers generating them with velocyto / kb-python / STARsolo / alevin-fry (or
-renaming labeling-based `new`/`old` counts) and merging them into an
+covers generating them with velocyto / kb-python / STARsolo / alevin-fry
+(or renaming labeling-based `new`/`old` counts) and merging them into an
 existing AnnData.
 
 ## Can the residual replace DE?
@@ -61,10 +61,31 @@ not a recommended discovery path. Prefer
 
 ## Why is `result.selected` empty?
 
-Usually DE found no genes at your cutoffs (power, thresholds, or a quiet
-contrast) — not a failed package. Check design and DE settings first. The SCI
-endothelium tutorial shows an underpowered case where an empty list is the
-expected teaching point: {doc}`tutorials/t_ec_active_transcription`.
+Usually DE found no genes at **your cutoffs**, not a crash. The partition
+defaults are `padj_cutoff=0.05` and `logfc_cutoff=1.0` (strict `>`). Check
+`result.summary()` for the values that were used, then try a lower
+`logfc_cutoff` (for example `0.25`) or inspect
+`result.gene_table[["logFC", "p_adj"]]`.
+
+The SCI endothelium tutorial is an underpowered design where an empty list is
+the expected teaching point: {doc}`tutorials/t_ec_active_transcription`.
+
+## I got a low mapping-rate warning
+
+- **Gene features / mechanism:** `organism` defaults to `"mouse"`. Human
+  symbols (`TP53`, `GAPDH`, …) need `organism="human"`.
+- **External DE table:** the DE index must match `adata.var_names` (same ID
+  type and case). A match rate below 20% now warns; 0% yields an empty
+  `selected` list.
+- **Gene sets / GO / GSEA:** symbols must match the library. Enrichr sets are
+  usually **UPPERCASE**; try `gene_case="upper"` for mixed-case mouse symbols.
+
+## `organism` — mouse or human?
+
+The keyword default is **`"mouse"`** on partition, enrichment, and
+`add_gene_features`. That is not detected from your data. Pass
+`organism="human"` for human symbols, or enrichment and bias correction will
+look empty / poorly mapped.
 
 ## `padj_cutoff` or `pval_cutoff`?
 
@@ -103,6 +124,23 @@ pip install "scatrans[gsea]"              # GSEA (gseapy)
 ```
 
 See {doc}`installation`.
+
+## `use_pseudobulk=True` wiped my `adata.obs`
+
+Older builds returned the intermediate sample-level object, so
+
+```python
+adata, de = scat.differential_expression(adata, use_pseudobulk=True, sample_col="...")
+```
+
+left `obs` with only `sample_col`, `groupby`, `n_cells`, `total_counts`, and
+`pb_x_source`. That is a bug. Current versions keep the **cell-level** AnnData
+(same `obs` columns, embeddings, layers). Cells whose `groupby` value is
+not the target or reference also stay (only `subset_col` drops cells).
+The DE table is the second return value. Sample-level summary is in
+`adata.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies to
+`active_score`, `*_simple`, `run_default_pipeline`, and
+`partition_de_by_mechanism`.
 
 ## PyDESeq2 / Memento complain about counts
 
@@ -148,7 +186,7 @@ beats DE.
 
 `add_gene_features` matches `adata.var_names`. Genes absent from the feature
 table get `NaN` and skip bias correction. Custom tables need a `gene_name`
-column that matches exactly ({doc}`user_guide/gene_features`).
+column that matches `adata.var_names` exactly ({doc}`user_guide/gene_features`).
 
 ## Design / sample-size warnings
 

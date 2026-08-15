@@ -119,8 +119,10 @@ def test_active_score_pb_x_layer_sentinel(adata_pb):
         min_cells=1,
         min_counts=1,
     )
-    assert "pb_x_source" in ad_x.obs.columns
-    sources = set(ad_x.obs["pb_x_source"].astype(str).unique())
+    assert ad_x.n_obs == adata_pb.n_obs
+    pb_obs_x = ad_x.uns["scatrans"]["pseudobulk_obs"]
+    assert "pb_x_source" in pb_obs_x.columns
+    sources = set(pb_obs_x["pb_x_source"].astype(str).unique())
     assert sources == {"adata.X"}, f"expected adata.X, got {sources}"
     assert ad_x.uns.get("pb_x_source_desc") == "adata.X"
 
@@ -140,7 +142,8 @@ def test_active_score_pb_x_layer_sentinel(adata_pb):
         min_cells=1,
         min_counts=1,
     )
-    sources_s = set(ad_s.obs["pb_x_source"].astype(str).unique())
+    pb_obs_s = ad_s.uns["scatrans"]["pseudobulk_obs"]
+    sources_s = set(pb_obs_s["pb_x_source"].astype(str).unique())
     assert sources_s == {"layer 'spliced'"}, f"expected spliced layer, got {sources_s}"
     assert ad_s.uns.get("pb_x_source_desc") == "layer 'spliced'"
 
@@ -168,6 +171,10 @@ def test_differential_expression_pseudobulk_pydeseq2(adata_pb):
     )
     assert "logFC" in res.columns
     assert ad.uns["scatrans"]["use_pseudobulk"] is True
+    # Returned object is the cell-level working copy, not the sample-level DE matrix.
+    assert ad.n_obs == adata_pb.n_obs
+    assert "pseudobulk_obs" in ad.uns["scatrans"]
+    assert len(ad.uns["scatrans"]["pseudobulk_obs"]) < adata_pb.n_obs
 
 
 @pytest.mark.slow

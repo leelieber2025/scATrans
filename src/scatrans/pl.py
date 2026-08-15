@@ -118,11 +118,7 @@ GREEN = "#70B460"
 PURPLE = "#985EA8"
 ORANGE = "#F08F35"
 YELLOW = "#FADD4B"
-BROWN = "#9C5732"
-PINK = "#E787E5"
 GRAY = "#A3A3A3"
-VIOLET = "#442288"
-CHOCOLATE = "#662506"
 TEAL = "#00A087"
 INK = "#111111"
 
@@ -1661,11 +1657,10 @@ def enrich_dotplot(
 
         pval_candidates = ["p.adjust", "Adjusted P-value", "p_adj", "padj", "FDR_qval", "pvalue"]
         pval_col = next((c for c in pval_candidates if c in plot_df.columns), None)
-        if pval_col is None:
-            pval_col = plot_df.columns[0]
 
-        # Filter clearly invalid p-values for the chosen p column (enrichment results should have p in [0,1])
-        if pval_col and pval_col in plot_df.columns:
+        # Only gate [0, 1] when the column is actually a p-value. Falling back to
+        # columns[0] used to drop GSEA NES rows (|NES| > 1) as "invalid p".
+        if pval_col is not None:
             plot_df[pval_col] = pd.to_numeric(plot_df[pval_col], errors="coerce")
             invalid_p = (plot_df[pval_col] < 0) | (plot_df[pval_col] > 1)
             if invalid_p.any():
@@ -2372,7 +2367,7 @@ def enrich_upsetplot(
     - Set sizes (number of significant terms per cluster).
     - Intersection sizes (classic UpSet matrix + bars).
 
-    This is especially powerful when you used `extract_gene_lists(..., separate_directions=True)`
+    Useful when you used `extract_gene_lists(..., separate_directions=True)`
     so that "up" and "down" from different contrasts appear as separate sets.
 
     If no 'Cluster' column is present, the whole table is treated as a single set (degrades
@@ -3749,7 +3744,7 @@ def gseaplot(
     """
     Classic GSEA plot: running enrichment score (RES) curve + hits + ranked list.
 
-    Designed to work seamlessly with results from `scat.run_gsea`.
+    Accepts results from `scat.run_gsea`.
 
     Prefer ``gsea_result`` from :func:`scatrans.run_gsea` so
     ``.attrs['gsea_details']`` supplies the exact RES curve. Without that
@@ -5090,8 +5085,8 @@ def velocity_phase_portraits(
     Useful for visually inspecting whether top active genes show the expected excess
     nascent RNA in the target group. Points are colored by the groupby column when provided.
 
-    This is intentionally lightweight — for full control users are encouraged to write
-    their own small U/S scatter functions.
+    This is a lightweight diagnostic. For full control, write a custom
+    unspliced-versus-spliced scatter.
 
     Supports `dpi`, `show`, `use_style` for consistency with other pl.* functions.
     When groupby is provided, uses a categorical colormap (tab20) + figure-level legend.

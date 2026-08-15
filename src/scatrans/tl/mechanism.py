@@ -6,7 +6,7 @@ pipeline results table and never gate gene-list membership:
 
   * :func:`annotate_mechanism_class` — per-gene static mechanism label
     (transcription-driven / stabilization-driven / ambiguous) from the nascent
-    residual. Per-gene accuracy is modest by design; pair with
+    residual. Per-gene labels are exploratory; pair with
     :func:`program_mechanism` / :func:`program_mechanism_induction_matched`.
   * :func:`threshold_sensitivity` — DE-selected list size and overlap versus a
     reference cut across padj / logFC grids.
@@ -21,6 +21,7 @@ pipeline results table and never gate gene-list membership:
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -42,6 +43,57 @@ CLASS_COL = "mechanism_class"
 CONF_COL = "mechanism_confidence"
 INDUCTION_CONFOUND_COL = "induction_confounded"
 
+_PROGRAM_MECHANISM_COLUMNS = [
+    "program",
+    "n_genes",
+    "mean_support",
+    "bg_mean_support",
+    "U",
+    "p_value",
+    "fdr",
+    "significant",
+    "direction",
+]
+_PROGRAM_INDUCTION_MATCHED_COLUMNS = [
+    "program",
+    "n_genes",
+    "n_universe",
+    "mean_support",
+    "mean_logfc",
+    "direction",
+    "preferred_p",
+    "fdr",
+    "significant",
+]
+_MAPPING_RATE_WARN = 0.2
+
+
+def _warn_gene_set_mapping(
+    results_index: pd.Index,
+    gene_sets: Mapping[str, Sequence[str]],
+    *,
+    context: str,
+) -> None:
+    """Warn when gene-set symbols barely overlap the results index."""
+    query = [str(g).strip() for genes in gene_sets.values() for g in genes if str(g).strip()]
+    if not query:
+        return
+    ref = {str(g) for g in results_index}
+    n_mapped = sum(1 for g in query if g in ref)
+    rate = n_mapped / float(len(query))
+    if rate >= _MAPPING_RATE_WARN:
+        return
+    warnings.warn(
+        f"Low mapping rate ({rate:.1%}) in {context} "
+        f"({n_mapped}/{len(query)} gene-set members found in the results index). "
+        f"Gene-set examples: {query[:5]}; results index examples: "
+        f"{list(map(str, results_index[:5]))}. "
+        "Check gene identifiers and symbol case.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 # Minimum number of induced genes needed to estimate the |logFC| percentile the
 # induction-confound flag depends on; below this the flag is skipped (tiny tables,
 # e.g. unit fixtures, are left untouched).
@@ -51,22 +103,10 @@ _MIN_INDUCED_FOR_FLAG = 50
 # (regime high/low unspliced → proxy untrustworthy; confidence already ~0).
 _DEFAULT_MIN_RELIABILITY_FOR_HARD_LABELS = 0.05
 
-# Named parameter bundles for :func:`annotate_mechanism_class`. ``high_precision``
-# trades recall for a lower transcription-driven false-positive rate: on scEU-seq
-# RPE1 (matched-abundance gamma terciles) raising the threshold 0.5 -> 1.0 halves
-# the transcription-driven FPR (0.187 -> 0.086) at the same precision. Callers can
-# still override the field explicitly.
-#
-# NOTE: an earlier design also flipped on an asymmetric confidence discount for
-# transcription-driven calls, on the premise that the proxy resolves stabilization
-# more cleanly (per-gene mean robust-z stab -0.31 vs synth +0.05). A direct
-# confusion-matrix check falsified that premise: at the operating point,
-# transcription-driven precision (0.664) is HIGHER than stabilization-driven (0.591)
-# on RPE1 — the symmetric +/-threshold sits off-centre from the negatively-shifted
-# class pair, so the transcription cut is effectively stricter/purer. Down-weighting
-# transcription confidence would penalise the MORE precise call, so it was dropped.
-# (The residual precision asymmetry, if one wants to address it, calls for an
-# asymmetric THRESHOLD, not a confidence discount.)
+# Named parameter bundles for :func:`annotate_mechanism_class`.
+# ``high_precision`` sets ``class_threshold=1.0`` (default is 0.5), which
+# reduces transcription-driven false positives at the cost of recall.
+# An explicit ``class_threshold`` argument overrides the preset.
 _PRESETS: dict[str, dict[str, Any]] = {
     "high_precision": {"class_threshold": 1.0},
 }
@@ -128,16 +168,15 @@ def annotate_mechanism_class(
     - ``unclassified_down``      : logFC < 0 (validated contrast is up-regulation)
     - ``unknown``                : residual missing
 
-    Per-gene accuracy is modest by design (proxy matched-abundance AUC ~0.61); the
-    ``"high_precision"`` preset lowers the false-positive rate, and program-level
-    pooling (:func:`program_mechanism` / :func:`program_mechanism_induction_matched`)
-    is the real precision lever. Prefer program calls over single-gene mechanism
-    claims.
+    Per-gene labels are exploratory. The ``"high_precision"`` preset raises the
+    class threshold and lowers the transcription-driven false-positive rate.
+    Prefer program-level tests (:func:`program_mechanism` /
+    :func:`program_mechanism_induction_matched`) for claims.
 
-    When ``reliability`` is below ``min_reliability_for_hard_labels`` (default from
-    regime extremes such as snRNA / extreme high-unspliced libraries), hard
-    transcription/stabilization labels are reassigned to ``ambiguous`` by default
-    so a near-zero-confidence proxy cannot mint decisive-looking classes.
+    When ``reliability`` is below ``min_reliability_for_hard_labels`` (default
+    0.05; typical of snRNA-seq or libraries with an extreme unspliced fraction),
+    transcription-driven and stabilization-driven labels are reassigned to
+    ``ambiguous``. Support values are unchanged.
 
     Parameters
     ----------
@@ -153,10 +192,8 @@ def annotate_mechanism_class(
         Defaults to the ``preset`` value, or ``0.5`` when no preset is given.
         An explicit value always wins over the preset.
     preset
-        Named parameter bundle. ``"high_precision"`` sets ``class_threshold=1.0``,
-        trading recall for a lower transcription-driven false-positive rate (halved
-        on scEU-seq RPE1 at the same precision). An explicit ``class_threshold``
-        overrides the preset.
+        Named parameter bundle. ``"high_precision"`` sets ``class_threshold=1.0``.
+        An explicit ``class_threshold`` overrides the preset.
     reliability
         Dataset-level proxy reliability in [0, 1] (e.g. from the regime diagnosis);
         scales ``mechanism_confidence`` so steady-state runs report low confidence.
@@ -168,27 +205,19 @@ def annotate_mechanism_class(
     min_reliability_for_hard_labels
         Reliability floor for hard labels when suppression is enabled (default 0.05).
     flag_induction_confound
-        Mark and down-weight per-gene stabilization calls in the high-induction
-        regime, where the static residual is single-snapshot NON-identifiable.
-        Strong induction inflates FALSE stabilization: at a snapshot the mature pool
-        accumulates faster than a resting U/S reference predicts, pushing the residual
-        negative even for transcription-driven genes (e.g. ISGs; documented as the
-        Fig. 2 time-decay). The confound overlaps genuine high-induction stabilization
-        (e.g. ARE cytokines) on every per-gene observable, so this is an HONEST
-        reliability flag, not a corrector: it never relabels and never consults the
-        nascent detection score (the axes stay decoupled). It adds a boolean
-        ``induction_confounded`` column and multiplies ``mechanism_confidence`` by a
-        penalty for flagged genes; program-level calls (:func:`program_mechanism`,
-        which run on ``transcription_support``) are unaffected. Requires ``logfc_col``
-        and at least ``50`` induced genes; otherwise it is skipped.
-        WARNING — ``induction_confounded=True`` marks a *danger zone*, NOT a correction:
-        it does **not** mean the gene is "not stabilization-driven" (it flags both
-        mislabeled transcription-driven ISGs and genuine high-induction ARE, which are
-        indistinguishable per-gene). Resolve mechanism at the induction-matched
-        program level, not by reading the boolean. NOTE — this defaults to ``True``, so
-        it is a soft behaviour change: ``mechanism_confidence`` (not the label or
-        support) is lowered for flagged genes relative to older releases; set ``False``
-        to restore the prior confidence values.
+        If True, mark high-induction stabilization calls and reduce their
+        ``mechanism_confidence``. At a single snapshot, strong induction can
+        make the residual more negative as mature mRNA accumulates, so the
+        same pattern appears for both false stabilization (for example
+        interferon-stimulated genes) and genuine high-induction stabilization
+        (for example ARE-containing transcripts). The flag does not relabel
+        genes and does not use the nascent detection score. Program-level
+        tests that use ``transcription_support`` are unchanged. Requires
+        ``logfc_col`` and at least 50 induced genes; otherwise it is skipped.
+        ``induction_confounded=True`` is a reliability warning, not a
+        corrected class. Defaults to True, which lowers
+        ``mechanism_confidence`` for flagged genes relative to earlier
+        releases. Set False to keep the previous confidence values.
     induction_confound_quantile
         A stabilization call is flagged when its ``|logFC|`` is at/above this quantile
         **within the induced genes** (``|logFC| >= induction_logfc_floor``). Default
@@ -261,7 +290,7 @@ def annotate_mechanism_class(
     label[up_ok & (support <= -class_threshold)] = "stabilization-driven"
     label[up_ok & (np.abs(support) < class_threshold)] = "ambiguous"
 
-    # Item H: extreme regimes (reliability ~ 0) — do not mint hard classes.
+    # Low reliability: do not assign transcription- or stabilization-driven labels.
     n_hard_suppressed = 0
     hard_suppressed = bool(
         suppress_hard_labels_when_unreliable and reliability < min_reliability_for_hard_labels
@@ -423,22 +452,14 @@ def program_mechanism(
     over single-gene mechanism claims.
 
     .. warning::
-       **Use mechanism-coherent, length-aware gene sets — not arbitrary functional
-       pathways.** Pooling sharpens the weak per-gene mechanism signal only when the
-       set's genes actually share a mechanism *and* are not confounded with gene
-       length. The unspliced-excess support is length-entangled, and
-       functionally-defined libraries (KEGG / GO) differ enormously in gene-length
-       composition, so a naive pathway screen ranks pathways by **gene length, not
-       mechanism**. Validated on scEU-seq RPE1 against independent pulse-chase
-       ``gamma``: pathway ``mean_support`` correlated with the labeling truth
-       (Spearman +0.39) but that vanished after controlling for gene length
-       (partial Spearman −0.06, p≈0.5); the "most transcription-driven" pathways
-       were simply the longest-gene ones (axon guidance, LTP — not even expressed in
-       the epithelial line). Prefer **curated mechanism sets** (e.g. ARE-containing
-       transcripts) and/or a **length-matched background**; treat KEGG/GO
-       ``program_mechanism`` output as descriptive only. The against-background test
-       is also underpowered for impure sets — it detects strong curated programs
-       (e.g. ARE stabilization) but not weak, mixed ones.
+       Use gene sets that share a mechanism and are not confounded with gene
+       length. The unspliced-excess support is correlated with gene length, and
+       functional libraries such as KEGG and GO vary widely in length
+       composition, so a naive pathway screen can rank sets by length rather
+       than mechanism. Prefer curated mechanism sets (for example ARE-containing
+       transcripts) or a length-matched background. Treat KEGG or GO
+       ``program_mechanism`` output as descriptive. The competitive test is
+       underpowered for mixed or weakly coherent sets.
 
     Parameters
     ----------
@@ -474,6 +495,7 @@ def program_mechanism(
     ``p_value``, ``fdr``, ``significant``. Sorted by ``p_value``.
     """
     df = results
+    _warn_gene_set_mapping(df.index, gene_sets, context="program_mechanism")
     if support_col is not None:
         if support_col not in df.columns:
             raise KeyError(f"support_col={support_col!r} not in results columns")
@@ -535,7 +557,7 @@ def program_mechanism(
         )
     out = pd.DataFrame(rows)
     if out.empty:
-        return out.assign(direction=[], fdr=[], significant=[])
+        return pd.DataFrame(columns=_PROGRAM_MECHANISM_COLUMNS)
 
     # BH FDR across programs
     p = out["p_value"].to_numpy(float)
@@ -654,6 +676,7 @@ def program_mechanism_induction_matched(
         raise ValueError("nearest_k must be >= 1")
     if logfc_col not in results.columns:
         raise KeyError(f"logfc_col={logfc_col!r} required for induction-matched tests")
+    _warn_gene_set_mapping(results.index, gene_sets, context="program_mechanism_induction_matched")
 
     if support_col is not None:
         if support_col not in results.columns:
@@ -688,16 +711,7 @@ def program_mechanism_induction_matched(
     )
     uni = results.index[ok]
     if len(uni) < min_genes + 2:
-        return pd.DataFrame(
-            columns=[
-                "program",
-                "n_genes",
-                "n_universe",
-                "mean_support",
-                "direction",
-                "preferred_p",
-            ]
-        )
+        return pd.DataFrame(columns=_PROGRAM_INDUCTION_MATCHED_COLUMNS)
 
     S = support.reindex(uni).to_numpy(float)
     L = logfc.reindex(uni).to_numpy(float)
@@ -791,7 +805,7 @@ def program_mechanism_induction_matched(
 
     out = pd.DataFrame(rows)
     if out.empty:
-        return out
+        return pd.DataFrame(columns=_PROGRAM_INDUCTION_MATCHED_COLUMNS)
     # BH across programs on preferred_p
     p = out["preferred_p"].to_numpy(float)
     finite = np.isfinite(p)

@@ -56,7 +56,7 @@ The original Enrichr collections (via gseapy) have many historical versions (dif
 ### Why use these instead of (or in addition to) Enrichr/gseapy sets?
 
 - **Consistency**: Same gene ↔ term associations as clusterProfiler → more comparable results.
-- Works great together with the improved background/universe handling we added (conservative intersect by default, `force_universe`, detailed `universe_info` in attrs).
+- Compatible with the package background/universe handling (conservative intersect by default, `force_universe`, detailed `universe_info` in attrs).
 - You can still use the original Enrichr libraries (e.g. `"GO_Biological_Process_2023"`, `"KEGG_2026"`) — the loader tries bundled sets first, then falls back to gseapy.
 
 ### Usage

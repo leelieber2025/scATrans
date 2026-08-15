@@ -96,7 +96,7 @@ and `programs_induction_matched` (default `None`).
   `add_nascent_score=True`.
 - **`programs` / `programs_induction_matched`:** competitive program table when
   `gene_sets=` is set; induction-matched table when `induction_matched=True`.
-- **`regime`:** copy of the reliability pre-flight dict (also under
+- **`regime`:** copy of the reliability diagnostic dict (also under
   `meta["regime"]`).
 - **`meta` keys:** always `scatrans_version`, `organism`, `de_source`, `de`,
   `select`, `regime`, `mechanism`, `programs`, `nascent_score`
@@ -104,7 +104,8 @@ and `programs_induction_matched` (default `None`).
   `pseudoreplication_warning` when applicable. Mechanism is **always**
   residual-based; `nascent_score` never drives `transcription_support` /
   program directions.
-- **`summary()`:** compact program-first counts; marks per-gene classes as soft.
+- **`summary()`:** compact program-first counts. Per-gene classes are marked
+  as exploratory.
 
 ### `PipelineResult`
 
@@ -118,8 +119,8 @@ and `programs_induction_matched` (default `None`).
 `active_score` ran, it also surfaces the nested `diagnostics` block and
 selected run flags from `adata.uns["scatrans"]` (e.g. `use_permutation`,
 `gamma_method`, `mode`). On velocity-capable objects the pipeline also
-records **`meta["regime"]`** from `scat.qc.regime_diagnosis` (fail-soft if
-layers are missing). Optional add-ons record under `meta["bias"]`,
+records **`meta["regime"]`** from `scat.qc.regime_diagnosis` (if layers
+are missing, the result is still returned). Optional add-ons record under `meta["bias"]`,
 `meta["adaptive"]`, and `meta["mechanism"]` when used.
 The full run metadata remains on `result.adata.uns["scatrans"]`.
 
@@ -163,9 +164,8 @@ changes that affect scientific interpretation should be called out in
 ## How to stay safe as a user
 
 1. Depend on `scatrans.__all__` / documented functions, not internal modules.
-2. Pin a minor version range in papers and production. For the **0.10.9**
-   release (including `program_mechanism_permutation_calibrated`), use
-   ``scatrans==0.10.9`` (or ``scatrans>=0.10.9,<0.11`` if you accept later
+2. Pin a minor version range in papers and production. This tree is
+   ``scatrans==0.10.13`` (or ``scatrans>=0.10.13,<0.11`` if you accept later
    0.10.x patches).
 3. Record `scatrans.__version__` (and backend versions such as PyDESeq2) in
    Methods / session logs.

@@ -330,6 +330,18 @@ def test_extract_gene_lists_seurat_avg_log2FC():
     assert out["contrast"] == ["G_up"]
 
 
+def test_extract_gene_lists_seurat_p_val_adj():
+    """Seurat p_val_adj is adjusted p, not a missing column."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"avg_log2FC": [1.2, -0.9, 0.1], "p_val_adj": [0.01, 0.02, 0.5]},
+        index=["G_up", "G_down", "G_ns"],
+    )
+    out = scat.extract_gene_lists(df, logfc_cutoff=0.5, padj_cutoff=0.05, logfc_direction="up")
+    assert out["contrast"] == ["G_up"]
+
+
 def test_extract_gene_lists_missing_lfc_warns(caplog):
     import logging
 

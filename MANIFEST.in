@@ -36,6 +36,7 @@ recursive-exclude src/scatrans.egg-info *
 prune build
 prune dist
 prune backup
+prune bak
 prune .git
 prune .mypy_cache
 prune .pytest_cache

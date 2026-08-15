@@ -1,9 +1,4 @@
-"""
-scATrans internal differential expression helpers.
-
-Contains the wrapper that supports both scanpy rank_genes_groups and PyDESeq2
-for pseudobulk. Extracted so tl.py stays small.
-"""
+"""Internal differential expression backends (scanpy and PyDESeq2)."""
 
 from __future__ import annotations
 

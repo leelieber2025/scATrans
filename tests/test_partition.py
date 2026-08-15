@@ -84,6 +84,17 @@ def test_injected_dataframe_de_controls_membership(adata_basic):
     assert r.meta["de"]["n_matched_to_scored"] == len(names)
 
 
+def test_injected_de_zero_overlap_warns(adata_basic):
+    de_df = pd.DataFrame(
+        {"logFC": [3.0] * 8, "p_adj": [1e-8] * 8},
+        index=[f"ENSG{i:08d}" for i in range(8)],
+    )
+    with pytest.warns(UserWarning, match="matched 0/"):
+        r = _run(adata_basic, de=de_df)
+    assert len(r.selected) == 0
+    assert r.meta["de"]["n_matched_to_scored"] == 0
+
+
 def test_injected_de_stats_written_into_selected_and_mechanism(adata_basic):
     """Regression (Issue 1): for external DE, reported logFC/p_adj and the mechanism
     DIRECTION must come from the SELECTING DE — not the builtin active_score pass —
@@ -265,7 +276,7 @@ def test_select_by_de_not_deprecated(adata_basic):
 
 # --------------------------- P0 summary + P1 induction_matched ---------------
 def test_summary_is_program_first_and_marks_soft_labels(adata_basic):
-    r = _run(adata_basic)
+    r = _run(adata_basic, padj_cutoff=0.1, logfc_cutoff=0.5, logfc_direction="up")
     s = r.summary()
     assert s["per_gene_labels_are_soft"] is True
     assert "note" in s and "mechanism_class" in s["note"]
@@ -273,6 +284,9 @@ def test_summary_is_program_first_and_marks_soft_labels(adata_basic):
     # backward-compatible alias still present
     assert "class_counts_selected" in s
     assert "n_programs" in s
+    assert s["padj_cutoff"] == 0.1
+    assert s["logfc_cutoff"] == 0.5
+    assert s["logfc_direction"] == "up"
 
 
 def test_pseudoreplication_warning_without_sample_col(adata_basic, caplog):

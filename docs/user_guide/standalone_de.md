@@ -38,6 +38,12 @@ mixed models, optional Memento). Do **not** set `use_mixed_model` and
 `use_memento_de` together. With MixedLM, reported `logFC` is
 sample-mean-of-means log2FC — see {doc}`advanced`.
 
+`use_pseudobulk=True` aggregates internally for DE. The returned AnnData stays
+cell-level (same `obs` columns, embeddings, and layers). Sample-level summary
+is in `adata.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies to
+`active_score`, `active_score_simple`, `differential_expression_simple`,
+`run_default_pipeline`, and `partition_de_by_mechanism`.
+
 The result table plugs into `filter_active_genes`, enrichment helpers, and
 `scat.pl.*`. Example script: `examples/memento_de_example.py`.
 

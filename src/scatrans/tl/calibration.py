@@ -51,15 +51,26 @@ def _shuffle_within_blocks(
     labels: np.ndarray,
     blocks: np.ndarray | None,
     rng: np.random.Generator,
+    *,
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Permute ``labels``; when ``blocks`` is given, permute within each block.
+    """Permute ``labels`` among rows in ``mask`` (default: every row).
 
-    Blocking preserves any condition-by-batch/donor imbalance in the null, so the
-    calibration does not credit the observation for structure the design already has.
+    When ``blocks`` is given, permute within each block, still restricted to
+    ``mask``. Rows outside ``mask`` keep their original labels. Blocking
+    preserves condition-by-batch or donor imbalance in the null.
     """
     out = np.array(labels, copy=True)
+    if mask is None:
+        eligible = np.ones(len(out), dtype=bool)
+    else:
+        eligible = np.asarray(mask, dtype=bool)
+        if eligible.shape != out.shape:
+            raise ValueError("mask must have the same length as labels")
     if blocks is None:
-        rng.shuffle(out)
+        idx = np.flatnonzero(eligible)
+        if idx.size > 1:
+            out[idx] = rng.permutation(out[idx])
         return out
     # pd.unique keeps NA; ``blocks == na`` is never True, so skip NA keys and
     # leave NA-blocked rows fixed (cannot form an exchangeability class).
@@ -69,7 +80,7 @@ def _shuffle_within_blocks(
                 continue
         except (TypeError, ValueError):
             pass
-        idx = np.flatnonzero(blocks == b)
+        idx = np.flatnonzero((blocks == b) & eligible)
         if idx.size > 1:
             out[idx] = rng.permutation(out[idx])
     return out
@@ -111,6 +122,8 @@ def program_mechanism_permutation_calibrated(
         Seed for the permutation stream.
     block_col
         Optional ``obs`` column (e.g. donor, batch) within which labels are shuffled.
+        Only cells whose condition is ``target_group`` or ``reference_group`` are
+        shuffled; any other ``groupby`` value is left unchanged.
     support_col
         Column holding per-gene transcription support in the partition gene table.
     min_genes
@@ -165,6 +178,9 @@ def program_mechanism_permutation_calibrated(
     for g_raw, g_norm in ((target_group, target_norm), (reference_group, reference_norm)):
         if not np.any(norm_labels == g_norm):
             raise ValueError(f"group {g_raw!r} absent from adata.obs[{groupby!r}]")
+    # Only the two contrast levels are exchangeable. Other values in groupby
+    # (extra conditions, unused cell types) stay fixed.
+    contrast_mask = (norm_labels == target_norm) | (norm_labels == reference_norm)
     if block_col is not None and block_col not in adata.obs:
         raise KeyError(f"block_col={block_col!r} not in adata.obs")
     blocks = np.asarray(adata.obs[block_col].values) if block_col else None
@@ -239,7 +255,7 @@ def program_mechanism_permutation_calibrated(
     perm_ad = adata.copy()
     for i in range(n_perm):
         # Preserve original label dtype/representation; only order changes.
-        perm_ad.obs[groupby] = _shuffle_within_blocks(labels, blocks, rng)
+        perm_ad.obs[groupby] = _shuffle_within_blocks(labels, blocks, rng, mask=contrast_mask)
         try:
             _, sup = _run(perm_ad)
         except Exception as exc:  # a degenerate shuffle must not kill the run
@@ -277,7 +293,7 @@ def program_mechanism_permutation_calibrated(
         m = float(arr.mean())
         s = float(arr.std(ddof=1)) if n_eff > 1 else np.nan
         calibrated = o - m
-        # two-sided empirical p, centred on the null mean; Phipson & Smyth (2010)
+        # two-sided empirical p, centered on the null mean; Phipson and Smyth (2010)
         b = int(np.sum(np.abs(arr - m) >= abs(calibrated)))
         z = calibrated / s if (np.isfinite(s) and s > 0) else np.nan
         rows.append(

@@ -1,8 +1,7 @@
 # Tutorials
 
-Notebooks are pre-executed: the HTML on Read the Docs already includes tables
-and figures, so you can read results online without downloading large `.h5ad`
-files or re-running cells.
+HTML on Read the Docs is pre-executed (tables and figures already there).
+Re-run locally only if you have the `.h5ad` files at the repo root.
 
 ## Pick a notebook
 
@@ -109,7 +108,7 @@ Same API; DE finds nothing — that is the point. Sample- vs cell-level table.
 
 Wilcoxon / PyDESeq2 / Memento, ORA, GO, KEGG, GSEA, plots.
 +++
-`EC.h5ad` · counts only
+`kang_ifnb_tutorial_subset.h5ad` · counts only
 :::
 
 :::{grid-item-card} Visualization gallery

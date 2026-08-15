@@ -6,8 +6,6 @@ Reference gamma (U/S ratio) estimation supports multiple robust methods, includi
 log-ratios in the reference group are shrunk toward a robust data-driven prior
 (estimated via trimmed median + MAD on log-ratios). This borrows strength across
 genes and improves stability especially for small reference groups.
-
-Extracted from original tl.py.
 """
 
 from __future__ import annotations

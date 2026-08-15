@@ -60,13 +60,16 @@ result = scat.partition_de_by_mechanism(
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
-    organism="mouse",  # or "human"
-    de="builtin",
-    sample_col="sample",  # when you have replicates
+    organism="mouse",       # "human" for human symbols
+    sample_col="sample",    # toy has this; pass your replicate column when you have one
     # gene_sets=my_pathways,
     # induction_matched=True,
 )
 ```
+
+`groupby` / `target_group` / `reference_group` must match values in
+`adata.obs`. `organism` selects the bundled gene-feature table and GO/KEGG
+sets. The keyword default is `"mouse"`; pass `"human"` for human data.
 
 ### What to look at
 
@@ -74,8 +77,24 @@ result = scat.partition_de_by_mechanism(
 print(result.regime)            # capture OK? reliability in [0, 1]
 print(len(result.selected))     # how many DE genes
 print(result.selected.head())   # logFC, p_adj, mechanism columns
-print(result.summary())
+print(result.summary())         # padj_cutoff, logfc_cutoff, counts
 ```
+
+| If this happens | What to do |
+|-----------------|------------|
+| `result.selected` is empty | Default is `padj < 0.05` and `logFC > 1.0`. Try `logfc_cutoff=0.25`, or print `result.gene_table[["logFC","p_adj"]].head()`. |
+| Low gene-feature / enrichment mapping warning | Wrong `organism`, or symbol case / Ensembl vs symbol mismatch. |
+| `sample_col` warning | You omitted replicates. Effect sizes are still usable; p-values are cell-level. |
+
+Keyword defaults if you omit them: `organism="mouse"`, `logfc_cutoff=1.0`,
+`padj_cutoff=0.05`, `sample_col=None`. Passing `sample_col` only switches
+to pseudobulk + PyDESeq2 when there are at least 3 samples per group;
+otherwise DE stays cell-level Wilcoxon. `load_toy()` ships 2 samples per
+group, so the install check uses Wilcoxon. Full table: {doc}`api/index`.
+
+Do not mix these with `active_score` / `filter_active_genes(preset="heuristic")`
+defaults (`logfc_cutoff=0.35`, `de_method="t-test_overestim_var"`). Same
+AnnData, different gene list.
 
 | Field | Meaning |
 |-------|---------|
@@ -86,8 +105,8 @@ print(result.summary())
 | `result.programs_induction_matched` | Only if `induction_matched=True` |
 | `result.meta` | Version, DE source, thresholds, diagnostics |
 
-Per-gene `mechanism_class` is a soft hint. Prefer program-level tables when you
-make stronger claims.
+Per-gene `mechanism_class` values are exploratory. Prefer program-level
+tables when you report mechanism.
 
 ### Enrichment and plots
 
@@ -149,9 +168,14 @@ adata, de_results = scat.differential_expression(
     groupby="condition",
     target_group="Disease",
     reference_group="Control",
+    # use_pseudobulk=True, sample_col="sample",  # still returns cell-level adata
 )
 candidates = scat.filter_active_genes(de_results, select_by="de")
 ```
+
+`use_pseudobulk=True` aggregates internally; the returned `adata` stays
+cell-level. Sample-level summary:
+`adata.uns["scatrans"]["pseudobulk_obs"]`.
 
 Enrichment and plotting work the same way:
 {doc}`user_guide/standalone_de`.

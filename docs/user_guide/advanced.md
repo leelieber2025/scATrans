@@ -41,13 +41,16 @@ Adds:
   production gene-list filter. Prefer DE membership
   (`select_by="de"` / `result.selected`).
 
-The permutation shuffles only group labels; unspliced/spliced layers and the
-reference gamma are fixed from the original labeling for speed. **This is a
-conditional permutation** (conditioned on the observed velocity structure
-and gamma). It is a speed/tractability tradeoff and **not an unconditional
-permutation of the full data**. In small reference groups or strong batch
-effects, interpret the resulting FDR with extra caution; always inspect
-diagnostics and consider biological replicates.
+The permutation shuffles group labels. Unspliced/spliced layers stay fixed.
+The residual pipeline (reference ratio, excess, Huber) is **recomputed**
+from the shuffled reference group. Under `gamma_method="empirical_bayes"`
+the prior hyperparameters stay at their observed-data values. Shuffle unit:
+**cells** for scanpy / Memento / the pseudobulk path (then re-aggregate);
+**sample / RE cluster** for MixedLM (or within subject if
+`paired_replicates=True`). This is a **conditional** permutation, not an
+unconditional reshuffle of the full data. Cell-level shuffles do not fix
+pseudoreplication. In small reference groups or strong batch effects, treat
+residual FDR as exploratory.
 
 **`perm_de_backend` (default: `"same"`)** — controls which DE method builds
 the permutation null:
@@ -121,7 +124,7 @@ all_results, diag = scat.add_abundance_normalized_residual(
 print(diag["abundance_floor"], diag["method"])
 ```
 
-Or fold the same step into the one-liner (fail-soft; diagnostics in
+Or include the same step in `run_default_pipeline` (diagnostics in
 `meta["bias"]`):
 
 ```python
@@ -207,7 +210,7 @@ Standalone filter:
 candidates = scat.filter_active_genes(all_results, select_by="de")
 ```
 
-## Regime / proxy-reliability pre-flight
+## Regime / proxy-reliability diagnostic
 
 Before trusting nascent annotations, map the global unspliced fraction to a
 dataset-level reliability scalar:
@@ -224,11 +227,11 @@ r = scat.qc.regime_diagnosis(adata)
 | `low_unspliced` | Little nascent signal; reliability ramps down toward 0 |
 | `high_unspliced` | Possible nuclear/gDNA contamination; gamma / proxy may mis-fit |
 
-`run_default_pipeline` always stores this in `meta["regime"]` (fail-soft if
-layers are missing). Scope: **data-quality / gamma** only — not yet
-dynamic-vs-steady-state (that needs a velocity-magnitude signal, pending
-validation). High reliability means the proxy is not clearly corrupted; it is
-not evidence that the residual outperforms DE.
+`run_default_pipeline` stores this in `meta["regime"]`. If layers are
+missing, the pipeline still returns a result. Scope is data quality and
+gamma reliability only; the diagnostic does not classify dynamic versus
+steady-state regimes. High reliability means the residual is not clearly
+corrupted; it is not evidence that the residual outperforms DE.
 
 ## Mechanism annotation
 
@@ -406,8 +409,10 @@ samples per group** and **≥6 total random-effect groups**; otherwise
 `active_score(..., use_mixed_model=True)` raises `ValueError`. With fewer
 replicates, use **`use_pseudobulk=True`** + `pseudobulk_de_backend="pydeseq2"`
 instead (and prefer `filter_active_genes(preset="pseudobulk")` or DE
-`p_adj` for significance). `recommend_workflow()` and `diagnose_design()`
-surface this automatically when `sample_col` is provided.
+`p_adj` for significance). Aggregation is internal — the returned AnnData
+stays cell-level; see `uns["scatrans"]["pseudobulk_obs"]`.
+`recommend_workflow()` and `diagnose_design()` surface this automatically
+when `sample_col` is provided.
 
 **Paired replicate designs:** When the same `sample_col` IDs appear in both
 conditions (e.g. `rep1`/`rep2` reused as labels in Disease and Control), the

@@ -196,7 +196,7 @@ def filter_active_genes(
         Which p-value column to filter on:
 
         - ``"auto"`` (default): use ``p_adj`` when present, otherwise ``p_val``
-          (historical behaviour).
+          (historical behavior).
         - ``"adj"`` / ``"padj"`` / ``"p_adj"``: always filter on adjusted p
           (``p_adj``). Raises if the column is missing.
         - ``"nominal"`` / ``"pval"`` / ``"p_val"``: always filter on nominal p

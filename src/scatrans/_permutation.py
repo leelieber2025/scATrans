@@ -1,9 +1,4 @@
-"""
-Permutation testing support for active_score significance.
-
-The heavy _single_permutation_task (and the orchestration) was one of the
-biggest contributors to tl.py line count. Extracted here.
-"""
+"""Permutation tests for active_score residual significance."""
 
 from __future__ import annotations
 

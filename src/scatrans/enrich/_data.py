@@ -258,19 +258,7 @@ def _try_load_bundled_gene_set(
 
 
 def _resolve_gene_set_name(requested: str, source: str, organism: str = "mouse") -> str:
-    """
-    Resolve gene set name.
-
-    New default (per latest requirement):
-    - If no specific version/year is requested, default to the organism-specific
-      built-in libraries added in data/ (Hs_*/Mm_*_2026.txt for human/mouse).
-    - User only needs to specify organism (for run_kegg especially).
-    - If user writes a specific Enrichr-style name with year (e.g. GO_Biological_Process_2023
-      or KEGG_2021), it is passed through (to gseapy/Enrichr) unless it matches a bundled name.
-    - Explicit gene_set_source="enrichr" forces original Enrichr.
-
-    The 4 new built-in files are the default when nothing more specific is given.
-    """
+    """Map a short library name to a bundled file, or pass dated Enrichr names through."""
     if source == "enrichr":
         return requested
 
@@ -281,27 +269,20 @@ def _resolve_gene_set_name(requested: str, source: str, organism: str = "mouse")
     elif o in ("mouse", "mm", "mmu"):
         prefix = "Mm"
 
-    # New organism-specific 2026 defaults (the 4 files added to data/)
-    # These become the default built-in library if user does not specify a year/version.
-    # Only map names for which we actually ship bundled files (BP + KEGG for each organism).
+    # Undated names map to bundled 2026 files. Dated Enrichr names are left as-is.
     default_map = {
-        # Base names (no year) -> organism 2026 built-in (only BP + KEGG are bundled)
         "GO_Biological_Process": f"{prefix}_GO_Biological_Process_2026",
         "GO_Biological_Process_2026": f"{prefix}_GO_Biological_Process_2026",
         "GO_BP": f"{prefix}_GO_Biological_Process_2026",
         "KEGG": f"{prefix}_KEGG_2026",
         "KEGG_2026": f"{prefix}_KEGG_2026",
-        # Historical Enrichr names with explicit years (e.g. GO_Biological_Process_2023,
-        # KEGG_2021) are intentionally NOT mapped here — they pass through to gseapy/Enrichr.
     }
 
     mapped = default_map.get(requested)
     if mapped is not None:
         return mapped
 
-    # Legacy *_scATrans (and .gmt) names from older examples/docs.
-    # Map them to the current organism's 2026 built-in for seamless backward compat
-    # (old .gmt files are no longer shipped; the 2026 txt files are the supported bundled sets).
+    # Legacy *_scATrans / .gmt names map to the current bundled files.
     if (
         "scATrans" in requested
         or "_scATrans" in requested.lower()

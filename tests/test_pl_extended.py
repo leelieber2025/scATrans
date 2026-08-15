@@ -15,6 +15,21 @@ import scatrans as scat
 pytestmark = pytest.mark.plot
 
 
+def test_enrich_dotplot_keeps_nes_when_no_padj_column():
+    """NES-only GSEA tables must not be filtered as invalid p-values."""
+    df = pd.DataFrame(
+        {
+            "NES": [2.1, -1.8, 0.4],
+            "Term": ["up_set", "down_set", "weak"],
+            "Count": [10, 8, 5],
+        }
+    )
+    fig, ax = scat.pl.enrich_dotplot(df, x="NES", color_by="NES", show=False)
+    labels = {t.get_text() for t in ax.get_yticklabels()}
+    assert {"up_set", "down_set", "weak"} <= labels
+    plt.close(fig)
+
+
 def test_comet_plot_point_scale_and_s(results_df):
     fig, ax = scat.pl.comet_plot(results_df, top_n=4, s=2, show=False)
     plt.close(fig)

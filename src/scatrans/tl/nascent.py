@@ -9,9 +9,10 @@ provides an additive **detection** signal that:
 * uses a **variance-stabilized Poisson-z** of the nascent increase
   (``nascent_poisson_z``);
 * optionally marks spliced-side **DE reproducibility**
-  (``de_reproducible`` / ``de_repro_frac``) — annotation only, never membership
-  gating. The flag cannot distinguish a DE false positive from a genuine
-  stabilization-driven gene (both can show near-zero nascent excess).
+  (``de_reproducible`` / ``de_repro_frac``). These columns do not change
+  gene-list membership. The flag cannot distinguish a DE false positive
+  from a genuine stabilization-driven gene (both can show near-zero
+  nascent excess).
 
 Detection is a different question from the transcription-vs-stabilization
 **mechanism** partition. The Poisson-z is an absolute, induction-coupled nascent

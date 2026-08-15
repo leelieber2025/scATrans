@@ -225,6 +225,25 @@ def test_program_mechanism_detects_transcription_program():
     assert {"fdr", "p_value", "n_genes"} <= set(pm.columns)
 
 
+def test_program_mechanism_case_mismatch_warns_and_empty_schema():
+    df, trans = _table_with_program()
+    with pytest.warns(UserWarning, match="Low mapping rate"):
+        pm = scat.program_mechanism(df, {"TRANS": [g.upper() for g in trans]}, min_genes=5)
+    assert pm.empty
+    for col in (
+        "program",
+        "n_genes",
+        "mean_support",
+        "bg_mean_support",
+        "U",
+        "p_value",
+        "fdr",
+        "significant",
+        "direction",
+    ):
+        assert col in pm.columns
+
+
 def test_program_mechanism_min_genes_filters():
     df, trans = _table_with_program()
     gene_sets = {"TRANS": trans, "TINY": trans[:3]}

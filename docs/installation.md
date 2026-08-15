@@ -44,8 +44,21 @@ correction. Custom GTF tables: {doc}`user_guide/gene_features`.
 
 ```python
 import scatrans as scat
+
 print(scat.__version__)
+adata = scat.datasets.load_toy()
+result = scat.partition_de_by_mechanism(
+    adata,
+    groupby="condition",
+    target_group="Disease",
+    reference_group="Control",
+    organism="mouse",
+    sample_col="sample",
+)
+print(result.summary())
 ```
+
+That should print a small selected-gene count without downloading anything.
 
 ## After install
 

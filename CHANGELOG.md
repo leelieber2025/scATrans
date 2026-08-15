@@ -4,6 +4,94 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.13] - 2026-08-15
+
+### Fixed
+- **Returned AnnData keeps unused `groupby` values.** After the 0.10.12
+  sample-level obs fix, `adata, res = differential_expression(adata, …)`
+  still dropped cells whose condition was not the target or reference.
+  Contrast restriction is now internal. Only `subset_col` removes cells
+  from the returned object. Same contract on `active_score` /
+  `partition_de_by_mechanism`.
+- **Pseudobulk attach no longer drops legacy `.var` columns.**
+  `velocity_residual`, `velocity_delta_raw`, and `velocity_source` are
+  copied onto the cell-level return object.
+- PyDESeq2 pseudobulk recovers integer counts from `raw_snapshot` when
+  `layers['counts']` is missing (the PB AnnData has empty `uns`).
+- `extract_gene_lists` now recognizes Seurat `p_val_adj` (and other
+  common adjusted-p aliases). Those tables used to yield an empty gene
+  list because the cutoff was applied to a missing column.
+- `enrich_dotplot` no longer treats the first numeric column as a
+  p-value when `p.adjust` is absent. GSEA tables with only `NES` were
+  losing every term with `|NES| > 1`.
+
+### Documentation
+- Method / statistical guidance / advanced: residual permutation shuffle
+  unit matches the code (cell-level for scanpy / Memento / pseudobulk
+  re-aggregation; sample / RE-cluster for MixedLM). Gamma is recomputed
+  under the shuffle; only the EB prior is frozen.
+- API: `active_score_simple` / `run_default_pipeline` do not call
+  `recommend_workflow`. Auto-pseudobulk needs ≥3 samples per group.
+  `datasets.load_toy` is in the autosummary. Broken `|log2FC|` table cell
+  fixed.
+- Tutorials trimmed to the calls a user would copy. American English;
+  fewer demo-only helpers.
+- FAQ: unused `groupby` values stay on the returned AnnData.
+
+## [0.10.12] - 2026-08-14
+
+### Fixed
+- **Pseudobulk no longer replaces the user's cell-level AnnData.**
+  `differential_expression` / `active_score` (and therefore
+  `*_simple`, `run_default_pipeline`, `partition_de_by_mechanism`) with
+  `use_pseudobulk=True` used to return the intermediate sample-level
+  object whose `obs` had only
+  `[sample_col, groupby, n_cells, total_counts, pb_x_source]`. Following
+  the documented `adata, res = scat.differential_expression(adata, ...)`
+  pattern wiped cell metadata, embeddings, graphs, and
+  `store_raw_counts` snapshots. Aggregation is now internal; the
+  returned object stays cell-level. Only the result table is written to
+  `.var` (same columns as the non-pseudobulk path). The sample-level
+  object is not pasted back. Sample-level summary is in
+  `adata.uns["scatrans"]["pseudobulk_obs"]`.
+- `_pseudobulk_with_layers` now copies extra `obs` columns that are
+  constant within each (sample, group) key (batch, sex, …) onto the
+  internal sample-level object. Cell-level columns that vary within a
+  key are omitted rather than silently reduced.
+- `_merge_scatrans_uns` keeps `raw_snapshot` and
+  `store_raw_counts_n_genes` across a DE / scoring run so a subsequent
+  `restore_raw_counts` still works.
+
+### Documentation
+- FAQ, workflow, API table, quickstart, standalone DE, and the GSE96583
+  tutorial now state that `use_pseudobulk=True` does not replace the
+  returned AnnData with the sample-level working object.
+
+## [0.10.11] - 2026-08-12
+
+### Fixed
+- `program_mechanism_permutation_calibrated` now shuffles only cells whose
+  condition is `target_group` or `reference_group`. Other `groupby` values
+  stay fixed, so a third condition or unused cell type cannot enter the
+  contrast under the null.
+
+### Changed
+- External DE tables that match fewer than 20% of scored genes now emit a
+  `UserWarning` (previously only recorded in `meta["de"]`).
+- `program_mechanism` / `program_mechanism_induction_matched` warn on low
+  gene-set mapping rates. Empty results use the same column set as a
+  successful table.
+- `PartitionResult.summary()` reports `padj_cutoff`, `logfc_cutoff`, and
+  `logfc_direction`.
+- Removed unused `_warn_if_not_integer_counts_matrix` and unused named colors
+  (`BROWN`, `PINK`, `VIOLET`, `CHOCOLATE`) that were never referenced.
+
+### Documentation
+- API reference lists installed defaults as they are in the code
+  (`select_by="composite"` on the pipeline/filter helpers, `organism="mouse"`,
+  partition `logfc_cutoff=1.0`). Recommendations to pass `select_by="de"`
+  are unchanged.
+
 ## [0.10.10] - 2026-08-07
 
 ### Added
@@ -13,9 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `add_gene_features` mapping-rate warning), and simulated
   transcription-driven / stabilization-driven / housekeeping / down gene
   categories in `adata.var["ground_truth_mechanism"]`.
-  `partition_de_by_mechanism` recovers the simulated labels cleanly on the
-  default parameters — a zero-download first run. Exported as `scat.datasets`.
-  Tests: `tests/test_datasets.py`.
+  On default parameters, `partition_de_by_mechanism` labels DE-selected
+  genes consistently with those simulated categories (no external download).
+  Exported as `scat.datasets`. Tests: `tests/test_datasets.py`.
 
 ### Fixed
 - `pl.compare_dotplot`: cluster x-tick labels rotated based on a flat
@@ -154,7 +242,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `references.md`: GSE226488 / Derbois et al. 2023 citation, tutorial-object
   notes, and how large `.h5ad` files are distributed.
 - User guide workflow: **Input data and layers** (what AnnData needs, layer
-  names, raw counts, regime pre-flight).
+  names, raw counts, regime diagnostic).
 - Tutorial notebooks: shorter intros (less composite-ranking / migration
   prose); standalone DE GSEA note points to the changelog instead of a long
   bug narrative; GSE226488 **Reproduce** section no longer depends on
@@ -177,8 +265,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     `residual_col` would mis-label highly induced stabilization targets as
     transcription-driven.
   - `add_nascent_score=True` only **appends** columns; it does not change
-    `transcription_support`, `mechanism_class`, or program directions. Fail-soft
-    via `meta["nascent_score"]`. Layers auto-resolve (`spliced`/`unspliced` or
+    `transcription_support`, `mechanism_class`, or program directions. Errors
+    are recorded in `meta["nascent_score"]`. Layers auto-resolve (`spliced`/`unspliced` or
     `mature`/`nascent`). Exported top-level and from `tl`. Tests:
     `tests/test_nascent.py`.
 
@@ -191,8 +279,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   residual. `de=` accepts `"builtin"`, a `de_method` name / kwargs dict routed to
   `differential_expression`, a precomputed DataFrame (`de_logfc_col` /
   `de_padj_col`), or a callable `adata -> DataFrame`. Always runs a reliability
-  pre-flight (`regime_diagnosis`, scales `mechanism_confidence`), soft per-gene
-  annotation (never gates membership), and optional program-level table when
+  diagnostic (`regime_diagnosis`, scales `mechanism_confidence`), per-gene
+  annotation (does not change DE membership), and optional program-level table when
   `gene_sets=` is provided. Returns `PartitionResult` (`adata`, `regime`,
   `gene_table`, `selected`, `programs`, `enrichment`, `meta`). Down-regulation is
   not yet mechanism-resolved (`unclassified_down`). Exported top-level and from
@@ -201,19 +289,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   dataset-level `reliability` in [0, 1] (U-shaped: high in a normal band, lower
   at low- or high-unspliced extremes) plus `regime` (`ok` / `low_unspliced` /
   `high_unspliced`) and a message. `run_default_pipeline` records `meta["regime"]`
-  (fail-soft) and, when `annotate_mechanism=True`, scales mechanism confidence by
+  (errors do not abort the pipeline) and, when `annotate_mechanism=True`, scales mechanism confidence by
   `reliability`. This is a data-quality / gamma check only; dynamic-vs-steady-state
   detection is not implemented.
-- **Mechanism annotation module `scatrans.tl.mechanism`** (annotation-only; never
-  gates membership):
+- **Mechanism annotation module `scatrans.tl.mechanism`** (annotation only; does
+  not change gene-list membership):
   - `annotate_mechanism_class(...)` — `transcription_support`, `mechanism_class`,
     `mechanism_confidence` (scaled by dataset `reliability`). Per-gene labels are
-    intentionally low-confidence; prefer program-level pooling.
+    exploratory; prefer program-level pooling.
   - `program_mechanism(results, gene_sets, ...)` — threshold-free program-level
     inference (competitive Mann–Whitney + BH FDR on pooled support).
   - `threshold_sensitivity(results, ...)` — DE list size and Jaccard vs reference
     across a (padj, logFC) grid.
-  - `run_default_pipeline(..., annotate_mechanism=True)` — fail-soft add-on;
+  - `run_default_pipeline(..., annotate_mechanism=True)` — optional add-on;
     diagnostics in `meta["mechanism"]` (default off).
 - **`select_by="de"`** on `filter_active_genes` and `run_default_pipeline` —
   membership from DE gates only (`p_adj` / `logFC` + direction; defaults
@@ -222,7 +310,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `select_by="composite"` preserves prior behavior; mode recorded in
   `meta["select_by"]`. Incompatible with `preset="significant"`.
 - **First-class pipeline options** `bias_method=` and `adaptive_weighting=` /
-  `adaptive_anchor=` on `run_default_pipeline` (additive, fail-soft, default off):
+  `adaptive_anchor=` on `run_default_pipeline` (optional, default off):
   - `bias_method="abundance"` / `"abundance_length"` →
     `unspliced_excess_residual_abnorm` (`meta["bias"]`).
   - `adaptive_weighting=True` → `adaptive_score` / `adaptive_score_pct`
@@ -248,8 +336,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   stale builtin p does not sit next to external stats.
 - **`run_default_pipeline`**: invalid `select_by` raises; add-on columns
   (mechanism / bias / adaptive) are re-attached to `candidates` after annotate
-  (with an explicit copy); regime pre-flight failure uses cautious
-  `reliability=0.5` instead of implying full confidence.
+  (with an explicit copy); if the regime diagnostic raises, `reliability`
+  defaults to 0.5 rather than 1.0.
 - **`filter_active_genes`**: residual cutoff of `-inf` truly disables the residual
   gate (no longer drops genes with missing residual).
 - **`annotate_mechanism_class`**: missing/NaN `logFC` is `unknown`, not
@@ -1047,7 +1135,7 @@ All new issues addressed. Full test suite green.
 
 ### Changed / Improved
 - Major usability & paper-readiness upgrade to diagnostics, metadata, and user guidance.
-- `qc.unspliced_global` is now called automatically inside `active_score` (result stored); the function remains directly usable as a pre-flight check (`scat.qc.unspliced_global(adata)`).
+- `qc.unspliced_global` is now called automatically inside `active_score` (result stored); the function remains directly usable as a diagnostic (`scat.qc.unspliced_global(adata)`).
 - Added prominent "Choosing `mode`: heuristic vs advanced (and common pitfalls)" section + decision guide to README.
 - **Major internal refactor** (2026-06-09): Core logic in `tl.py` (`active_score`) was extracted into private supporting modules (`_utils.py`, `_de.py`, `_velocity.py`, `_permutation.py`, plus bias correction in `pp_bias.py`). The public `active_score` function is now a thin, readable orchestrator while preserving 100% identical behavior, return values, and side effects on `adata`.
 - Logging discipline: Library code in `pp_bias.py` and the gene-features generator now uses the `scatrans` logger instead of direct `print()` calls with emojis. CLI entrypoint configures basic logging for user-friendly output.

@@ -11,13 +11,12 @@ scATrans does not replace differential expression for gene discovery. Instead:
 
 Design rules:
 
-- per-gene labels are soft, low-confidence hints
-  (``transcription_support``, ``mechanism_class``, ``mechanism_confidence``),
-  with confidence scaled by a reliability pre-flight
-  (:func:`~scatrans.qc.regime_diagnosis`);
-- stronger claims should use program-level pooling
-  (:func:`~scatrans.tl.program_mechanism`);
-- the proxy never filters or removes DE hits — it only annotates and ranks.
+- per-gene labels (``transcription_support``, ``mechanism_class``,
+  ``mechanism_confidence``) are exploratory; confidence is scaled by
+  :func:`~scatrans.qc.regime_diagnosis`;
+- program-level tests (:func:`~scatrans.tl.program_mechanism`) are preferred
+  for claims;
+- the residual annotates and ranks DE genes; it does not remove them.
 
 Down-regulation is not yet mechanism-resolved (``unclassified_down``).
 """
@@ -25,6 +24,7 @@ Down-regulation is not yet mechanism-resolved (``unclassified_down``).
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -64,9 +64,8 @@ class PartitionResult:
     adata
         The scored AnnData (proxy columns in ``.var`` / run meta in ``.uns``).
     regime
-        Reliability pre-flight (:func:`~scatrans.qc.regime_diagnosis`): the
-        ``reliability`` scalar here scales every ``mechanism_confidence`` and
-        tells you how far to trust the per-gene calls on this dataset.
+        Output of :func:`~scatrans.qc.regime_diagnosis`. The ``reliability``
+        scalar scales ``mechanism_confidence``.
     gene_table
         FULL scored table (all tested genes) with the mechanism annotation
         columns (``transcription_support`` / ``mechanism_class`` /
@@ -78,11 +77,11 @@ class PartitionResult:
     programs
         Program-level transcription-vs-stabilization table
         (:func:`~scatrans.tl.program_mechanism`) when ``gene_sets`` was given,
-        else ``None``. This is where the decisive calls live (prefer over
-        per-gene ``mechanism_class``).
+        else ``None``. Prefer this table over per-gene ``mechanism_class``.
     enrichment
-        Optional GO/pathway enrichment on ``selected`` (or ``None``). Do **not**
-        enrich gene lists split by per-gene ``mechanism_class`` (induction trap).
+        Optional GO/pathway enrichment on ``selected`` (or ``None``). Do not
+        enrich gene lists split by per-gene ``mechanism_class``; those splits
+        are confounded by induction strength.
     meta
         Run metadata: version, organism, DE source, thresholds, regime, and the
         mechanism-annotation diagnostics.
@@ -106,8 +105,8 @@ class PartitionResult:
     def summary(self) -> dict[str, Any]:
         """Compact counts for logging / quick inspection.
 
-        Program-level fields are listed first: per-gene ``mechanism_class`` counts
-        are soft hints only (do not use them for ORA / hard claims).
+        Program-level fields are listed first. Per-gene ``mechanism_class``
+        counts are exploratory and are not suitable for ORA or hard claims.
         """
         soft_counts = {
             k: int((self.selected.get(CLASS_COL) == k).sum())
@@ -136,13 +135,17 @@ class PartitionResult:
             and "significant" in self.programs_induction_matched
         ):
             n_im_sig = int(self.programs_induction_matched["significant"].fillna(False).sum())
+        select = self.meta.get("select") or {}
         return {
-            # --- program-first (decisive unit) ---
+            "padj_cutoff": select.get("padj_cutoff"),
+            "logfc_cutoff": select.get("logfc_cutoff"),
+            "logfc_direction": select.get("logfc_direction"),
+            # Program-level summaries first.
             "n_programs": n_prog,
             "n_programs_significant": n_prog_sig,
             "n_programs_induction_matched": n_im,
             "n_programs_induction_matched_significant": n_im_sig,
-            # --- design / reliability ---
+            # Design and reliability.
             "n_selected": int(len(self.selected)),
             "n_gene_table": int(len(self.gene_table)),
             "regime": self.regime.get("regime"),
@@ -150,7 +153,7 @@ class PartitionResult:
             "hard_labels_suppressed": bool(
                 (self.meta.get("mechanism") or {}).get("hard_labels_suppressed", False)
             ),
-            # --- soft per-gene hints (NOT for ORA-by-class) ---
+            # Per-gene labels (not for class-stratified ORA).
             "per_gene_labels_are_soft": True,
             "per_gene_class_counts_selected": soft_counts,
             # backward-compatible alias
@@ -288,6 +291,18 @@ def _resolve_de_membership(
         else float("nan")
     )
     n_matched = int(sel_frame["logFC"].notna().sum())
+    n_universe = int(len(all_results))
+    match_rate = n_matched / float(max(n_universe, 1))
+    if n_universe > 0 and match_rate < 0.2:
+        warnings.warn(
+            f"External DE table matched {n_matched}/{n_universe} scored genes "
+            f"({match_rate:.1%}). Check gene identifiers, symbol case, and that "
+            "the DE index aligns with adata.var_names. "
+            f"DE index examples: {list(map(str, de_df.index[:5]))}; "
+            f"scored examples: {list(map(str, all_results.index[:5]))}.",
+            UserWarning,
+            stacklevel=3,
+        )
     sel = filter_active_genes(
         sel_frame,
         select_by="de",
@@ -332,10 +347,10 @@ def partition_de_by_mechanism(
 ) -> PartitionResult:
     """DE selects; scATrans partitions by mechanism (primary workflow).
 
-    Runs, in order: a reliability pre-flight, pluggable DE selection, soft
-    per-gene mechanism annotation, and — when ``gene_sets`` is given — a
-    program-level transcription-vs-stabilization table. The proxy only
-    annotates/ranks; it never removes DE hits.
+    Runs, in order: a reliability diagnostic, pluggable DE selection,
+    per-gene mechanism annotation, and, when ``gene_sets`` is given, a
+    program-level transcription-versus-stabilization table. The residual
+    annotates and ranks DE genes; it does not remove them.
 
     .. note::
        This **always runs one ``active_score`` pass** for the nascent unspliced-
@@ -348,6 +363,19 @@ def partition_de_by_mechanism(
     adata
         AnnData with spliced/unspliced (velocity) layers and a ``groupby`` obs
         column holding ``target_group`` / ``reference_group``.
+    groupby
+        ``obs`` column holding group labels.
+    target_group, reference_group
+        The two values of ``groupby`` to contrast. Defaults ``"Disease"`` /
+        ``"Control"``.
+    sample_col
+        Biological replicate or library ID. When this column has at least 3
+        samples per group, the simple path switches to pseudobulk + PyDESeq2.
+        With fewer samples, DE stays cell-level (Wilcoxon). Omit only when
+        you have no replicates.
+    organism
+        ``"mouse"`` (default) or ``"human"``. Selects bundled gene-feature
+        tables and GO/KEGG libraries. Not inferred from the data.
     de
         DE source that SELECTS the gene list:
 
@@ -369,12 +397,12 @@ def partition_de_by_mechanism(
         ``filter_active_genes``). Report sensitivity with
         :func:`~scatrans.tl.threshold_sensitivity` rather than defending one.
     add_nascent_score
-        When ``True``, append active-transcription **detection** columns from
+        When True, append detection columns from
         :func:`~scatrans.tl.nascent_activity_score` (``nascent_poisson_z``,
-        ``dlog_*``, ``de_reproducible`` / ``de_repro_frac``). Detection is
-        **decoupled** from mechanism: the Poisson-z is induction-coupled and is
-        never used for transcription-vs-stabilization labels (those stay on the
-        residual). Additive and fail-soft; inspect
+        ``dlog_*``, ``de_reproducible`` / ``de_repro_frac``). Those columns are
+        not used for transcription-versus-stabilization labels, which remain
+        residual-based. If scoring fails, the columns are omitted and the
+        partition result is still returned. Inspect
         :func:`~scatrans.qc.regime_diagnosis` on low-capture data.
     class_threshold
         Soft-label boundary (robust-z units) for the per-gene 3-way call.
@@ -396,6 +424,8 @@ def partition_de_by_mechanism(
     gene_sets
         ``{program: [gene, ...]}`` — when given, adds the program-level
         mechanism table (restricted to selected genes by default).
+    program_min_genes
+        Drop programs with fewer mapped genes than this.
     program_restrict_to_selected
         Pool the program test over the DE-selected genes only (default) vs all
         tested genes.
@@ -409,6 +439,8 @@ def partition_de_by_mechanism(
         Optional GO/pathway ORA on the **DE-selected** genes (not by
         ``mechanism_class``). Enriching genes split by per-gene mechanism labels
         is induction-confounded — use program tables instead.
+    show_plot
+        If True, draw the default residual plot from the internal scoring pass.
 
     Returns
     -------
@@ -430,7 +462,6 @@ def partition_de_by_mechanism(
             sample_col,
         )
 
-    # 1. score (this is the single active_score pass; also gives the builtin DE)
     adata_res, _significant, all_results = active_score_simple(
         adata,
         groupby=groupby,
@@ -441,8 +472,7 @@ def partition_de_by_mechanism(
         show_plot=show_plot,
     )
 
-    # 2. reliability pre-flight (MANDATORY — scales confidence, fail-soft). A failed
-    #    pre-flight must NOT imply full confidence: default to a cautious 0.5.
+    # Reliability diagnostic. If it raises, use reliability=0.5 rather than 1.0.
     try:
         regime = regime_diagnosis(adata_res)
     except Exception as exc:  # noqa: BLE001 — diagnostic is optional but expected
@@ -450,7 +480,6 @@ def partition_de_by_mechanism(
         regime = {"reliability": 0.5, "regime": "unknown", "error": str(exc)}
     reliability = float(regime.get("reliability", 0.5))
 
-    # 3. DE SELECTS the gene list (pluggable front-end)
     selected_idx, de_source, de_diag, de_stats = _resolve_de_membership(
         adata_res,
         all_results,
@@ -477,14 +506,10 @@ def partition_de_by_mechanism(
         all_results["p_adj"] = de_stats["p_adj"]
         all_results["p_val"] = de_stats["p_val"]
 
-    # 3b. optional ADDITIVE active-transcription DETECTION columns (nascent Poisson-z
-    #     + proxy-independent DE-reproducibility flag). This answers a DIFFERENT
-    #     question than the mechanism partition and is DELIBERATELY DECOUPLED from it:
-    #     the Poisson-z is an *absolute* nascent-increase (induction-coupled), so it
-    #     recovers long/high-intron active genes for DETECTION but must NOT drive the
-    #     transcription-vs-stabilization call — the mechanism signal stays the
-    #     induction-normalized residual (using the z there collapses the ARE/stabilization
-    #     signal). Columns are annotation-only; fail-soft.
+    # Optional detection columns (Poisson-z of the nascent increase, plus a
+    # spliced-side reproducibility flag). These are not used for
+    # transcription-versus-stabilization labels. If scoring fails, omit the
+    # columns and keep the partition result.
     nascent_meta: dict[str, Any] = {"enabled": bool(add_nascent_score)}
     if add_nascent_score:
         try:
@@ -503,9 +528,9 @@ def partition_de_by_mechanism(
             logger.warning("add_nascent_score failed (columns omitted): %s", exc)
             nascent_meta = {"enabled": True, "status": "error", "error": str(exc)}
 
-    # 4. per-gene SOFT mechanism annotation on the FULL table (non-destructive;
-    #    confidence scaled by the pre-flight reliability). Never gates membership.
-    #    Mechanism ALWAYS uses the induction-normalized residual (never the nascent z).
+    # Per-gene mechanism annotation on the full table. Confidence is scaled by
+    # reliability. Labels do not change DE membership. Mechanism uses the
+    # induction-normalized residual, not the nascent detection z.
     _, mech_diag = annotate_mechanism_class(
         all_results,
         class_threshold=class_threshold,
@@ -529,7 +554,6 @@ def partition_de_by_mechanism(
             [c for c, _ in sort_spec], ascending=[asc for _, asc in sort_spec]
         )
 
-    # 5. Program-level mechanism table (threshold-free pooling).
     programs = None
     programs_meta: dict[str, Any] = {"status": "not_requested"}
     programs_im = None
@@ -579,7 +603,6 @@ def partition_de_by_mechanism(
                 logger.warning("program_mechanism_induction_matched skipped: %s", exc)
                 programs_im_meta = {"status": "error", "error": str(exc)}
 
-    # 6. optional GO enrichment on the SELECTED genes (DE list — never by class)
     enrichment = None
     if run_go_enrichment and len(selected) > 0:
         from ..enrich import run_enrichment

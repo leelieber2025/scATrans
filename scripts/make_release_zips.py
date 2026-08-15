@@ -21,6 +21,7 @@ STAMP = date.today().isoformat()
 # Patterns applied only to paths collected via RELEASE_INCLUDES.
 RELEASE_EXCLUDES = [
     "backup/**",
+    "bak/**",
     "build/**",
     "dist/**",
     "dist-github-release/**",

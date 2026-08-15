@@ -81,7 +81,7 @@ def _maybe_add_gene_features(adata: Any, organism: str) -> Any:
       and a finite intron → full ``add_gene_features`` attach.
     - If usable length coverage is low (< 50% of genes) → fill missing/zero
       lengths from the bundled table **without overwriting** existing length > 0
-      (avoids the "1% real, 99% NaN/0 never auto-completes" trap with partial GTF tables).
+      (partial GTF tables often leave most genes without usable length).
     - If coverage is adequate but some genes lack length → log only; active_score
       excludes them via ``valid_feat`` (``gene_length > 0``).
     """
@@ -191,17 +191,21 @@ def active_score_simple(
     pydeseq2_min_counts: int = 10,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Recommended entry point for new users (minimal parameters).
+    Thin wrapper around :func:`active_score` with a short parameter list.
 
-    Wraps :func:`active_score` with sensible defaults:
+    Prefer :func:`partition_de_by_mechanism` for the DE-to-mechanism path.
 
-    - Uses "Disease"/"Control" as group defaults (unlike core active_score which defaults
-      to the historical "GA"/"Ctrl").
+    Wraps :func:`active_score` with defaults:
 
-    - heuristic mode, no permutation (inspect ``all_results`` + ``filter_active_genes``)
-    - auto-attaches bundled gene features when missing
-    - pseudobulk + PyDESeq2 when ``sample_col`` has >=3 replicates per group;
-      otherwise single-cell Wilcoxon DE
+    - ``target_group="Disease"``, ``reference_group="Control"``
+    - heuristic mode, no permutation
+    - bundled gene features attached when missing
+    - pseudobulk + PyDESeq2 when ``sample_col`` has at least 3 replicates per
+      group; otherwise single-cell Wilcoxon DE
+
+    When the auto-selected backend uses pseudobulk, aggregation is internal:
+    the returned AnnData stays cell-level. Sample-level summary is in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``.
 
     For full control (permutation, advanced mode, mixed models, etc.) use
     :func:`active_score` directly.
@@ -252,6 +256,10 @@ def differential_expression_simple(
 
     Same backend auto-selection as :func:`active_score_simple`.
     For Memento, mixed models, or custom preprocess use :func:`differential_expression`.
+
+    When the auto-selected backend uses pseudobulk, aggregation is internal:
+    the returned AnnData stays cell-level. Sample-level summary is in
+    ``adata.uns["scatrans"]["pseudobulk_obs"]``.
     """
     # Isolate so DE never mutates the caller's object (labels / preprocess).
     adata = adata_input.copy()
@@ -460,15 +468,14 @@ def run_default_pipeline(
     annotate_mechanism: bool = False,
 ) -> PipelineResult:
     """
-    End-to-end recommended workflow for first-time users.
+    Convenience pipeline: score → filter → optional enrichment.
 
     .. note::
-       The tool's **primary workflow is now**
-       :func:`~scatrans.tl.partition_de_by_mechanism` — DE selects the changed
-       genes, scATrans partitions them into transcription- vs stabilization-driven.
-       The composite ``select_by="composite"`` ranking here is **deprecated** (it
-       mixes the DE and proxy legs and does not out-discover DE); prefer
-       ``partition_de_by_mechanism`` or ``select_by="de", annotate_mechanism=True``.
+       Prefer :func:`~scatrans.tl.partition_de_by_mechanism` for the
+       DE → mechanism path. The composite ``select_by="composite"`` ranking
+       here is **deprecated** (it mixes the DE and proxy legs and does not
+       out-discover DE); use ``partition_de_by_mechanism`` or
+       ``select_by="de", annotate_mechanism=True``.
 
     Steps: active scoring → ``filter_active_genes`` → optional GO enrichment.
     Uses "Disease"/"Control" convenience defaults for target/reference.
@@ -513,18 +520,16 @@ def run_default_pipeline(
     - ``annotate_mechanism``: ``True`` runs
       :func:`~scatrans.tl.mechanism.annotate_mechanism_class`, adding
       ``transcription_support`` / ``mechanism_class`` / ``mechanism_confidence``
-      columns to ``all_results`` (static transcription-vs-stabilization label; a
-      LOW-confidence per-gene annotation — pool with
-      :func:`~scatrans.tl.mechanism.program_mechanism` for decisive calls).
-      Diagnostics in ``meta["mechanism"]``. The confidence is scaled by the
-      dataset ``reliability`` from the regime pre-flight (see below).
+      columns to ``all_results``. Per-gene labels are exploratory; use
+      :func:`~scatrans.tl.mechanism.program_mechanism` for program-level
+      inference. Diagnostics are stored in ``meta["mechanism"]``. Confidence is
+      scaled by ``reliability`` from the regime diagnostic (see below).
 
     ``meta`` always includes a ``regime`` block from
-    :func:`~scatrans.qc.regime_diagnosis` (a cheap, fail-soft proxy-reliability
-    pre-flight from the global unspliced fraction: ``reliability`` in [0, 1],
-    ``regime`` = ok / low_unspliced / high_unspliced, plus a message). It scales
-    the mechanism-annotation confidence and tells the user how far to trust the
-    proxy annotations on this dataset.
+    :func:`~scatrans.qc.regime_diagnosis` (global unspliced fraction:
+    ``reliability`` in [0, 1], ``regime`` = ok / low_unspliced / high_unspliced,
+    plus a message). If the diagnostic raises, the result is still returned
+    with ``reliability=0.5``. The scalar scales mechanism-annotation confidence.
 
     Returns a :class:`PipelineResult` (mapping-compatible) with fields:
       - ``adata``, ``significant``, ``all_results``, ``candidates``
@@ -650,9 +655,7 @@ def run_default_pipeline(
         if key in scatrans_uns:
             result_meta[key] = scatrans_uns[key]
 
-    # Optional additive post-processing on all_results (adds columns in place;
-    # core active_score untouched). Fail soft: the core result must survive an
-    # add-on that cannot run (e.g. missing feature columns).
+    # Optional columns on all_results. Errors here must not drop the core result.
     if bias_method is not None:
         try:
             _, bias_diag = add_abundance_normalized_residual(
@@ -669,13 +672,13 @@ def run_default_pipeline(
         except Exception as exc:  # noqa: BLE001 — add-on is optional, keep core result
             logger.warning("adaptive_weighting skipped: %s", exc)
             result_meta["adaptive"] = {"error": str(exc)}
-    # Regime / proxy-reliability pre-flight (unspliced-fraction QC; cheap, always
-    # run, fail-soft). Feeds mechanism-annotation confidence below.
+    # Regime diagnostic from the global unspliced fraction. If it raises, keep
+    # the core result and set reliability=0.5.
     try:
         result_meta["regime"] = regime_diagnosis(adata_res)
     except Exception as exc:  # noqa: BLE001 — diagnostic is optional
         logger.info("regime_diagnosis skipped: %s", exc)
-        # A failed mandatory pre-flight must not imply full confidence.
+        # A failed diagnostic must not imply reliability=1.
         result_meta["regime"] = {"reliability": 0.5, "regime": "unknown", "error": str(exc)}
     if annotate_mechanism:
         try:
@@ -688,15 +691,10 @@ def run_default_pipeline(
             logger.warning("annotate_mechanism skipped: %s", exc)
             result_meta["mechanism"] = {"error": str(exc)}
 
-    # The optional add-ons above mutate all_results in place (bias / adaptive /
-    # mechanism columns). candidates was sliced before them, so refresh it from the
-    # annotated all_results — same membership and order — so those annotation
-    # columns ride along on result.candidates too.
+    # Refresh candidates so bias / adaptive / mechanism columns are included.
     if len(candidates):
         candidates = all_results.loc[candidates.index].copy()
 
-    # We already resolved backend above (avoids calling the resolver a second time
-    # just to "guess" what active_score_simple decided internally).
     return PipelineResult(
         adata=adata_res,
         significant=significant,

@@ -139,7 +139,7 @@ def diagnose_design(
     Analyze the experimental design and provide guidance on suitable analysis choices
     and expected power/limitations.
 
-    This is intended as a pre-flight or post-subset diagnostic to help users
+    This is intended as a preliminary or post-subset diagnostic to help users
     interpret warnings and choose between single-cell, pseudobulk, or mixed-model paths.
 
     Returns a dictionary with keys:

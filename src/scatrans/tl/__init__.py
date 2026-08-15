@@ -1,12 +1,4 @@
-"""scATrans tools (``tl``) package.
-
-Public entry points for active-transcription scoring, DE, filtering, and
-guided workflows. Implementation is split across submodules; import from
-``scatrans.tl`` (or ``scatrans``) for the stable surface.
-
-Private helpers live in submodules (e.g. ``scatrans.tl._common``) and are
-not part of ``__all__``.
-"""
+"""Tools: scoring, DE, filtering, and the partition workflow."""
 
 from __future__ import annotations
 
