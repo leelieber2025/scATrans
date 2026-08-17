@@ -87,7 +87,14 @@ print(result.summary())         # padj_cutoff, logfc_cutoff, counts
 | `sample_col` warning | You omitted replicates. Effect sizes are still usable; p-values are cell-level. |
 
 Keyword defaults if you omit them: `organism="mouse"`, `logfc_cutoff=1.0`,
-`padj_cutoff=0.05`, `sample_col=None`. Full table: {doc}`api/index`.
+`padj_cutoff=0.05`, `sample_col=None`. Passing `sample_col` only switches
+to pseudobulk + PyDESeq2 when there are at least 3 samples per group;
+otherwise DE stays cell-level Wilcoxon. `load_toy()` ships 2 samples per
+group, so the install check uses Wilcoxon. Full table: {doc}`api/index`.
+
+Do not mix these with `active_score` / `filter_active_genes(preset="heuristic")`
+defaults (`logfc_cutoff=0.35`, `de_method="t-test_overestim_var"`). Same
+AnnData, different gene list.
 
 | Field | Meaning |
 |-------|---------|

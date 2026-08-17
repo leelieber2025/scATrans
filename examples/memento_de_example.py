@@ -166,7 +166,7 @@ print(
 print(de_m.head(3)[["logFC", "p_adj", "memento_dv_coef"]])
 
 # Downstream tools work the same
-cands = scat.filter_active_genes(de_m, pval_cutoff=0.05, logfc_cutoff=0.5)
+cands = scat.filter_active_genes(de_m, select_by="de", padj_cutoff=0.05, logfc_cutoff=0.5)
 print(f"\nFiltered candidates from Memento DE: {len(cands)}")
 
 if len(cands) > 0:
@@ -178,7 +178,7 @@ if len(cands) > 0:
             # also auto-mapped for convenience. Pass adata= so universe is auto from store.
             organism="mouse",  # or "human"; only needed for KEGG or to disambiguate
             adata=plain,
-            pval_cutoff=0.2,
+            padj_cutoff=0.2,
         )
         print(f"Enrichment ran, got {len(enrich)} terms.")
     except Exception as e:

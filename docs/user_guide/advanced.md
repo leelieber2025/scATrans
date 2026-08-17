@@ -41,13 +41,16 @@ Adds:
   production gene-list filter. Prefer DE membership
   (`select_by="de"` / `result.selected`).
 
-The permutation shuffles only group labels; unspliced/spliced layers and the
-reference gamma are fixed from the original labeling for speed. **This is a
-conditional permutation** (conditioned on the observed velocity structure
-and gamma). It is a speed/tractability tradeoff and **not an unconditional
-permutation of the full data**. In small reference groups or strong batch
-effects, interpret the resulting FDR with extra caution; always inspect
-diagnostics and consider biological replicates.
+The permutation shuffles group labels. Unspliced/spliced layers stay fixed.
+The residual pipeline (reference ratio, excess, Huber) is **recomputed**
+from the shuffled reference group. Under `gamma_method="empirical_bayes"`
+the prior hyperparameters stay at their observed-data values. Shuffle unit:
+**cells** for scanpy / Memento / the pseudobulk path (then re-aggregate);
+**sample / RE cluster** for MixedLM (or within subject if
+`paired_replicates=True`). This is a **conditional** permutation, not an
+unconditional reshuffle of the full data. Cell-level shuffles do not fix
+pseudoreplication. In small reference groups or strong batch effects, treat
+residual FDR as exploratory.
 
 **`perm_de_backend` (default: `"same"`)** — controls which DE method builds
 the permutation null:

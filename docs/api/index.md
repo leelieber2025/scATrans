@@ -45,9 +45,9 @@ low-level scorers). The convenience entry points `partition_de_by_mechanism` /
 |-----------|-----------|---------|---------|
 | `groupby` | both | `"condition"` | any `obs` column holding group labels |
 | `target_group` / `reference_group` | both | `None` (required for the low-level scorers) | must be set explicitly to two values in `adata.obs[groupby]`; tutorials often use e.g. `"GA"` / `"Ctrl"` |
-| `use_pseudobulk` + `sample_col` | both | `False` / `None` | aggregate **internally** to per-replicate pseudobulk before DE (needs `sample_col`). The returned AnnData stays cell-level; sample table is `uns["scatrans"]["pseudobulk_obs"]` |
+| `use_pseudobulk` + `sample_col` | both | `False` / `None` | On the **low-level** scorers, `use_pseudobulk=True` aggregates internally (needs `sample_col`). On `partition` / `*_simple` / `run_default_pipeline`, passing `sample_col` only turns on pseudobulk when there are **≥3 samples per group**. The returned AnnData stays cell-level; sample table is `uns["scatrans"]["pseudobulk_obs"]` |
 | `pseudobulk_de_backend` | both | `"pydeseq2"` | `"pydeseq2"` (count-based DESeq2) or `"scanpy"` (rank_genes_groups on aggregated profiles) |
-| `de_method` | both | `"t-test_overestim_var"` | any `scanpy.tl.rank_genes_groups` method, e.g. `"wilcoxon"` |
+| `de_method` | low-level `active_score` / `differential_expression` | `"t-test_overestim_var"` | any `scanpy.tl.rank_genes_groups` method. The simple wrappers default to **Wilcoxon** (or PyDESeq2 when auto-pseudobulk fires) |
 | `use_mixed_model` + `sample_col` | both | `False` | cell-level LMM with sample random intercept; needs ≥4 samples/group; `logFC` = sample-mean-of-means (not LMM coef); **incompatible with** `use_memento_de` |
 | `use_memento_de` | both | `False` | method-of-moments cell-level DE (raw integer counts required); **incompatible with** `use_mixed_model` |
 | `use_permutation` + `n_perm` + `perm_de_backend` | `active_score` | `False` / `100` / `"same"` | permutation FDR on unspliced excess; `perm_de_backend="fast"` trades accuracy for speed |
@@ -55,9 +55,12 @@ low-level scorers). The convenience entry points `partition_de_by_mechanism` /
 | `bias_correction` | `active_score` | `"huber_length_intron"` | `"huber_length_intron"` or `"none"` |
 | `mode` | `active_score` | `"heuristic"` | `"heuristic"` or `"advanced"` (scVelo moments smoothing) |
 
-Always call `recommend_workflow(...)` (or let `active_score_simple` /
-`run_default_pipeline` call it for you) before picking these by hand — it
-inspects cell/sample counts and suggests a preset.
+`recommend_workflow(...)` inspects cell/sample counts and returns a
+`WORKFLOW_PRESETS` suggestion for a hand-tuned `active_score` call.
+`partition_de_by_mechanism` / `active_score_simple` / `run_default_pipeline`
+do **not** call it. Those wrappers use a shorter rule: `sample_col` with
+at least 3 samples per group → pseudobulk + PyDESeq2; otherwise cell-level
+Wilcoxon. They do not turn on residual permutation.
 
 ```{eval-rst}
 .. currentmodule:: scatrans
@@ -68,6 +71,7 @@ inspects cell/sample counts and suggests a preset.
 
    partition_de_by_mechanism
    PartitionResult
+   datasets.load_toy
    active_score
    active_score_simple
    adaptive_active_score
@@ -86,6 +90,7 @@ inspects cell/sample counts and suggests a preset.
    diagnose_design
    recommend_workflow
    run_default_pipeline
+   PipelineResult
    filter_active_genes
    store_raw_counts
    ensure_raw_counts
@@ -108,7 +113,7 @@ docs do not change them.
 
 | Call | Default | Notes |
 |------|---------|--------|
-| `partition_de_by_mechanism` | `organism="mouse"`, `logfc_cutoff=1.0`, `padj_cutoff=0.05`, `sample_col=None`, `de="builtin"`, `run_go_enrichment=False` | Cell-level DE unless you pass `sample_col`. Cutoffs used for the run are in `result.summary()`. |
+| `partition_de_by_mechanism` | `organism="mouse"`, `logfc_cutoff=1.0`, `padj_cutoff=0.05`, `sample_col=None`, `de="builtin"`, `run_go_enrichment=False` | Cell-level Wilcoxon unless `sample_col` has ≥3 samples/group (then pseudobulk + PyDESeq2). Cutoffs used for the run are in `result.summary()`. |
 | `run_default_pipeline` | `select_by="composite"`, `run_go_enrichment=True`, `organism="mouse"` | `select_by="composite"` is deprecated but still the default. Pass `select_by="de"` for DE-only membership. |
 | `filter_active_genes` | `select_by="composite"`, `preset=None` | No preset is permissive. `select_by="de"` applies padj < 0.05 and \|logFC\| > 1 when you do not pass cutoffs. |
 | `add_gene_features` / enrichment | `organism="mouse"` | Pass `"human"` for human symbols. |
@@ -127,7 +132,7 @@ membership):
 
 | Value | Membership decided by | Proxy columns |
 |-------|----------------------|---------------|
-| `"de"` (**recommended**) | **DE only** (`p_adj` / `logFC`; defaults `padj < 0.05` and `|log2FC| > 1` when no cutoffs given) | Residual columns annotate only; they do not change membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
+| `"de"` (**recommended**) | **DE only** (`p_adj` / `logFC`; defaults padj < 0.05 and absolute logFC > 1 when no cutoffs given) | Residual columns annotate only; they do not change membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
 | `"composite"` (legacy API default) | DE gates **and** nascent/composite gates | Participate in selection — not recommended for production discovery |
 
 ### Pipeline add-ons (`run_default_pipeline`)
@@ -205,9 +210,9 @@ ranked list instead of a candidate gene list.
 | Parameter | Applies to | Default | Options |
 |-----------|-----------|---------|---------|
 | `gene_sets` | `run_enrichment`, `run_gsea` | — | base name (e.g. `"GO_Biological_Process"`, auto-resolved per `organism`) or a full versioned Enrichr name (e.g. `"...2021"`) for a historical library |
-| `organism` | all ORA/GSEA functions | — | `"mouse"` or `"human"` |
+| `organism` | all ORA/GSEA functions | `"mouse"` | `"mouse"` or `"human"` (not inferred) |
 | `adata` | all ORA/GSEA functions | `None` | pass the object you called `store_raw_counts` on to auto-supply the measured-gene background/universe |
-| `gene_set_source` | all ORA/GSEA functions | auto-detected | `"scatrans"` (bundled) or `"enrichr"` (gseapy) to force a source |
+| `gene_set_source` | all ORA/GSEA functions | `"scatrans"` | `"scatrans"` (bundled) or `"enrichr"` (gseapy) |
 | `ontology` | `run_go` | `"BP"` | `"BP"`, `"CC"`, `"MF"`, or `"ALL"` (with `adjust_across_all=True` for unified correction) |
 | `method` | `simplify_enrichment` | `"jaccard"` | `"jaccard"` (fast, overlap-based) or `"pathway_denester"` (nested-pathway test) |
 
@@ -254,9 +259,10 @@ that it outperforms DE.
 
 ## Plotting (`scat.pl`)
 
-Every `scat.pl.*` function accepts `ax=`/`axes=` (multi-panel embedding),
-`save_path=` (vector/300 dpi export), `show=`, and `use_style=`; most return
-`(fig, ax)`.
+Plotters accept `ax=`/`axes=` (multi-panel embedding), `save_path=`
+(vector/300 dpi export), `show=`, and `use_style=`; most return `(fig, ax)`.
+Helpers such as `set_style`, `build_gene_membership`, and
+`normalize_external_de` do not take `ax=`.
 
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|

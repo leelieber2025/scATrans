@@ -19,9 +19,17 @@ adata, de_results = scat.differential_expression(
     # use_memento_de=True,
 )
 
-candidates = scat.filter_active_genes(de_results, select_by="de")
-# or: padj_cutoff=0.05, logfc_cutoff=0.3
-# downregulated: logfc_direction="down"
+# Membership is p_adj + |logFC|, not a raw-p_val top-N slice.
+candidates = scat.filter_active_genes(
+    de_results, select_by="de", padj_cutoff=0.05, logfc_cutoff=1.0
+)
+down = scat.filter_active_genes(
+    de_results,
+    select_by="de",
+    padj_cutoff=0.05,
+    logfc_cutoff=1.0,
+    logfc_direction="down",
+)
 # both directions: logfc_direction="both"
 
 enrich = scat.run_enrichment(

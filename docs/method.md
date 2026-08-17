@@ -4,7 +4,7 @@
 :class: note
 
 **Software mathematics** for the reference-corrected unspliced residual (and
-optional sample-level residual permutation), as implemented in
+optional residual permutation), as implemented in
 {func}`~scatrans.active_score` and used by
 {func}`~scatrans.partition_de_by_mechanism`.
 
@@ -14,7 +14,7 @@ mode diagram below). Equation numbers here are local to this documentation
 page; the residual core matches the manuscript Methods (reference-corrected
 excess and Huber gene-structure residualization).
 
-**Primary software path (package 0.10.9):** DE
+**Primary software path (package 0.10.13):** DE
 defines gene-list membership; the residual annotates transcription vs.
 stabilization support; program-level calls (competitive and optional
 induction-matched) are preferred over hard per-gene claims; for **absolute**
@@ -69,9 +69,9 @@ treated as independent. Pseudobulk makes the replicate the unit of inference,
 but raw unspliced counts remain confounded by gene length and intron number.
 
 **scATrans** pairs a pluggable DE step (membership) with a reference-corrected,
-bias-adjusted unspliced residual (annotation). Optional sample-level
-permutation calibrates residual significance when biological replicates exist.
-The recommended entry point is
+bias-adjusted unspliced residual (annotation). Optional residual permutation
+(``use_permutation=True``) is a separate, gene-level FDR; it is not required
+for partition. The recommended entry point is
 {func}`~scatrans.partition_de_by_mechanism`.
 
 ## Methods
@@ -97,11 +97,11 @@ non-members); genome-wide standardization does not remove a gene set’s own
 structural offset (length, intron content). See **Program-level permutation
 calibration** below.
 
-**Optional gene-wise residual permutation path (Mode A).** When biological
-sample structure exists, the lower-level scorer can recompute the residual under
-sample-level label permutation to obtain residual FDR (`unspliced_excess_fdr`).
-That is a separate, gene-level calibration — not DE membership and not the
-program-level absolute placement API.
+**Optional gene-wise residual permutation.** The lower-level scorer can
+recompute the residual under shuffled condition labels to obtain residual FDR
+(`unspliced_excess_fdr`). That is a separate, gene-level calibration, not DE
+membership and not the program-level absolute placement API. The shuffle unit
+depends on the DE backend (Step 4).
 
 For each gene the residual core is: (i) a shrunken reference
 unspliced-to-spliced ratio, (ii) target-group unspliced excess, (iii) optional
@@ -137,9 +137,16 @@ $\rho_{c}$ is the Huber loss with threshold $c = 1.35$ (quadratic for $|e| \leq 
 
 Pseudobulk counts are modeled with PyDESeq2 (negative-binomial GLM, Wald test, Benjamini–Hochberg adjustment), yielding ${logFC}_{g}$ and the adjusted p-value $p_{g}^{adj}$; the latter is the DE backend’s own adjusted p-value and is distinct from the permutation-calibrated FDR of Step 4. The log-fold change and adjusted significance are reported alongside the bias-corrected residual $R_{g}$; the residual is the quantity carried into the permutation calibration of Step 4 and into the induction-normalized mechanism annotation. Alternative DE backends (Supplementary Methods S3) supply ${logFC}_{g}$ and $p_{g}^{adj}$ without otherwise changing the pipeline.
 
-### Step 4 (optional): Gene-wise residual FDR by sample-level permutation
+### Step 4 (optional): Gene-wise residual FDR by label permutation
 
-Condition labels are permuted $B$ times while preserving the target and reference group sizes. Permutation is performed **at the pseudobulk sample level, never at the cell level**, so that the null distribution respects the biological replicate as the unit of inference and pseudoreplication is not reintroduced through the null. For each permutation $b$ the residual pipeline — unspliced excess and bias correction — is recomputed, yielding null residual values $R_{g}^{(b)}$. With $B_{eff} \leq B$ the number of permutations that completed successfully, the one-sided empirical p-values and their BH-adjusted counterparts are
+Condition labels are permuted $B$ times while preserving the target and reference group sizes. The **shuffle unit** depends on the DE backend:
+
+- Non-MixedLM (scanpy, Memento, and the pseudobulk path): labels are permuted at the **cell** level. When `use_pseudobulk=True`, cells are then re-aggregated under the shuffled labels.
+- MixedLM: labels are permuted at the random-effect cluster / sample level (or within subject when `paired_replicates=True`).
+
+Unspliced and spliced layers stay fixed. The residual pipeline — reference ratio, excess, and Huber correction — is **recomputed** from the shuffled reference group on each replicate. Under `gamma_method="empirical_bayes"` the prior hyperparameters stay at their observed-data values.
+
+This is a **conditional** permutation (layers fixed). Cell-level shuffles do not correct pseudoreplication. Treat residual FDR as exploratory unless the MixedLM (or another sample-level) null matches the design. With $B_{eff} \leq B$ successful permutations, the one-sided empirical p-values and their BH-adjusted counterparts are
 
 $$p_{g}^{perm,R} = \frac{1 + \sum_{b = 1}^{B_{eff}}\mathbf{1}\left( R_{g}^{(b)} \geq R_{g}^{obs} \right)}{B_{eff} + 1},\quad\quad\{ q_{h}^{perm,R}\}_{h \in \mathcal{G}_{valid}} = BH\left( \{ p_{h}^{perm,R}\}_{h \in \mathcal{G}_{valid}} \right).$$
 
@@ -149,7 +156,7 @@ The $+ 1$ correction keeps the p-values strictly positive and valid. The residua
 
 Matches the manuscript Methods subsection *Permutation-calibrated program
 placement* and the package function
-{func}`~scatrans.program_mechanism_permutation_calibrated` (0.10.9).
+{func}`~scatrans.program_mechanism_permutation_calibrated` (0.10.13).
 
 Competitive {func}`~scatrans.program_mechanism` and induction-matched
 {func}`~scatrans.program_mechanism_induction_matched` are **relative**: they
@@ -230,12 +237,12 @@ Figure S1.
 :width: 88%
 :align: center
 
-**Analysis routes in scATrans (Modes A–C).** Modes differ in the observational unit and the DE backend; the reference-corrected excess and Huber bias correction are shared. Only Mode A permits sample-level residual permutation for residual FDR.
+**Analysis routes in scATrans (Modes A–C).** Modes differ in the observational unit and the DE backend; the reference-corrected excess and Huber bias correction are shared. Residual permutation shuffle unit is backend-dependent (Step 4): cell-level for scanpy / Memento / pseudobulk re-aggregation; sample / RE-cluster for MixedLM.
 ```
 
 #### Mode A — Pseudobulk (main text; recommended)
 
-Observational unit $i$ = biological sample. Cells are aggregated per `sample_col`, layers are size-factor normalized, and DE is estimated with PyDESeq2. Equations: **2, 3, 4, 5** exactly as in the main text, with permutation applied at the sample level. This is the only route for which the permutation null is a valid replicate-level null.
+Observational unit $i$ = biological sample. Cells are aggregated per `sample_col`, layers are size-factor normalized, and DE is estimated with PyDESeq2. Equations: **2, 3, 4, 5** as in the main text. Residual permutation still shuffles **cell** labels and then re-aggregates; it is not a sample-level permutation. For a sample-level residual null use MixedLM (`use_mixed_model=True`).
 
 #### Mode B — Cell-level
 
@@ -285,7 +292,7 @@ The DE backend supplies ${logFC}_{g}$ and $p_{g}^{adj}$ as reported outputs; the
 
 | Option                      | Values (default in bold)                                        | Affects                              | Notes                                           |
 |:----------------------------|:----------------------------------------------------------------|:-------------------------------------|:------------------------------------------------|
-| Observational unit          | **pseudobulk (Mode A)** / cell (B) / kNN-smoothed cell (C)      | $\bar{U},\bar{S}$ in Eqs. 2–3        | Only A supports replicate-level permutation     |
+| Observational unit          | **pseudobulk (Mode A)** / cell (B) / kNN-smoothed cell (C)      | $\bar{U},\bar{S}$ in Eqs. 2–3        | Residual shuffle: cells (A/B) or MixedLM clusters |
 | DE backend                  | **PyDESeq2** / Scanpy t-test / Wilcoxon / mixed LM / Memento    | ${logFC}_{g},\ p_{g}^{adj}$ in Eq. 5 | Must be identical in observed and permuted runs |
 | `gamma_method`              | **heuristic\_shrink** / robust\_median / empirical\_bayes / raw | Eq. 2 → S1, S2                       | EB recommended for small reference groups       |
 | `prior_weight` $\eta$       | **5.0**                                                         | Eq. 2                                | Larger = stronger shrinkage to $\rho_{0}$       |

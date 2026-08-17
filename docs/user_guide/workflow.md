@@ -51,7 +51,7 @@ You do not need those pieces unless you want a custom path.
 
 | Option | When to use it |
 |--------|----------------|
-| `sample_col=...` | Biological replicates or libraries (preferred when available) |
+| `sample_col=...` | Biological replicates or libraries. Auto-pseudobulk + PyDESeq2 only if ≥3 samples per group; otherwise Wilcoxon stays cell-level |
 | `de="builtin"` | Default DE inside the call |
 | `de="wilcoxon"` / kwargs / DataFrame | A specific DE backend or your own DE table |
 | `gene_sets={...}` | Program-level relative tests → `res.programs` |
@@ -247,10 +247,18 @@ Direction for pure DE tables:
 
 ```python
 down = scat.filter_active_genes(
-    de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down"
+    de_results,
+    select_by="de",
+    padj_cutoff=0.05,
+    logfc_cutoff=0.3,
+    logfc_direction="down",
 )
 both = scat.filter_active_genes(
-    de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both"
+    de_results,
+    select_by="de",
+    padj_cutoff=0.05,
+    logfc_cutoff=0.3,
+    logfc_direction="both",
 )
 ```
 

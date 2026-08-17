@@ -1657,11 +1657,10 @@ def enrich_dotplot(
 
         pval_candidates = ["p.adjust", "Adjusted P-value", "p_adj", "padj", "FDR_qval", "pvalue"]
         pval_col = next((c for c in pval_candidates if c in plot_df.columns), None)
-        if pval_col is None:
-            pval_col = plot_df.columns[0]
 
-        # Filter clearly invalid p-values for the chosen p column (enrichment results should have p in [0,1])
-        if pval_col and pval_col in plot_df.columns:
+        # Only gate [0, 1] when the column is actually a p-value. Falling back to
+        # columns[0] used to drop GSEA NES rows (|NES| > 1) as "invalid p".
+        if pval_col is not None:
             plot_df[pval_col] = pd.to_numeric(plot_df[pval_col], errors="coerce")
             invalid_p = (plot_df[pval_col] < 0) | (plot_df[pval_col] > 1)
             if invalid_p.any():

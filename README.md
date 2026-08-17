@@ -102,7 +102,7 @@ Please cite the preprint:
 > *bioRxiv* (2026). doi:10.64898/2026.08.03.740741
 
 For the software itself, cite the Zenodo DOI above. Pin the installed
-version in Methods (this tree is `scatrans==0.10.12`). See `CITATION.cff`.
+version in Methods (this tree is `scatrans==0.10.13`). See `CITATION.cff`.
 
 ## License
 

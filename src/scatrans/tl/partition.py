@@ -363,6 +363,19 @@ def partition_de_by_mechanism(
     adata
         AnnData with spliced/unspliced (velocity) layers and a ``groupby`` obs
         column holding ``target_group`` / ``reference_group``.
+    groupby
+        ``obs`` column holding group labels.
+    target_group, reference_group
+        The two values of ``groupby`` to contrast. Defaults ``"Disease"`` /
+        ``"Control"``.
+    sample_col
+        Biological replicate or library ID. When this column has at least 3
+        samples per group, the simple path switches to pseudobulk + PyDESeq2.
+        With fewer samples, DE stays cell-level (Wilcoxon). Omit only when
+        you have no replicates.
+    organism
+        ``"mouse"`` (default) or ``"human"``. Selects bundled gene-feature
+        tables and GO/KEGG libraries. Not inferred from the data.
     de
         DE source that SELECTS the gene list:
 
@@ -411,6 +424,8 @@ def partition_de_by_mechanism(
     gene_sets
         ``{program: [gene, ...]}`` — when given, adds the program-level
         mechanism table (restricted to selected genes by default).
+    program_min_genes
+        Drop programs with fewer mapped genes than this.
     program_restrict_to_selected
         Pool the program test over the DE-selected genes only (default) vs all
         tested genes.
@@ -424,6 +439,8 @@ def partition_de_by_mechanism(
         Optional GO/pathway ORA on the **DE-selected** genes (not by
         ``mechanism_class``). Enriching genes split by per-gene mechanism labels
         is induction-confounded — use program tables instead.
+    show_plot
+        If True, draw the default residual plot from the internal scoring pass.
 
     Returns
     -------

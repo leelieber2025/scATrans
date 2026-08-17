@@ -11,13 +11,13 @@
 
 ## What scATrans does
 
-Differential expression tells you **which** genes change. When you also have
-nascent or unspliced layers, scATrans helps you ask **how** those changes look
-on a transcription-versus-stabilization axis.
+Differential expression tells you **which** genes change. With nascent or
+unspliced layers, scATrans asks **how** those changes sit on a
+transcription-versus-stabilization axis.
 
-- Soft labels on individual genes are exploratory.
-- Stronger claims usually come from **gene programs**, not single genes.
-- DE still defines the gene list. scATrans does not replace DE for discovery.
+- Per-gene labels are exploratory.
+- Report mechanism at the **program** level when you can.
+- DE still defines the gene list.
 
 No nascent layers? You can still run DE, enrichment, and plotting.
 

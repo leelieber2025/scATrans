@@ -646,11 +646,17 @@ def differential_expression(
           AnnData stays cell-level (same ``obs`` columns / embeddings / layers
           as the working copy). Sample-level summary lives in
           ``adata.uns["scatrans"]["pseudobulk_obs"]``.
+        - Cells whose ``groupby`` value is not the target or reference stay on
+          the returned object. Only ``subset_col`` drops cells from the return.
     """
     _require_explicit_groups(target_group, reference_group, func_name="differential_expression")
 
     # --- minimal shared validation (subset + group checks) ---
-    obs_filter = pd.Series(True, index=adata_input.obs_names)
+    # subset_col is a user-requested cell filter and is applied to the returned
+    # object. Restricting to target/reference is internal only — unused groupby
+    # values stay on the returned AnnData so ``adata, res = f(adata)`` cannot
+    # drop a third condition.
+    user_filter = pd.Series(True, index=adata_input.obs_names)
     if subset_col is not None:
         if subset_col not in adata_input.obs.columns:
             raise ValueError(f"subset_col='{subset_col}' not found in adata.obs.columns")
@@ -659,7 +665,7 @@ def differential_expression(
         subset_mask = _subset_obs_mask(adata_input.obs[subset_col], subset_values)
         if int(subset_mask.sum()) == 0:
             raise ValueError("No cells remain after subsetting.")
-        obs_filter &= subset_mask
+        user_filter &= subset_mask
 
     if not adata_input.var_names.is_unique:
         raise ValueError("adata.var_names must be unique.")
@@ -674,35 +680,42 @@ def differential_expression(
         reference_group=str(reference_group),
     )
 
-    obs_filter &= norm_groups.isin([target_group, reference_group])
     _caller_adata = adata_input
-    adata_input = _select_obs(adata_input, obs_filter, copy_input=copy_input)
-    if adata_input.n_obs == 0:
-        raise ValueError(
-            "No cells match target/reference groups after filtering. "
-            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
-            f"against adata.obs['{groupby}'] (missing labels are excluded)."
-        )
-    adata_input = _materialize_if_view(adata_input)
+    adata = _select_obs(adata_input, user_filter, copy_input=copy_input)
+    if adata.n_obs == 0:
+        raise ValueError("No cells remain after subsetting.")
+    adata = _materialize_if_view(adata)
     # Never mutate the caller's AnnData (labels / preprocess / .var).
-    if adata_input is _caller_adata:
-        adata_input = adata_input.copy()
+    if adata is _caller_adata:
+        adata = adata.copy()
         if not copy_input:
             logger.info(
                 "copy_input=False: isolated a working copy before mutation so the "
                 "caller's AnnData is left unchanged."
             )
-    adata_input.obs[groupby] = norm_groups.loc[obs_filter].values
+
+    work_mask = norm_groups.reindex(adata.obs_names).isin([target_group, reference_group])
+    work_mask = work_mask.fillna(False)
+    if int(work_mask.sum()) == 0:
+        raise ValueError(
+            "No cells match target/reference groups after filtering. "
+            f"Check target_group='{target_group}' and reference_group='{reference_group}' "
+            f"against adata.obs['{groupby}'] (missing labels are excluded)."
+        )
+    adata_work = adata if bool(work_mask.all()) else adata[work_mask].copy()
+    adata_work.obs[groupby] = norm_groups.reindex(adata_work.obs_names).values
 
     if gene_type_filter:
-        if "gene_type" not in adata_input.var.columns:
+        if "gene_type" not in adata.var.columns:
             raise ValueError("'gene_type_filter' provided but 'gene_type' column is missing.")
-        adata_input = _select_var(
-            adata_input, adata_input.var["gene_type"] == gene_type_filter, copy_input=copy_input
-        )
-        adata_input = _materialize_if_view(adata_input)
+        gene_mask = adata.var["gene_type"] == gene_type_filter
+        adata = _select_var(adata, gene_mask, copy_input=True)
+        work_gene_mask = gene_mask.reindex(adata_work.var_names).fillna(False)
+        adata_work = _select_var(adata_work, work_gene_mask, copy_input=True)
+        adata = _materialize_if_view(adata)
+        adata_work = _materialize_if_view(adata_work)
 
-    if adata_input.n_vars == 0:
+    if adata.n_vars == 0:
         raise ValueError("No genes remain after filtering.")
 
     if use_mixed_model and sample_col is None:
@@ -761,41 +774,62 @@ def differential_expression(
         )
 
     # --- prepare data (pseudobulk if requested) ---
-    # Keep the cell-level working copy as the return object. Aggregation is
-    # only an internal DE matrix; returning the sample-level AnnData used to
-    # wipe the caller's obs down to sample/groupby/n_cells/total_counts/pb_x_source.
-    adata = adata_input
-    adata_de = adata
+    # ``adata`` is the cell-level return object (user-requested cells).
+    # Aggregation / DE run on ``adata_de`` only.
+    adata_de = adata_work
 
     if use_pseudobulk:
         # sample_col is required above when use_pseudobulk=True
         assert sample_col is not None
         logger.info("Performing pseudobulk aggregation for DE...")
-        available_layers = [
-            layer for layer in ("spliced", "unspliced", "counts") if layer in adata.layers
-        ]
         x_layer_eff = pb_x_layer if pb_x_layer != "X" else None
         if (
             x_layer_eff is None
             and not (
-                pb_use_total_for_x and "spliced" in adata.layers and "unspliced" in adata.layers
+                pb_use_total_for_x
+                and "spliced" in adata_work.layers
+                and "unspliced" in adata_work.layers
             )
             and pseudobulk_de_backend == "pydeseq2"
-            and "counts" in adata.layers
+            and "counts" not in adata_work.layers
+        ):
+            # Snapshot lives on the cell-level object. The PB AnnData is new and
+            # has empty uns, so resolve counts here and aggregate them.
+            recovered = _resolve_aligned_raw_counts(
+                adata_work, layer="counts", require_integer=True
+            )
+            if recovered is not None:
+                adata_work.layers["counts"] = recovered
+                logger.info(
+                    "Pseudobulk: recovered integer counts from raw_snapshot into "
+                    "a temporary counts layer for aggregation."
+                )
+        if (
+            x_layer_eff is None
+            and not (
+                pb_use_total_for_x
+                and "spliced" in adata_work.layers
+                and "unspliced" in adata_work.layers
+            )
+            and pseudobulk_de_backend == "pydeseq2"
+            and "counts" in adata_work.layers
         ):
             x_layer_eff = "counts"
             logger.info(
                 "Pseudobulk: aggregating layers['counts'] into .X for PyDESeq2 "
                 "(adata.X may be log-normalized)."
             )
+        available_layers = [
+            layer for layer in ("spliced", "unspliced", "counts") if layer in adata_work.layers
+        ]
         adata_de = _pseudobulk_with_layers(
-            adata,
+            adata_work,
             sample_col,
             groupby,
             layers=available_layers,
             x_layer=x_layer_eff,
             use_total_for_x=pb_use_total_for_x
-            and ("spliced" in adata.layers and "unspliced" in adata.layers),
+            and ("spliced" in adata_work.layers and "unspliced" in adata_work.layers),
             min_cells=min_cells,
             min_counts=min_counts,
         )
@@ -969,7 +1003,8 @@ def differential_expression(
                 adata.uns[k] = adata_de.uns[k]
 
     de_diagnostics: dict[str, Any] = {
-        "n_cells": int(adata.n_obs),
+        "n_cells": int(adata_work.n_obs),
+        "n_cells_returned": int(adata.n_obs),
         "n_obs_for_de": int(adata_de.n_obs),
         "n_pseudobulk_samples": int(adata_de.n_obs) if use_pseudobulk else None,
         "n_genes_input": int(adata.n_vars),
@@ -977,8 +1012,8 @@ def differential_expression(
             "used": bool(use_mixed_model),
             "sample_col": sample_col if use_mixed_model else None,
             "paired_replicates": paired_replicates if use_mixed_model else None,
-            "n_samples": int(adata.obs[sample_col].nunique())
-            if (use_mixed_model and sample_col and sample_col in adata.obs.columns)
+            "n_samples": int(adata_work.obs[sample_col].nunique())
+            if (use_mixed_model and sample_col and sample_col in adata_work.obs.columns)
             else None,
             "mixedlm_grouping": (
                 de_df.attrs.get("mixedlm_grouping") if hasattr(de_df, "attrs") else None

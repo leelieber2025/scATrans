@@ -50,8 +50,8 @@ you are new to scATrans, start with {doc}`quickstart` and
    from **mechanism** residual if both appear.
 4. For program claims: prefer induction-matched tests when induction varies;
    for **absolute** placement report `calibrated` (and `null_mean`) from
-   `program_mechanism_permutation_calibrated` (frozen `de=`, `n_perm` often 50
-   in the manuscript, optional `block_col`), not the raw program mean alone.
+   `program_mechanism_permutation_calibrated` (frozen `de=`, package default
+   `n_perm=200`, optional `block_col`), not the raw program mean alone.
    A transcriptional control should approach zero after calibration if the
    offset correction is working.
 5. If `use_permutation=True` (gene-wise residual FDR), note the **conditional**
@@ -220,9 +220,9 @@ print(diag.get("mixed_model"))  # logFC_method, n_genes_logFC_mixedlm_sign_disco
 
 Global unspliced fractions above ~50% frequently indicate technical issues.
 Bias-correction diagnostics report the number of genes used and any
-fallback behavior. The permutation note records that unspliced/spliced
-layers and the reference gamma were fixed for speed while labels were
-shuffled.
+fallback behavior. Residual permutation keeps layers fixed and recomputes
+the residual (including gamma) from the shuffled reference group. The
+shuffle unit is cells unless MixedLM is on.
 
 ## Limitations
 
@@ -232,8 +232,8 @@ calculation. It is not a full stochastic or dynamical model.
 
 The unspliced excess term is most directly applicable to binary group
 contrasts. Within-group heterogeneity can reduce observed signal. When
-`use_permutation=True`, labels are shuffled while unspliced/spliced layers
-and the reference gamma remain fixed; this is noted in the results. Global
+`use_permutation=True`, labels are shuffled, layers stay fixed, and gamma
+is recomputed from the shuffled reference group (EB prior frozen). Global
 unspliced fractions above ~50% are reported in diagnostics. Bias correction
 effectiveness depends on annotation coverage. Small replicate numbers limit
 power for the unspliced excess term and FDR estimates. Mixed-model results

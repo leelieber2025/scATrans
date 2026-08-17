@@ -40,7 +40,9 @@ print(gsea_res[["Term", "NES", "p.adjust", "leading_edge"]].head())
 scat.pl.enrich_dotplot(gsea_res, x="NES", color_by="NES")
 
 # Dedicated running-sum plot (uses curves stored by run_gsea)
-scat.pl.gseaplot(ranked, gsea_res, term=gsea_res.iloc[0]["Term"])
+scat.pl.gseaplot(
+    ranked, gsea_res, term=gsea_res.sort_values("p.adjust").iloc[0]["Term"]
+)
 ```
 
 GSEA needs **signed** ranks. Passing a full `all_results` table auto-prefers
@@ -273,7 +275,7 @@ scat.pl.enrich_dotplot(
 
 # GSEA running-sum plot (uses curves stored by run_gsea)
 if len(gsea_res) > 0:
-    term = gsea_res.iloc[0]["Term"]
+    term = gsea_res.sort_values("p.adjust").iloc[0]["Term"]
     scat.pl.gseaplot(
         ranked_genes=ranked,
         gsea_result=gsea_res,

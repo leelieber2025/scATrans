@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.13] - 2026-08-15
+
+### Fixed
+- **Returned AnnData keeps unused `groupby` values.** After the 0.10.12
+  sample-level obs fix, `adata, res = differential_expression(adata, …)`
+  still dropped cells whose condition was not the target or reference.
+  Contrast restriction is now internal. Only `subset_col` removes cells
+  from the returned object. Same contract on `active_score` /
+  `partition_de_by_mechanism`.
+- **Pseudobulk attach no longer drops legacy `.var` columns.**
+  `velocity_residual`, `velocity_delta_raw`, and `velocity_source` are
+  copied onto the cell-level return object.
+- PyDESeq2 pseudobulk recovers integer counts from `raw_snapshot` when
+  `layers['counts']` is missing (the PB AnnData has empty `uns`).
+- `extract_gene_lists` now recognizes Seurat `p_val_adj` (and other
+  common adjusted-p aliases). Those tables used to yield an empty gene
+  list because the cutoff was applied to a missing column.
+- `enrich_dotplot` no longer treats the first numeric column as a
+  p-value when `p.adjust` is absent. GSEA tables with only `NES` were
+  losing every term with `|NES| > 1`.
+
+### Documentation
+- Method / statistical guidance / advanced: residual permutation shuffle
+  unit matches the code (cell-level for scanpy / Memento / pseudobulk
+  re-aggregation; sample / RE-cluster for MixedLM). Gamma is recomputed
+  under the shuffle; only the EB prior is frozen.
+- API: `active_score_simple` / `run_default_pipeline` do not call
+  `recommend_workflow`. Auto-pseudobulk needs ≥3 samples per group.
+  `datasets.load_toy` is in the autosummary. Broken `|log2FC|` table cell
+  fixed.
+- Tutorials trimmed to the calls a user would copy. American English;
+  fewer demo-only helpers.
+- Tutorials no longer treat raw-`p_val` top-N or largest logFC as a
+  gene list. GSE96583 now gates up/down genes with `p_adj` + `|logFC|`,
+  ranks DE tables by `p_adj`, and compares backends on those DE lists
+  (Wilcoxon logFC-top-20 had 16/20 with `p_adj ≥ 0.05`). Enrichment
+  tables sort by `p.adjust`. GA uses `padj_cutoff`. The EC UpSet
+  nominal-p signature goes through `filter_active_genes(...,
+  p_type="nominal")` instead of a hand-rolled mask.
+- Visualization tutorial: color-system strip (`palette` / `get_cmap`)
+  and custom colors on comet, volcano (`fills=` from journal palettes),
+  enrichment dots/bars, compare-dot, UpSet/Venn, GSEA, and bias/gamma.
+  Residual permutation (`unspliced_excess_fdr`), `facet_by_cluster`, and
+  `figure_export_context` are now in the same notebook.
+- GA tutorial: `diagnose_design` / `recommend_workflow`, plus volcano /
+  enrich-dot / comet after the GO table.
+- GSE96583: `restore_raw_counts` after log1p, and MixedLM on the 8-donor
+  contrast.
+- LPS / EC UpSet: `extract_gene_lists` and an explicit
+  `normalize_external_de` step for bring-your-own tables.
+- FAQ: unused `groupby` values stay on the returned AnnData.
+
 ## [0.10.12] - 2026-08-14
 
 ### Fixed

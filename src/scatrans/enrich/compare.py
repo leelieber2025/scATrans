@@ -138,10 +138,17 @@ def extract_gene_lists(
             "padj",
             "pvals_adj",
             "p.adjust",
+            "p_adjust",
             "FDR",
             "fdr",
             "p_adj_BH",
             "FDR_qval",
+            "p_val_adj",
+            "p.adj",
+            "adj_p_val",
+            "adj_p_value",
+            "qval",
+            "q_value",
         )
         raw_cols = ("p_val", "pval", "pvals", "pvalue", "p")
         for col in adjusted_cols:

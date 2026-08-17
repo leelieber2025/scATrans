@@ -48,8 +48,8 @@ count matrix. Enrichment and plotting work the same either way. Tutorial:
 {doc}`tutorials/t_gse96583_standalone_de_enrichment`.
 
 Don't have those layers yet? {doc}`tutorials/t_prepare_spliced_unspliced`
-covers generating them with velocyto / kb-python / STARsolo / alevin-fry (or
-renaming labeling-based `new`/`old` counts) and merging them into an
+covers generating them with velocyto / kb-python / STARsolo / alevin-fry
+(or renaming labeling-based `new`/`old` counts) and merging them into an
 existing AnnData.
 
 ## Can the residual replace DE?
@@ -134,9 +134,10 @@ adata, de = scat.differential_expression(adata, use_pseudobulk=True, sample_col=
 ```
 
 left `obs` with only `sample_col`, `groupby`, `n_cells`, `total_counts`, and
-`pb_x_source`. That is a bug. Current versions keep the **cell-level**
-AnnData (same `obs` columns, embeddings, layers). The DE table is the second
-return value. Sample-level summary is in
+`pb_x_source`. That is a bug. Current versions keep the **cell-level** AnnData
+(same `obs` columns, embeddings, layers). Cells whose `groupby` value is
+not the target or reference also stay (only `subset_col` drops cells).
+The DE table is the second return value. Sample-level summary is in
 `adata.uns["scatrans"]["pseudobulk_obs"]`. The same contract applies to
 `active_score`, `*_simple`, `run_default_pipeline`, and
 `partition_de_by_mechanism`.
@@ -185,7 +186,7 @@ beats DE.
 
 `add_gene_features` matches `adata.var_names`. Genes absent from the feature
 table get `NaN` and skip bias correction. Custom tables need a `gene_name`
-column that matches exactly ({doc}`user_guide/gene_features`).
+column that matches `adata.var_names` exactly ({doc}`user_guide/gene_features`).
 
 ## Design / sample-size warnings
 

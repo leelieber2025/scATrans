@@ -191,7 +191,9 @@ def active_score_simple(
     pydeseq2_min_counts: int = 10,
 ) -> tuple[ad.AnnData, pd.DataFrame, pd.DataFrame]:
     """
-    Recommended entry point for new users (minimal parameters).
+    Thin wrapper around :func:`active_score` with a short parameter list.
+
+    Prefer :func:`partition_de_by_mechanism` for the DE-to-mechanism path.
 
     Wraps :func:`active_score` with defaults:
 

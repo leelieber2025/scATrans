@@ -590,6 +590,96 @@ def test_strict_pydeseq2_counts_rejects_aggregated_non_count_counts_layer():
         )
 
 
+def test_unused_groupby_values_stay_on_returned_adata():
+    """``adata, res = f(adata)`` must not drop a third condition."""
+    adata = _pb_obs_adata()
+    extra = adata[:6].copy()
+    extra.obs["sample"] = "OTHER"
+    extra.obs["individual"] = "I4"
+    extra.obs_names = [f"extra{i}" for i in range(extra.n_obs)]
+    adata = ad.concat([adata, extra], uns_merge="unique")
+    n_in = adata.n_obs
+    assert "OTHER" in set(adata.obs["sample"].astype(str))
+
+    out_de, _ = scat.differential_expression(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        min_cells=1,
+        min_counts=1,
+    )
+    assert out_de.n_obs == n_in
+    assert "OTHER" in set(out_de.obs["sample"].astype(str))
+    assert out_de.obs.loc[out_de.obs["sample"] == "OTHER"].shape[0] == 6
+
+    out_as, _, _ = scat.active_score(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="scanpy",
+        de_method="wilcoxon",
+        use_permutation=False,
+        show_plot=False,
+        min_cells=1,
+        min_counts=1,
+        min_total_counts=1,
+    )
+    assert out_as.n_obs == n_in
+    assert "OTHER" in set(out_as.obs["sample"].astype(str))
+    # 0.10.12 attach used to drop legacy aliases on the PB return path.
+    for col in ("velocity_residual", "velocity_delta_raw", "velocity_source"):
+        assert col in out_as.var.columns, col
+
+    part = scat.partition_de_by_mechanism(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        sample_col="individual",
+        organism="mouse",
+    )
+    assert part.adata.n_obs == n_in
+    assert "OTHER" in set(part.adata.obs["sample"].astype(str))
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("pydeseq2") is None,
+    reason="pydeseq2 not installed",
+)
+def test_pseudobulk_pydeseq2_recovers_snapshot_when_counts_layer_dropped():
+    """Sidecar snapshot must still feed PyDESeq2 after the counts layer is gone."""
+    adata = _pb_obs_adata(extra_cell_cols=False)
+    scat.store_raw_counts(adata, layer="counts")
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+    del adata.layers["counts"]
+    assert "raw_snapshot" in adata.uns["scatrans"]
+
+    out, res = scat.differential_expression(
+        adata,
+        groupby="sample",
+        target_group="RTX",
+        reference_group="VEH",
+        use_pseudobulk=True,
+        sample_col="individual",
+        pseudobulk_de_backend="pydeseq2",
+        pb_use_total_for_x=False,
+        min_cells=1,
+        min_counts=1,
+    )
+    assert out.n_obs == adata.n_obs
+    assert "logFC" in res.columns
+    assert int(np.isfinite(res["logFC"]).sum()) == adata.n_vars
+
+
 def test_subset_col_normalizes_numeric_labels():
     """subset_values=1 / '1' must match obs float 1.0 (same as groupby normalize)."""
     rng = np.random.default_rng(0)
