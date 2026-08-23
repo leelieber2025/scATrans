@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.14] - 2026-08-23
+
+### Fixed
+
+- Suppressed only the known Matplotlib tight-layout incompatibility warning in
+  enrichment UpSet plots; unrelated plotting warnings remain visible.
+
+### Documentation
+
+- Fixed a broken quickstart cross-reference and an invalid heading hierarchy so
+  the public documentation builds cleanly with warnings treated as errors.
+
+### Packaging
+
+- Updated license metadata to SPDX form, excluded notebook checkpoint
+  directories from source distributions, and removed an obsolete script-mode
+  import fallback.
+
 ## [0.10.13] - 2026-08-15
 
 ### Fixed
@@ -36,6 +54,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   fixed.
 - Tutorials trimmed to the calls a user would copy. American English;
   fewer demo-only helpers.
+- Tutorials no longer treat raw-`p_val` top-N or largest logFC as a
+  gene list. GSE96583 now gates up/down genes with `p_adj` + `|logFC|`,
+  ranks DE tables by `p_adj`, and compares backends on those DE lists
+  (Wilcoxon logFC-top-20 had 16/20 with `p_adj ≥ 0.05`). Enrichment
+  tables sort by `p.adjust`. GA uses `padj_cutoff`. The EC UpSet
+  nominal-p signature goes through `filter_active_genes(...,
+  p_type="nominal")` instead of a hand-rolled mask.
+- Visualization tutorial: color-system strip (`palette` / `get_cmap`)
+  and custom colors on comet, volcano (`fills=` from journal palettes),
+  enrichment dots/bars, compare-dot, UpSet/Venn, GSEA, and bias/gamma.
+  Residual permutation (`unspliced_excess_fdr`), `facet_by_cluster`, and
+  `figure_export_context` are now in the same notebook.
+- GA tutorial: `diagnose_design` / `recommend_workflow`, plus volcano /
+  enrich-dot / comet after the GO table.
+- GSE96583: `restore_raw_counts` after log1p, and MixedLM on the 8-donor
+  contrast.
+- LPS / EC UpSet: `extract_gene_lists` and an explicit
+  `normalize_external_de` step for bring-your-own tables.
 - FAQ: unused `groupby` values stay on the returned AnnData.
 
 ## [0.10.12] - 2026-08-14

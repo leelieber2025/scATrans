@@ -115,7 +115,7 @@ Wilcoxon / PyDESeq2 / Memento, ORA, GO, KEGG, GSEA, plots.
 :link: t_synthetic_visualization
 :link-type: doc
 
-`scat.pl` helpers on synthetic tables.
+`scat.pl` helpers on synthetic tables, including palettes and `cmap=`.
 +++
 No external data
 :::

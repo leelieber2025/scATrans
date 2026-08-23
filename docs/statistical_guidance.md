@@ -5,7 +5,7 @@ you are new to scATrans, start with {doc}`quickstart` and
 {doc}`user_guide/index`. Scope: {doc}`faq`. Assumptions:
 {doc}`domain_assumptions`.
 
-### Short reporting checklist
+## Short reporting checklist
 
 1. Gene list from DE (`result.selected`, with padj and logFC).
 2. Note capture quality (`result.regime` / `reliability`).

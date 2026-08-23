@@ -2583,7 +2583,15 @@ def enrich_upsetplot(
         sns.despine(ax=ax_mat, top=True, right=True, bottom=True, left=True)
         ax_mat.tick_params(left=False, bottom=False)
 
-        plt.tight_layout()
+        # GridSpec with manually coordinated axes triggers a Matplotlib
+        # compatibility warning even though the layout is intentional.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="This figure includes Axes that are not compatible with tight_layout.*",
+                category=UserWarning,
+            )
+            fig.tight_layout()
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
         return fig, ax_mat

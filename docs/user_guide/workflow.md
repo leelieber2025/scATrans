@@ -247,10 +247,18 @@ Direction for pure DE tables:
 
 ```python
 down = scat.filter_active_genes(
-    de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="down"
+    de_results,
+    select_by="de",
+    padj_cutoff=0.05,
+    logfc_cutoff=0.3,
+    logfc_direction="down",
 )
 both = scat.filter_active_genes(
-    de_results, padj_cutoff=0.05, logfc_cutoff=0.3, logfc_direction="both"
+    de_results,
+    select_by="de",
+    padj_cutoff=0.05,
+    logfc_cutoff=0.3,
+    logfc_direction="both",
 )
 ```
 

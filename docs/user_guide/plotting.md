@@ -86,9 +86,13 @@ fig, ax = scat.pl.comet_plot(all_results, show=False)
 scat.pl.setup_ax(ax, outward=4)     # only if you want the gap
 ```
 
-Helpers: `palette` / `list_palettes`, `get_cmap` (`scat_BuRd`, `scat_YlGnBu`),
-`setup_ax`, `add_panel_label`. Continuous defaults use `scat_BuRd` /
-`scat_YlGnBu` on major plotters.
+Helpers: `palette` / `list_palettes`, `get_cmap` (`scat_BuRd`,
+`scat_YlGnBu`, `scat_YlOrRd`), `setup_ax`, `add_panel_label`. Qualitative
+sets include `nature`, `cell`, `science`, `okabe_ito`, and domain sets
+`volcano` / `mechanism`. Continuous defaults are `scat_BuRd` (diverging)
+and `scat_YlGnBu` (sequential). The visualization tutorial shows every
+set as a strip and wires `cmap=` / `fills=` / `set_color=` into the
+plotters: {doc}`../tutorials/t_synthetic_visualization`.
 
 All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in
 multi-panel figures), `save_path=`, `show=`, `use_style=`, `figsize=`, and
