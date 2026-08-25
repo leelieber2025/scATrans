@@ -2075,6 +2075,82 @@ def test_mixed_model_permutation_fast_warns_and_skips_mixedlm(monkeypatch, caplo
     ), "expected warning that active_score FDR is invalid under MixedLM + fast"
 
 
+def test_scanpy_de_does_not_leave_rank_genes_uns(adata_de_only, tmp_path):
+    """scanpy rank_genes_groups used to persist under a private uns key."""
+    adata, _ = scat.differential_expression(
+        adata_de_only.copy(),
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+    )
+    assert "_scatrans_rank_genes_groups" not in adata.uns
+    path = tmp_path / "de_clean.h5ad"
+    adata.write(path)
+    loaded = sc.read_h5ad(path)
+    assert "_scatrans_rank_genes_groups" not in loaded.uns
+    assert "logFC" in loaded.var.columns
+
+
+def test_scatrans_history_h5ad_roundtrip(adata_de_only, tmp_path):
+    """Repeated DE used to store list-of-dicts history that AnnData.write cannot serialize.
+
+    Error was: TypeError while writing key '/uns/scatrans/history'.
+    """
+    adata = adata_de_only.copy()
+    adata, _ = scat.differential_expression(
+        adata,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+    )
+    adata, _ = scat.differential_expression(
+        adata,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+    )
+    hist = adata.uns["scatrans"]["history"]
+    assert isinstance(hist, dict)
+    assert any(
+        isinstance(entry, dict) and entry.get("analysis") == "differential_expression"
+        for entry in hist.values()
+    )
+    path = tmp_path / "Neutrophils.h5ad"
+    adata.write(path)
+    loaded = sc.read_h5ad(path)
+    loaded_hist = loaded.uns["scatrans"]["history"]
+    assert isinstance(loaded_hist, dict)
+    assert len(loaded_hist) >= 1
+
+
+def test_legacy_list_history_write_fails_until_converted(tmp_path):
+    """Reproduce the h5py TypeError from pre-fix list-of-dicts history, then convert."""
+    from scatrans._utils import _history_entries, _history_to_uns
+
+    adata = ad.AnnData(np.zeros((3, 2)))
+    adata.uns["scatrans"] = {
+        "analysis": "differential_expression",
+        "history": [
+            {
+                "analysis": "differential_expression",
+                "mode": "differential_expression",
+                "target_group": "Disease",
+            }
+        ],
+    }
+    legacy_path = tmp_path / "legacy.h5ad"
+    with pytest.raises(TypeError, match="non-string objects"):
+        adata.write(legacy_path)
+
+    adata.uns["scatrans"]["history"] = _history_to_uns(
+        _history_entries(adata.uns["scatrans"]["history"])
+    )
+    ok_path = tmp_path / "ok.h5ad"
+    adata.write(ok_path)
+    loaded = sc.read_h5ad(ok_path)
+    assert loaded.uns["scatrans"]["history"]["0"]["analysis"] == "differential_expression"
+
+
 def test_shuffle_condition_labels_mixedlm_keeps_samples_pure():
     """Unpaired MixedLM null must not split a sample across conditions."""
     from scatrans._permutation import _shuffle_condition_labels

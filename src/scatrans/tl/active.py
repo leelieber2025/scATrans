@@ -31,9 +31,11 @@ from .._utils import (
     _lambda_pval_for_active_score,
     _matrix_copy,
     _matrix_sum_axis0,
+    _merge_scatrans_uns,
     _normalize_group_label,
     _normalize_velocity_layers_by_size_factor,
     _pseudobulk_with_layers,
+    _record_scatrans_history,
     _resolve_aligned_raw_counts,
     _score_direction_effect,
     _subset_obs_mask,
@@ -1564,20 +1566,8 @@ def _finalize_active_score_results(
     # Write metadata onto the object we return (full cell-level copy).
     returned = cell_adata if cell_adata is not None else adata
     existing = dict(returned.uns.get("scatrans", {}))
-    # Keep a lightweight history so multiple calls don't completely overwrite previous runs
-    history = existing.get("history", [])
-    if "analysis" in existing:
-        # save previous run summary (lightweight)
-        prev = {
-            k: existing.get(k)
-            for k in ("analysis", "mode", "target_group", "reference_group", "timestamp")
-            if k in existing
-        }
-        if prev:
-            history.append(prev)
-            if len(history) > 5:
-                history = history[-5:]
-    existing["history"] = history
+    # Nested mapping (not a list of dicts) so AnnData.write_h5ad can serialize it.
+    existing["history"] = _record_scatrans_history(existing)
 
     meta = {
         "version": VERSION,
@@ -1675,8 +1665,6 @@ def _finalize_active_score_results(
                 "unspliced_excess_fdr still uses a matching residual estimator."
             )
         meta["permutation_approximation_note"] = note
-
-    from .._utils import _merge_scatrans_uns
 
     # Keep the cell-level object. Do not paste the sample-level / contrast-only
     # working AnnData back — only the result table + run metadata.

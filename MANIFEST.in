@@ -50,6 +50,10 @@ global-exclude *.egg-info/*
 global-exclude *.h5ad
 global-exclude *.zip
 global-exclude .DS_Store
+prune docs/.ipynb_checkpoints
+prune docs/tutorials/.ipynb_checkpoints
+prune packaging/bioconda/recipes/scatrans/.ipynb_checkpoints
+prune packaging/ecosystem-packages/.ipynb_checkpoints
 
 # Pre-split monorepo modules must not re-enter (shadow real packages)
 global-exclude src/scatrans/tl.py

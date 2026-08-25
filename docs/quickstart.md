@@ -21,7 +21,7 @@ print(scat.__version__)
 | You have… | Start with |
 |-----------|------------|
 | AnnData with `spliced`/`unspliced` (or `mature`/`nascent`) | `partition_de_by_mechanism` below |
-| Counts only (no nascent layers) | `differential_expression` — see [DE only](#de-only-no-nascent-layers) |
+| Counts only (no nascent layers) | `differential_expression` — see {ref}`de-only-no-nascent-layers` |
 | Raw reads, no nascent layers yet | {doc}`tutorials/t_prepare_spliced_unspliced` — generate them with velocyto / kb-python / STARsolo / alevin-fry first |
 
 If you plan to use PyDESeq2, Memento, or a full-gene enrichment background,
@@ -160,6 +160,7 @@ More detail: {doc}`user_guide/workflow`.
 
 ---
 
+(de-only-no-nascent-layers)=
 ## DE only (no nascent layers)
 
 ```python

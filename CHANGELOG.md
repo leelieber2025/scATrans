@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.15] - 2026-08-25
+
+### Fixed
+
+- **`AnnData.write()` no longer fails on `/uns/scatrans/history`.** A second
+  `differential_expression` / `active_score` call stored previous-run summaries
+  as a list of dicts. AnnData writes lists as arrays, and h5py then raises
+  `TypeError: Can't implicitly convert non-string objects to strings`. History
+  is now a nested mapping. Objects already in memory with the old list form
+  can convert or drop that key before writing:
+
+  ```python
+  hist = adata.uns.get("scatrans", {}).get("history")
+  if isinstance(hist, list):
+      adata.uns["scatrans"]["history"] = {
+          str(i): rec for i, rec in enumerate(hist) if isinstance(rec, dict)
+      }
+  adata.write("out.h5ad")
+  ```
+- Scanpy DE no longer leaves `_scatrans_rank_genes_groups` in `adata.uns`
+  after `differential_expression` / `active_score`.
+- `baseMean` is aligned to gene names rather than column position, so a
+  working DE object whose `.var` order differs from the returned AnnData
+  cannot silently mis-label expression means.
+
+## [0.10.14] - 2026-08-23
+
+### Fixed
+
+- Suppressed only the known Matplotlib tight-layout incompatibility warning in
+  enrichment UpSet plots; unrelated plotting warnings remain visible.
+
+### Documentation
+
+- Fixed a broken quickstart cross-reference and an invalid heading hierarchy so
+  the public documentation builds cleanly with warnings treated as errors.
+
+### Packaging
+
+- Updated license metadata to SPDX form, excluded notebook checkpoint
+  directories from source distributions, and removed an obsolete script-mode
+  import fallback.
+
 ## [0.10.13] - 2026-08-15
 
 ### Fixed

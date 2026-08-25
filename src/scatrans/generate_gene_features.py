@@ -11,11 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
-try:
-    from .pp_bias import generate_gene_features_from_gtf
-except ImportError:  # pragma: no cover - direct script execution before install
-    # Fallback when run as a loose script (no package context).
-    from pp_bias import generate_gene_features_from_gtf  # type: ignore[no-redef]
+from .pp_bias import generate_gene_features_from_gtf
 
 
 def main():

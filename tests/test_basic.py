@@ -152,7 +152,28 @@ def test_merge_scatrans_uns_clears_none_and_keeps_sticky():
     assert "sample_col" not in out
     assert out["use_mixed_model"] is False
     assert out["analysis"] == "active_score"
+    assert isinstance(out["history"], dict)
     assert len(out["history"]) == 2
+    assert out["history"]["0"]["analysis"] == "old"
+    assert out["history"]["1"]["analysis"] == "prev"
+
+
+def test_record_scatrans_history_is_nested_mapping():
+    """History must be a dict-of-dicts; AnnData cannot write a list of dicts."""
+    from scatrans._utils import _record_scatrans_history
+
+    existing = {
+        "analysis": "differential_expression",
+        "mode": "differential_expression",
+        "target_group": "Disease",
+        "history": [{"analysis": "old"}],
+    }
+    hist = _record_scatrans_history(existing)
+    assert isinstance(hist, dict)
+    assert set(hist) == {"0", "1"}
+    assert hist["0"]["analysis"] == "old"
+    assert hist["1"]["analysis"] == "differential_expression"
+    assert hist["1"]["target_group"] == "Disease"
 
 
 def test_active_score_numeric_group_label_coercion(adata_basic):
