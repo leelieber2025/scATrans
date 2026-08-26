@@ -19,13 +19,14 @@ from .adaptive import (
 )
 from .bias import add_abundance_normalized_residual
 from .calibration import program_mechanism_permutation_calibrated
+from .compare import CompareDEResult, compare_de_across_groups
 from .de import (
     differential_expression,
     ensure_raw_counts,
     restore_raw_counts,
     store_raw_counts,
 )
-from .design import WORKFLOW_PRESETS, diagnose_design, recommend_workflow
+from .design import WORKFLOW_PRESETS, assign_pseudo_replicates, diagnose_design, recommend_workflow
 from .filter import filter_active_genes
 from .mechanism import (
     annotate_mechanism_class,
@@ -63,8 +64,11 @@ __all__ = [
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",
+    "compare_de_across_groups",
+    "CompareDEResult",
     "diagnose_design",
     "recommend_workflow",
+    "assign_pseudo_replicates",
     "WORKFLOW_PRESETS",
     "run_default_pipeline",
     "PipelineResult",

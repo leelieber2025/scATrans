@@ -311,5 +311,7 @@ Additional options:
 - `context="paper"` on major plotters for journal-sized defaults
 
 All `scat.pl.*` functions accept `save_path`, `ax`/`axes`, `figsize`, `show`,
-and `dpi`. Files written via `save_path` are always exported at ≥300 dpi.
+and `dpi`. Files written via `save_path` are always exported at ≥300 dpi;
+PDF/SVG keep editable text (TrueType). Use `scat.pl.savefig(fig, "panel.pdf")`
+if you assembled the figure yourself.
 See {doc}`plotting` for display defaults and style helpers.

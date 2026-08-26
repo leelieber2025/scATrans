@@ -4,7 +4,58 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.16] - 2026-08-26
+
+### Added
+
+- **Vector-friendly export, on by default** (`scat.pl.set_vector_friendly` /
+  `get_vector_friendly` / `vector_friendly_context`, scanpy
+  `settings._vector_friendly`-style). Dense point clouds (`volcano_plot`,
+  `comet_plot`, `volcano_3d`, `bias_diagnostic_plot`,
+  `velocity_phase_portraits`, `gamma_shrinkage_plot`, and the node scatter in
+  the new `enrich_network_plot`) are rasterized to a high-resolution bitmap
+  layer when saved as PDF/SVG/EPS, while axes, legends, colorbars, and every
+  text label stay real editable vector content.
+- **`scat.compare_de_across_groups`** + `CompareDEResult`: run the same DE
+  contrast independently within every level of a grouping column (e.g. cell
+  type) and summarize up/down-regulated gene counts (`.summary`, `.up`,
+  `.down`, `.failed`). Pairs with two new plotters: `pl.de_summary_barplot`
+  (`mode="stacked"` / `"diverging"` / `"grouped"` / `"up"` / `"down"`) and
+  `pl.composition_barplot` (100%-stacked category-share bars, e.g. a
+  `mechanism_class` breakdown by cell type).
+- **`scat.assign_pseudo_replicates`**: randomly split the cells of each
+  condition into synthetic subgroups when no real donor/individual column
+  exists for pseudobulk `sample_col=`. Explicitly documented as
+  pseudo-replicates, not biological replicates (p-values on the resulting
+  column remain anti-conservative relative to a real multi-donor design).
+- **`scat.pl.group_stat_plot`**: violin/box/bar/strip comparison of a
+  continuous column (e.g. `active_score`, `unspliced_excess_residual`,
+  `mechanism_confidence`) across groups, with pairwise significance brackets
+  (Mann-Whitney U by default, Welch's t-test optional; BH-FDR corrected
+  across multiple comparisons). `return_stats=True` returns the exact
+  statistic/p-value/p_adj per comparison.
+- **`scat.pl.enrich_network_plot`**: term-similarity "enrichment map" for one
+  enrichment table (Jaccard/overlap gene-set similarity edges, built-in
+  force-directed layout — no new `networkx` dependency).
+- **`scat.pl.MECHANISM_CLASS_COLORS`**: fixed `mechanism_class` → color
+  mapping, applied automatically by `group_stat_plot` / `composition_barplot`
+  so the same label always gets the same color across figures.
+- **`scat.pl.active_genes_heatmap(..., gene_annotation=...)`**: lightweight,
+  SCP `FeatureHeatmap`-inspired gene grouping — reorders genes into
+  contiguous blocks by a categorical annotation (an `adata.var` column, or a
+  `{gene: category}` mapping/Series) and adds a labeled bracket above the
+  heatmap, via scanpy's own public `var_group_positions`/`var_group_labels`
+  (no bundled TF/pathway database, no new heatmap engine).
+
 ## [0.10.15] - 2026-08-25
+
+### Changed
+
+- Plot `save_path=` (and `figure_export_context` / `save_all_figures`) now
+  always embed **editable TrueType text** in PDF/PS (`fonttype` 42) and keep
+  SVG glyphs as text. Matplotlib's default Type 3 fonts cannot be edited in
+  Illustrator / Inkscape. This no longer depends on `use_style=True`. New
+  helper: `scat.pl.savefig(fig, "fig.pdf")`.
 
 ### Fixed
 

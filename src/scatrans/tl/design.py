@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .. import qc as _qc
@@ -66,6 +67,84 @@ WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
         "filter_preset": "heuristic",
     },
 }
+
+
+def assign_pseudo_replicates(
+    adata: Any,
+    groupby: str,
+    n_replicates: int = 3,
+    key_added: str = "pseudo_replicate",
+    random_state: int = 0,
+) -> None:
+    """
+    Randomly split the cells of each ``groupby`` level into ``n_replicates``
+    synthetic subgroups and store the result in ``adata.obs[key_added]``.
+
+    This is a fallback for datasets that have no real donor/individual column
+    to pass as ``sample_col`` to :func:`diagnose_design`, ``use_pseudobulk``,
+    or ``use_mixed_model`` — it lets pseudobulk aggregation run with more than
+    one "sample" per condition instead of collapsing each condition to a
+    single pseudobulk profile (n=1), which most pseudobulk DE backends refuse
+    or cannot estimate dispersion from.
+
+    Important: these are **pseudo-replicates**, not biological replicates.
+    Splitting cells from the same donor(s) at random only resamples
+    cell-level (technical/sampling) noise — it does not capture true
+    donor-to-donor biological variance, so p-values from pseudobulk DE run on
+    ``key_added`` will still be anti-conservative relative to a design with
+    real independent donors. Use real donor/sample identifiers whenever they
+    exist; reach for this only when no such structure is available and you
+    need an approximate multi-sample pseudobulk run (e.g. for PyDESeq2 to
+    have a dispersion estimate at all).
+
+    Parameters
+    ----------
+    adata
+        AnnData object; mutated in place.
+    groupby
+        ``adata.obs`` column identifying the condition/group to split within
+        (e.g. ``"sample"``, ``"condition"``, ``"disease"``). Splitting is done
+        independently per level of this column, so replicate labels never mix
+        cells across groups.
+    n_replicates
+        Number of synthetic subgroups per group level (must be >= 2).
+    key_added
+        ``adata.obs`` column to write the assignment to.
+    random_state
+        Seed for the random assignment, so repeated calls are reproducible.
+    """
+    if groupby not in adata.obs.columns:
+        raise ValueError(f"groupby={groupby!r} not found in adata.obs")
+    if n_replicates < 2:
+        raise ValueError(
+            f"n_replicates must be >= 2 (got {n_replicates}) to form a replicate structure"
+        )
+
+    rng = np.random.default_rng(random_state)
+    labels = pd.Series(index=adata.obs.index, dtype=object)
+    conditions = adata.obs[groupby].unique()
+
+    for cond in conditions:
+        mask = (adata.obs[groupby] == cond).to_numpy()
+        n_cells = int(mask.sum())
+        ind_labels = [f"{cond}_rep{i + 1}" for i in range(n_replicates)]
+        labels.loc[mask] = rng.choice(ind_labels, size=n_cells)
+
+    adata.obs[key_added] = labels.astype("category")
+
+    counts = adata.obs.groupby([groupby, key_added], observed=True).size()
+    logger.warning(
+        "assign_pseudo_replicates: assigned %d pseudo-replicate(s) per level of "
+        "'%s' into adata.obs['%s'] (random_state=%d). These are RANDOM SPLITS of "
+        "existing cells, not real biological replicates — pseudobulk p-values on "
+        "this column remain anti-conservative relative to a true multi-donor "
+        "design. Counts per group:\n%s",
+        n_replicates,
+        groupby,
+        key_added,
+        random_state,
+        counts.to_string(),
+    )
 
 
 def _permutation_power_guidance(

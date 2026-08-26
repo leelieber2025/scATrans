@@ -62,6 +62,17 @@ do **not** call it. Those wrappers use a shorter rule: `sample_col` with
 at least 3 samples per group → pseudobulk + PyDESeq2; otherwise cell-level
 Wilcoxon. They do not turn on residual permutation.
 
+`compare_de_across_groups(adata, split_by=..., groupby=..., target_group=...,
+reference_group=..., de_kwargs={...})` runs `differential_expression`
+independently within every level of `split_by` (e.g. cell type) and returns a
+`CompareDEResult` (`.results`, `.up`, `.down` per level, `.summary` counts
+table, `.failed` for levels DE could not run on). Pairs with
+`pl.de_summary_barplot` / `pl.composition_barplot`. `assign_pseudo_replicates`
+randomly splits cells within each condition into synthetic subgroups when no
+real donor/individual column exists for pseudobulk `sample_col=` — these are
+**pseudo-replicates, not biological replicates** (see
+{doc}`../user_guide/workflow`).
+
 ```{eval-rst}
 .. currentmodule:: scatrans
 
@@ -87,6 +98,9 @@ Wilcoxon. They do not turn on residual permutation.
    threshold_sensitivity
    differential_expression
    differential_expression_simple
+   compare_de_across_groups
+   CompareDEResult
+   assign_pseudo_replicates
    diagnose_design
    recommend_workflow
    run_default_pipeline
@@ -260,9 +274,11 @@ that it outperforms DE.
 ## Plotting (`scat.pl`)
 
 Plotters accept `ax=`/`axes=` (multi-panel embedding), `save_path=`
-(vector/300 dpi export), `show=`, and `use_style=`; most return `(fig, ax)`.
-Helpers such as `set_style`, `build_gene_membership`, and
-`normalize_external_de` do not take `ax=`.
+(vector/300 dpi export with **editable TrueType text** in PDF/SVG), `show=`,
+and `use_style=`; most return `(fig, ax)`. `scat.pl.savefig(fig, path)`
+applies the same export contract when you save a Figure yourself. Helpers
+such as `set_style`, `build_gene_membership`, and `normalize_external_de`
+do not take `ax=`.
 
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|
@@ -273,6 +289,7 @@ Helpers such as `set_style`, `build_gene_membership`, and
 | `top_n` / `label_genes` / `label_repel` | `comet_plot`, `volcano_plot` | control auto-labeling; `label_genes=[...]` adds manual labels; `label_repel=False` skips adjustText |
 | `s` / `point_scale` / `min_size` / `max_size` | comet / volcano / volcano_3d | `s=` forces fixed point size; otherwise score-based sizing with hard bounds |
 | `use_style` / `set_style()` | all | opt-in publication style (off by default so notebooks are not surprised by global `rcParams` changes) |
+| `pl.set_vector_friendly(bool)` / `pl.vector_friendly_context(bool)` | all dense-scatter plotters | rasterize dense point clouds on PDF/SVG/EPS export while axes/legends/text stay vector (default **on**, scanpy `_vector_friendly`-style); see {func}`~scatrans.pl.set_vector_friendly` |
 
 `compare_dotplot` is the clusterProfiler ``compareCluster``-style multi-group
 grid (groups on the x-axis, terms on the y-axis). Use it on the long table from
@@ -296,6 +313,19 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
 (`raw_color`/`corrected_color`/`trend_color`) and `gamma_shrinkage_plot`
 (`cmap`/`color`) are now recolorable too.
 
+**Group-comparison plotters** (companions to `compare_de_across_groups`):
+`de_summary_barplot` (up/down gene-count bars: `mode="stacked"` /
+`"diverging"` / `"grouped"` / `"up"` / `"down"`), `group_stat_plot`
+(violin/box/bar/strip comparison of a continuous column across groups with
+Mann-Whitney/t-test pairwise significance brackets, BH-FDR corrected by
+default — `return_stats=True` for the numbers), and `composition_barplot`
+(100%-stacked category-share bars, e.g. `mechanism_class` breakdown by cell
+type). All three auto-color `mechanism_class` labels via
+`pl.MECHANISM_CLASS_COLORS` when applicable. `enrich_network_plot` draws a
+term-similarity "enrichment map" for one enrichment table (Jaccard/overlap
+gene-set similarity edges, built-in force-directed layout, no `networkx`
+dependency).
+
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/
@@ -305,9 +335,13 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.volcano_plot
    pl.volcano_3d
    pl.bias_diagnostic_plot
+   pl.de_summary_barplot
+   pl.group_stat_plot
+   pl.composition_barplot
    pl.enrich_dotplot
    pl.compare_dotplot
    pl.enrich_barplot
+   pl.enrich_network_plot
    pl.enrich_upsetplot
    pl.gene_upsetplot
    pl.build_gene_membership
@@ -323,6 +357,10 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.set_style
    pl.set_nature_style
    pl.style_context
+   pl.set_vector_friendly
+   pl.get_vector_friendly
+   pl.vector_friendly_context
    pl.figure_export_context
    pl.save_all_figures
+   pl.savefig
 ```
