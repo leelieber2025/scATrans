@@ -56,6 +56,17 @@ PSEUDOBULK_FILTER_DEFAULTS: dict[str, float | None] = {
     "delta_variance_min": None,
 }
 
+# logFC cutoffs are intentionally different — do not unify them to one number.
+# PARTITION_LOGFC_CUTOFF (1.0): publication-style DE membership for
+# partition_de_by_mechanism (and filter_active_genes(select_by="de") when no
+# explicit cutoff is given). A strict gene-list gate.
+PARTITION_LOGFC_CUTOFF = 1.0
+# HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"] (0.35): softer gate for the
+# composite / heuristic ranking aid — not a DE gene-list definition.
+# COMPARE_LOGFC_CUTOFF (0.25): lenient per-group DE summary so weaker cell-type
+# effects still contribute to up/down counts in compare_de_across_groups.
+COMPARE_LOGFC_CUTOFF = 0.25
+
 # MixedLM needs enough biological replicates for identifiable random effects.
 MIXED_MODEL_MIN_SAMPLES_PER_GROUP = 4
 MIXED_MODEL_MIN_TOTAL_SAMPLES = 6

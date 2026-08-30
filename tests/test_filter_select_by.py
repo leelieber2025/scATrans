@@ -4,7 +4,8 @@ select_by="de" must decide gene-list membership from the DE gates only
 (p_adj / logFC + direction), skipping the nascent-proxy gates (active_score,
 unspliced_excess_residual, the FDR columns, effective_gamma, delta_variance),
 while keeping those proxy columns on the output as annotations. Default
-select_by="composite" must reproduce the pre-existing behavior exactly.
+select_by is "de". Explicit select_by="composite" reproduces the previous
+proxy-aware selection.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ def _make_table(seed: int = 0, n: int = 200) -> pd.DataFrame:
 def test_de_selects_gene_with_bad_proxy():
     df = _make_table()
     de = filter_active_genes(df, select_by="de")
-    comp = filter_active_genes(df, preset="pseudobulk")
+    comp = filter_active_genes(df, preset="pseudobulk", select_by="composite")
     # DE-up gene with a bad proxy is selected on the DE axis but excluded by composite
     assert "g0" in de.index
     assert "g0" not in comp.index
@@ -85,11 +86,14 @@ def test_de_sorted_by_padj_not_active_score():
     assert np.all(np.diff(padj) >= 0)  # ascending p_adj (DE ranking), not active_score
 
 
-def test_composite_default_unchanged():
+def test_default_select_by_is_de():
     df = _make_table()
-    a = filter_active_genes(df, preset="pseudobulk")
-    b = filter_active_genes(df, preset="pseudobulk", select_by="composite")
-    assert a.index.equals(b.index)
+    default = filter_active_genes(df)
+    de = filter_active_genes(df, select_by="de")
+    assert default.index.equals(de.index)
+    comp = filter_active_genes(df, preset="pseudobulk", select_by="composite")
+    assert "g0" in default.index
+    assert "g0" not in comp.index
 
 
 def test_de_direction_down():
@@ -139,7 +143,16 @@ def test_pipeline_select_by_de_end_to_end(adata_basic):
     if len(cand) > 0:
         assert (cand["p_adj"] < 0.05).all()
         assert "unspliced_excess_residual" in cand.columns
-    # composite default still works and records its mode
+    # default select_by is now "de"; explicit composite still works
+    res_default = scat.run_default_pipeline(
+        adata_basic,
+        groupby="condition",
+        target_group="Disease",
+        reference_group="Control",
+        run_go_enrichment=False,
+        show_plot=False,
+    )
+    assert res_default.meta["select_by"] == "de"
     res_c = scat.run_default_pipeline(
         adata_basic,
         groupby="condition",
@@ -147,5 +160,6 @@ def test_pipeline_select_by_de_end_to_end(adata_basic):
         reference_group="Control",
         run_go_enrichment=False,
         show_plot=False,
+        select_by="composite",
     )
     assert res_c.meta["select_by"] == "composite"

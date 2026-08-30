@@ -4,6 +4,114 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.17] - 2026-08-29
+
+### Changed
+
+- **`filter_active_genes` / `run_default_pipeline` default `select_by` is now `"de"`.**
+  Gene-list membership is decided by the DE gates (padj < 0.05 and `|log2FC|` > 1
+  by default). Pass `select_by="composite"` explicitly for the previous
+  proxy-aware selection (`run_default_pipeline(select_by="composite")` remains
+  deprecated).
+- Named logFC cutoff constants (`PARTITION_LOGFC_CUTOFF=1.0`,
+  `COMPARE_LOGFC_CUTOFF=0.25`; heuristic remains
+  `HEURISTIC_FILTER_DEFAULTS["logfc_cutoff"]=0.35`) so the three thresholds stay
+  distinct on purpose. Numeric defaults are unchanged.
+
+### Fixed
+
+- **`hasattr(series, "cat")` is always True** on pandas Series, so
+  `group_stat_plot`, `composition_barplot`, and `compare_de_across_groups`
+  crashed with `AttributeError` on object-dtype grouping columns (e.g.
+  `mechanism_class`). They now detect pandas categoricals via dtype.
+- **`assign_pseudo_replicates`** now assigns balanced labels so every replicate
+  appears at least once when `n_cells >= n_replicates`, and raises `ValueError`
+  when a group has fewer cells than `n_replicates`.
+- **GTF exon-union length** (`pp_bias`) no longer requires pandas 2.2+
+  `groupby.apply(..., include_groups=False)`; older pandas is retried without
+  the keyword.
+- **MixedLM failed-fit warning** claimed `logFC=0`; failed genes still get
+  sample-mean logFC, with `mixedlm_coef=0` and `p_val=1`.
+- **Permutation tests** no longer drop an entire shuffle when only some gene
+  scores are NaN; per-gene NaNs count as non-exceedances. All-NaN / `None` /
+  length-mismatched replicates are still discarded.
+
+## [0.10.16] - 2026-08-26
+
+### Added
+
+- **Vector-friendly export, on by default** (`scat.pl.set_vector_friendly` /
+  `get_vector_friendly` / `vector_friendly_context`, scanpy
+  `settings._vector_friendly`-style). Dense point clouds (`volcano_plot`,
+  `comet_plot`, `volcano_3d`, `bias_diagnostic_plot`,
+  `velocity_phase_portraits`, `gamma_shrinkage_plot`, and the node scatter in
+  the new `enrich_network_plot`) are rasterized to a high-resolution bitmap
+  layer when saved as PDF/SVG/EPS, while axes, legends, colorbars, and every
+  text label stay real editable vector content.
+- **`scat.compare_de_across_groups`** + `CompareDEResult`: run the same DE
+  contrast independently within every level of a grouping column (e.g. cell
+  type) and summarize up/down-regulated gene counts (`.summary`, `.up`,
+  `.down`, `.failed`). Pairs with two new plotters: `pl.de_summary_barplot`
+  (`mode="stacked"` / `"diverging"` / `"grouped"` / `"up"` / `"down"`) and
+  `pl.composition_barplot` (100%-stacked category-share bars, e.g. a
+  `mechanism_class` breakdown by cell type).
+- **`scat.assign_pseudo_replicates`**: randomly split the cells of each
+  condition into synthetic subgroups when no real donor/individual column
+  exists for pseudobulk `sample_col=`. Explicitly documented as
+  pseudo-replicates, not biological replicates (p-values on the resulting
+  column remain anti-conservative relative to a real multi-donor design).
+- **`scat.pl.group_stat_plot`**: violin/box/bar/strip comparison of a
+  continuous column (e.g. `active_score`, `unspliced_excess_residual`,
+  `mechanism_confidence`) across groups, with pairwise significance brackets
+  (Mann-Whitney U by default, Welch's t-test optional; BH-FDR corrected
+  across multiple comparisons). `return_stats=True` returns the exact
+  statistic/p-value/p_adj per comparison.
+- **`scat.pl.enrich_network_plot`**: term-similarity "enrichment map" for one
+  enrichment table (Jaccard/overlap gene-set similarity edges, built-in
+  force-directed layout — no new `networkx` dependency).
+- **`scat.pl.MECHANISM_CLASS_COLORS`**: fixed `mechanism_class` → color
+  mapping, applied automatically by `group_stat_plot` / `composition_barplot`
+  so the same label always gets the same color across figures.
+- **`scat.pl.active_genes_heatmap(..., gene_annotation=...)`**: lightweight,
+  SCP `FeatureHeatmap`-inspired gene grouping — reorders genes into
+  contiguous blocks by a categorical annotation (an `adata.var` column, or a
+  `{gene: category}` mapping/Series) and adds a labeled bracket above the
+  heatmap, via scanpy's own public `var_group_positions`/`var_group_labels`
+  (no bundled TF/pathway database, no new heatmap engine).
+
+## [0.10.15] - 2026-08-25
+
+### Changed
+
+- Plot `save_path=` (and `figure_export_context` / `save_all_figures`) now
+  always embed **editable TrueType text** in PDF/PS (`fonttype` 42) and keep
+  SVG glyphs as text. Matplotlib's default Type 3 fonts cannot be edited in
+  Illustrator / Inkscape. This no longer depends on `use_style=True`. New
+  helper: `scat.pl.savefig(fig, "fig.pdf")`.
+
+### Fixed
+
+- **`AnnData.write()` no longer fails on `/uns/scatrans/history`.** A second
+  `differential_expression` / `active_score` call stored previous-run summaries
+  as a list of dicts. AnnData writes lists as arrays, and h5py then raises
+  `TypeError: Can't implicitly convert non-string objects to strings`. History
+  is now a nested mapping. Objects already in memory with the old list form
+  can convert or drop that key before writing:
+
+  ```python
+  hist = adata.uns.get("scatrans", {}).get("history")
+  if isinstance(hist, list):
+      adata.uns["scatrans"]["history"] = {
+          str(i): rec for i, rec in enumerate(hist) if isinstance(rec, dict)
+      }
+  adata.write("out.h5ad")
+  ```
+- Scanpy DE no longer leaves `_scatrans_rank_genes_groups` in `adata.uns`
+  after `differential_expression` / `active_score`.
+- `baseMean` is aligned to gene names rather than column position, so a
+  working DE object whose `.var` order differs from the returned AnnData
+  cannot silently mis-label expression means.
+
 ## [0.10.14] - 2026-08-23
 
 ### Fixed

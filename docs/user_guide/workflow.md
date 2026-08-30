@@ -237,11 +237,11 @@ candidates = scat.filter_active_genes(all_results, preset="heuristic")
 | Mode | Membership | Proxy gates |
 |------|------------|-------------|
 | `"de"` (**use this**) | DE only | Skipped |
-| `"composite"` (API default for compatibility) | DE + residual gates | Applied |
+| `"composite"` (explicit opt-in; legacy) | DE + residual gates | Applied |
 
-Prefer `select_by="de"` even though the function default is still
-`"composite"`. Partition and `run_default_pipeline(..., select_by="de")`
-already use DE-only membership.
+`select_by="de"` is the function default. Partition and
+`run_default_pipeline` also use DE-only membership unless you pass
+`select_by="composite"` explicitly.
 
 Direction for pure DE tables:
 
@@ -277,6 +277,61 @@ diag = scat.diagnose_design(adata, groupby="condition", sample_col="sample")
 print(diag["warnings"])
 print(diag["recommendations"])
 ```
+
+## Comparing DE across groups (e.g. cell types)
+
+`compare_de_across_groups` runs the same contrast independently within every
+level of a grouping column (cell type, cluster, ...) and summarizes
+up/down-regulated gene counts for comparison:
+
+```python
+cmp = scat.compare_de_across_groups(
+    adata,
+    split_by="cell_type",          # loop over this column
+    groupby="sample",              # the DE contrast
+    target_group="RTX",
+    reference_group="VEH",
+    de_kwargs={                    # forwarded to differential_expression
+        "use_pseudobulk": True,
+        "sample_col": "individual",
+        "pseudobulk_de_backend": "pydeseq2",
+    },
+    padj_cutoff=0.05,
+    logfc_cutoff=0.25,
+)
+cmp.summary                  # per-cell-type up / down / total counts
+cmp.up["T"]                  # upregulated genes table for cell type "T"
+cmp.failed                   # {level: error} for levels DE could not run on
+scat.pl.de_summary_barplot(cmp, mode="stacked", sort_by="total")
+scat.pl.composition_barplot(cmp.results["T"], groupby=..., hue="mechanism_class")
+```
+
+Levels with fewer than `min_cells` cells, or where DE raises (e.g. too few
+replicates for pseudobulk dispersion estimation), are skipped and recorded in
+`cmp.failed` rather than aborting the whole comparison
+(`raise_on_error=True` to fail fast instead). Significant up/down genes reuse
+`filter_active_genes(..., select_by="de")` internally, so the same
+`padj_cutoff` / `p_type` / `logfc_cutoff` semantics apply.
+
+### Synthetic pseudo-replicates
+
+Pseudobulk DE (PyDESeq2 dispersion estimation, `use_mixed_model`, ...) needs
+more than one "sample" per condition. If you have no real donor/individual
+column, `assign_pseudo_replicates` randomly splits the cells of each
+condition into `n_replicates` synthetic subgroups:
+
+```python
+scat.assign_pseudo_replicates(
+    adata, groupby="sample", n_replicates=3, key_added="individual", random_state=0,
+)
+```
+
+**These are pseudo-replicates, not biological replicates.** Random splits of
+the same cells only resample cell-level (technical/sampling) noise — they do
+not capture true donor-to-donor variance, so pseudobulk p-values on this
+column remain anti-conservative relative to a real multi-donor design. Use
+real donor/sample identifiers whenever they exist; reach for this only when
+none are available and you need an approximate multi-sample pseudobulk run.
 
 ## Layer requirements
 

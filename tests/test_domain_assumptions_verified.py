@@ -133,6 +133,7 @@ def test_assumption_filter_residual_follows_direction_and_padj():
     up = scat.filter_active_genes(
         df,
         preset=None,
+        select_by="composite",
         padj_cutoff=0.05,
         logfc_cutoff=0.5,
         logfc_direction="up",
@@ -142,6 +143,7 @@ def test_assumption_filter_residual_follows_direction_and_padj():
     down = scat.filter_active_genes(
         df,
         preset=None,
+        select_by="composite",
         padj_cutoff=0.05,
         logfc_cutoff=0.5,
         logfc_direction="down",

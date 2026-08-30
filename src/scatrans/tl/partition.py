@@ -32,7 +32,7 @@ from typing import Any
 import pandas as pd
 
 from ..qc import regime_diagnosis
-from ._common import VERSION
+from ._common import PARTITION_LOGFC_CUTOFF, VERSION
 from .de import differential_expression
 from .filter import filter_active_genes
 from .mechanism import (
@@ -327,7 +327,7 @@ def partition_de_by_mechanism(
     sample_col: str | None = None,
     organism: str = "mouse",
     padj_cutoff: float = 0.05,
-    logfc_cutoff: float = 1.0,
+    logfc_cutoff: float = PARTITION_LOGFC_CUTOFF,
     logfc_direction: str = "up",
     add_nascent_score: bool = False,
     class_threshold: float | None = None,

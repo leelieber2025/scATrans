@@ -152,7 +152,28 @@ def test_merge_scatrans_uns_clears_none_and_keeps_sticky():
     assert "sample_col" not in out
     assert out["use_mixed_model"] is False
     assert out["analysis"] == "active_score"
+    assert isinstance(out["history"], dict)
     assert len(out["history"]) == 2
+    assert out["history"]["0"]["analysis"] == "old"
+    assert out["history"]["1"]["analysis"] == "prev"
+
+
+def test_record_scatrans_history_is_nested_mapping():
+    """History must be a dict-of-dicts; AnnData cannot write a list of dicts."""
+    from scatrans._utils import _record_scatrans_history
+
+    existing = {
+        "analysis": "differential_expression",
+        "mode": "differential_expression",
+        "target_group": "Disease",
+        "history": [{"analysis": "old"}],
+    }
+    hist = _record_scatrans_history(existing)
+    assert isinstance(hist, dict)
+    assert set(hist) == {"0", "1"}
+    assert hist["0"]["analysis"] == "old"
+    assert hist["1"]["analysis"] == "differential_expression"
+    assert hist["1"]["target_group"] == "Disease"
 
 
 def test_active_score_numeric_group_label_coercion(adata_basic):
@@ -229,7 +250,7 @@ def test_filter_active_genes_permissive_keeps_nan_fdr():
 
 
 def test_filter_active_genes_permissive_keeps_padj_one():
-    """Default/permissive mode must not drop genes with p_adj or FDR exactly 1.0."""
+    """Composite/permissive mode must not drop genes with p_adj or FDR exactly 1.0."""
     df = pd.DataFrame(
         {
             "logFC": [0.1, -0.2, 0.5, -0.9, 0.0],
@@ -240,11 +261,11 @@ def test_filter_active_genes_permissive_keeps_padj_one():
         },
         index=[f"g{i}" for i in range(5)],
     )
-    out_default = scat.filter_active_genes(df)
+    out_composite = scat.filter_active_genes(df, select_by="composite")
     out_permissive = scat.filter_active_genes(df, preset="permissive")
-    assert len(out_default) == 5
+    assert len(out_composite) == 5
     assert len(out_permissive) == 5
-    assert set(out_default.index) == set(df.index)
+    assert set(out_composite.index) == set(df.index)
 
 
 def test_filter_active_genes_non_numeric_cutoffs_raise():
@@ -278,6 +299,7 @@ def test_filter_active_genes_non_numeric_cutoffs_raise():
     # None remains valid for optional FDR / optional bounds (skip filter)
     out = scat.filter_active_genes(
         df,
+        select_by="composite",
         active_score_fdr_cutoff=None,
         unspliced_excess_fdr_cutoff=None,
         effective_gamma_max=None,
@@ -805,6 +827,7 @@ def test_filter_active_genes_basic(adata_mixed_small):
     # Basic call - should not crash even though active_score_fdr is missing
     filt = scat.filter_active_genes(
         allr,
+        select_by="composite",
         active_score_cutoff=30,
         pval_cutoff=0.1,
         unspliced_excess_residual_cutoff=0.5,
@@ -832,6 +855,7 @@ def test_filter_active_genes_basic(adata_mixed_small):
     )
     filt2 = scat.filter_active_genes(
         allr_perm,
+        select_by="composite",
         active_score_cutoff=20,
         unspliced_excess_fdr_cutoff=0.5,  # permissive
         effective_gamma_min=0.0,
@@ -887,16 +911,18 @@ def test_filter_active_genes_presets(adata_mixed_small):
     assert len(f_perm) > 0
 
     # heuristic preset applies stricter single-cell style defaults
-    f_heu = scat.filter_active_genes(allr, preset="heuristic")
+    f_heu = scat.filter_active_genes(allr, preset="heuristic", select_by="composite")
     # on small synthetic data this may be small or zero, but should not crash
     assert isinstance(f_heu, pd.DataFrame)
 
     # pseudobulk preset uses lenient values suitable after aggregation
-    f_pb = scat.filter_active_genes(allr, preset="pseudobulk")
+    f_pb = scat.filter_active_genes(allr, preset="pseudobulk", select_by="composite")
     assert len(f_pb) >= 0
 
     # explicit arg should override preset
-    f_over = scat.filter_active_genes(allr, preset="heuristic", active_score_cutoff=0)
+    f_over = scat.filter_active_genes(
+        allr, preset="heuristic", select_by="composite", active_score_cutoff=0
+    )
     assert len(f_over) > len(f_heu) or len(f_heu) == 0
 
 
@@ -938,8 +964,12 @@ def test_filter_active_genes_logfc_direction(adata_mixed_small):
         assert (down_strict["logFC"] < -0.1).all()
 
     # alias names
-    assert len(scat.filter_active_genes(allr, logfc_cutoff=0.0, logfc_direction="neg")) == len(down)
-    assert len(scat.filter_active_genes(allr, logfc_cutoff=0.0, logfc_direction="abs")) == len(both)
+    assert len(
+        scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.0, logfc_direction="neg")
+    ) == len(down)
+    assert len(
+        scat.filter_active_genes(allr, pval_cutoff=1.0, logfc_cutoff=0.0, logfc_direction="abs")
+    ) == len(both)
 
     # also test on a minimal pure-DE-like DataFrame (no active_score)
     de_df = pd.DataFrame(

@@ -542,30 +542,36 @@ def _run_de_wrapper(
                 f"if you have multiple biological replicates per condition."
             )
         rank_key = "_scatrans_rank_genes_groups"
-        with _de_warning_context():
-            try:
-                sc.tl.rank_genes_groups(
-                    ad_temp,
-                    groupby=use_groupby,
-                    groups=[target_group],
-                    reference=reference_group,
-                    method=de_method,
-                    key_added=rank_key,
-                )
-            except Exception as exc:
-                msg = str(exc)
-                if "only contain one sample" in msg or "one sample" in msg.lower():
-                    raise ValueError(
-                        f"scanpy could not compute DE statistics: each group needs at least 2 "
-                        f"cells (found {n_target} target, {n_reference} reference for "
-                        f"'{use_groupby}'). For single-cell-per-group designs, use pseudobulk "
-                        f"with biological replicates (use_pseudobulk=True, sample_col=...) or "
-                        f"add more cells per group."
-                    ) from exc
-                raise
-        de_raw = sc.get.rank_genes_groups_df(ad_temp, group=target_group, key=rank_key).set_index(
-            "names"
-        )
+        try:
+            with _de_warning_context():
+                try:
+                    sc.tl.rank_genes_groups(
+                        ad_temp,
+                        groupby=use_groupby,
+                        groups=[target_group],
+                        reference=reference_group,
+                        method=de_method,
+                        key_added=rank_key,
+                    )
+                except Exception as exc:
+                    msg = str(exc)
+                    if "only contain one sample" in msg or "one sample" in msg.lower():
+                        raise ValueError(
+                            f"scanpy could not compute DE statistics: each group needs at least 2 "
+                            f"cells (found {n_target} target, {n_reference} reference for "
+                            f"'{use_groupby}'). For single-cell-per-group designs, use pseudobulk "
+                            f"with biological replicates (use_pseudobulk=True, sample_col=...) or "
+                            f"add more cells per group."
+                        ) from exc
+                    raise
+            de_raw = sc.get.rank_genes_groups_df(
+                ad_temp, group=target_group, key=rank_key
+            ).set_index("names")
+        finally:
+            # rank_genes_groups writes a bulky recarray into uns. Leave it on the
+            # returned object and AnnData.write() stores a private scanpy table
+            # the user never asked for.
+            ad_temp.uns.pop(rank_key, None)
         de_df = pd.DataFrame(index=ad_temp.var_names)
         # scanpy rank_genes_groups always returns logfoldchanges on log2 scale:
         # log2( (expm1(mean_t) + eps) / (expm1(mean_r) + eps) ), independent of the
@@ -935,8 +941,8 @@ def _run_mixedlm_de(
         logger.warning(
             "MixedLM: %d/%d genes (%.1f%%) had degenerate or non-convergent fits "
             "(near-constant expression, singular Hessian, missing condition coefficient, etc.) "
-            "and received neutral values (logFC=0, p_val=1, delta_variance=0). "
-            "See diagnostics['mixed_model']['n_genes_failed_fit'].",
+            "and received mixedlm_coef=0, p_val=1, delta_variance=0; logFC is still "
+            "from sample means. See diagnostics['mixed_model']['n_genes_failed_fit'].",
             n_failed,
             n_total,
             100.0 * failed_rate,

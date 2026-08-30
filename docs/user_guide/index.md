@@ -35,8 +35,8 @@ These are the installed keyword defaults, not recommendations:
 | Call | Default |
 |------|---------|
 | `partition_de_by_mechanism` | `organism="mouse"`, `logfc_cutoff=1.0`, `padj_cutoff=0.05`, `sample_col=None` (pseudobulk only if ≥3 samples/group) |
-| `run_default_pipeline` | `select_by="composite"` (deprecated), `run_go_enrichment=True` |
-| `filter_active_genes` | `select_by="composite"`, `preset=None` (permissive) |
+| `run_default_pipeline` | `select_by="de"`, `run_go_enrichment=True` |
+| `filter_active_genes` | `select_by="de"`, `preset=None` (DE defaults padj<0.05, |logFC|>1) |
 
 Usual practice: use `partition_de_by_mechanism`, pass `sample_col` when you
 have replicates, treat `result.selected` as the gene list, and report

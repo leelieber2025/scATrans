@@ -62,6 +62,17 @@ do **not** call it. Those wrappers use a shorter rule: `sample_col` with
 at least 3 samples per group → pseudobulk + PyDESeq2; otherwise cell-level
 Wilcoxon. They do not turn on residual permutation.
 
+`compare_de_across_groups(adata, split_by=..., groupby=..., target_group=...,
+reference_group=..., de_kwargs={...})` runs `differential_expression`
+independently within every level of `split_by` (e.g. cell type) and returns a
+`CompareDEResult` (`.results`, `.up`, `.down` per level, `.summary` counts
+table, `.failed` for levels DE could not run on). Pairs with
+`pl.de_summary_barplot` / `pl.composition_barplot`. `assign_pseudo_replicates`
+randomly splits cells within each condition into synthetic subgroups when no
+real donor/individual column exists for pseudobulk `sample_col=` — these are
+**pseudo-replicates, not biological replicates** (see
+{doc}`../user_guide/workflow`).
+
 ```{eval-rst}
 .. currentmodule:: scatrans
 
@@ -87,6 +98,9 @@ Wilcoxon. They do not turn on residual permutation.
    threshold_sensitivity
    differential_expression
    differential_expression_simple
+   compare_de_across_groups
+   CompareDEResult
+   assign_pseudo_replicates
    diagnose_design
    recommend_workflow
    run_default_pipeline
@@ -114,26 +128,24 @@ docs do not change them.
 | Call | Default | Notes |
 |------|---------|--------|
 | `partition_de_by_mechanism` | `organism="mouse"`, `logfc_cutoff=1.0`, `padj_cutoff=0.05`, `sample_col=None`, `de="builtin"`, `run_go_enrichment=False` | Cell-level Wilcoxon unless `sample_col` has ≥3 samples/group (then pseudobulk + PyDESeq2). Cutoffs used for the run are in `result.summary()`. |
-| `run_default_pipeline` | `select_by="composite"`, `run_go_enrichment=True`, `organism="mouse"` | `select_by="composite"` is deprecated but still the default. Pass `select_by="de"` for DE-only membership. |
-| `filter_active_genes` | `select_by="composite"`, `preset=None` | No preset is permissive. `select_by="de"` applies padj < 0.05 and \|logFC\| > 1 when you do not pass cutoffs. |
+| `run_default_pipeline` | `select_by="de"`, `run_go_enrichment=True`, `organism="mouse"` | Default is DE-only membership. Pass `select_by="composite"` explicitly for the deprecated proxy-aware path. |
+| `filter_active_genes` | `select_by="de"`, `preset=None` | Default DE gates: padj < 0.05 and |logFC| > 1 when you do not pass cutoffs. `select_by="composite"` with no preset is permissive. |
 | `add_gene_features` / enrichment | `organism="mouse"` | Pass `"human"` for human symbols. |
 
 `filter_active_genes(results_df, preset=..., select_by=..., logfc_direction=...,
 return_mask=...)` accepts `preset="heuristic"` (standard cutoffs), `"pseudobulk"`
 (looser, post-aggregation), `"significant"` (replays the built-in strict mask;
 requires `use_permutation=True` upstream), or `"permissive"`; or pass explicit
-`*_cutoff` kwargs instead of a preset. The **default is `preset=None`**
-(permissive — only explicitly-passed cutoffs apply); `select_by="de"` additionally
-applies DE defaults (`padj<0.05`, `logFC>1`) when no cutoffs are given.
+`*_cutoff` kwargs instead of a preset. The **default is `preset=None`** with **`select_by="de"`**, which applies DE
+defaults (`padj<0.05`, `logFC>1`) when no cutoffs are given. Pass
+`select_by="composite"` (or `preset="permissive"`) for the old no-cutoff path.
 
-**`select_by`** (API default `"composite"` for backward compatibility; prefer
-`"de"` for production lists — the primary partition path already uses DE-only
-membership):
+**`select_by`** (API default `"de"`):
 
 | Value | Membership decided by | Proxy columns |
 |-------|----------------------|---------------|
 | `"de"` (**recommended**) | **DE only** (`p_adj` / `logFC`; defaults padj < 0.05 and absolute logFC > 1 when no cutoffs given) | Residual columns annotate only; they do not change membership. Sorted by `p_adj` then `logFC`. Incompatible with `preset="significant"` |
-| `"composite"` (legacy API default) | DE gates **and** nascent/composite gates | Participate in selection — not recommended for production discovery |
+| `"composite"` (explicit opt-in; legacy) | DE gates **and** nascent/composite gates | Participate in selection — not recommended for production discovery |
 
 ### Pipeline add-ons (`run_default_pipeline`)
 
@@ -260,9 +272,11 @@ that it outperforms DE.
 ## Plotting (`scat.pl`)
 
 Plotters accept `ax=`/`axes=` (multi-panel embedding), `save_path=`
-(vector/300 dpi export), `show=`, and `use_style=`; most return `(fig, ax)`.
-Helpers such as `set_style`, `build_gene_membership`, and
-`normalize_external_de` do not take `ax=`.
+(vector/300 dpi export with **editable TrueType text** in PDF/SVG), `show=`,
+and `use_style=`; most return `(fig, ax)`. `scat.pl.savefig(fig, path)`
+applies the same export contract when you save a Figure yourself. Helpers
+such as `set_style`, `build_gene_membership`, and `normalize_external_de`
+do not take `ax=`.
 
 | Parameter | Applies to | Notes |
 |-----------|-----------|-------|
@@ -273,6 +287,7 @@ Helpers such as `set_style`, `build_gene_membership`, and
 | `top_n` / `label_genes` / `label_repel` | `comet_plot`, `volcano_plot` | control auto-labeling; `label_genes=[...]` adds manual labels; `label_repel=False` skips adjustText |
 | `s` / `point_scale` / `min_size` / `max_size` | comet / volcano / volcano_3d | `s=` forces fixed point size; otherwise score-based sizing with hard bounds |
 | `use_style` / `set_style()` | all | opt-in publication style (off by default so notebooks are not surprised by global `rcParams` changes) |
+| `pl.set_vector_friendly(bool)` / `pl.vector_friendly_context(bool)` | all dense-scatter plotters | rasterize dense point clouds on PDF/SVG/EPS export while axes/legends/text stay vector (default **on**, scanpy `_vector_friendly`-style); see {func}`~scatrans.pl.set_vector_friendly` |
 
 `compare_dotplot` is the clusterProfiler ``compareCluster``-style multi-group
 grid (groups on the x-axis, terms on the y-axis). Use it on the long table from
@@ -296,6 +311,19 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
 (`raw_color`/`corrected_color`/`trend_color`) and `gamma_shrinkage_plot`
 (`cmap`/`color`) are now recolorable too.
 
+**Group-comparison plotters** (companions to `compare_de_across_groups`):
+`de_summary_barplot` (up/down gene-count bars: `mode="stacked"` /
+`"diverging"` / `"grouped"` / `"up"` / `"down"`), `group_stat_plot`
+(violin/box/bar/strip comparison of a continuous column across groups with
+Mann-Whitney/t-test pairwise significance brackets, BH-FDR corrected by
+default — `return_stats=True` for the numbers), and `composition_barplot`
+(100%-stacked category-share bars, e.g. `mechanism_class` breakdown by cell
+type). All three auto-color `mechanism_class` labels via
+`pl.MECHANISM_CLASS_COLORS` when applicable. `enrich_network_plot` draws a
+term-similarity "enrichment map" for one enrichment table (Jaccard/overlap
+gene-set similarity edges, built-in force-directed layout, no `networkx`
+dependency).
+
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/
@@ -305,9 +333,13 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.volcano_plot
    pl.volcano_3d
    pl.bias_diagnostic_plot
+   pl.de_summary_barplot
+   pl.group_stat_plot
+   pl.composition_barplot
    pl.enrich_dotplot
    pl.compare_dotplot
    pl.enrich_barplot
+   pl.enrich_network_plot
    pl.enrich_upsetplot
    pl.gene_upsetplot
    pl.build_gene_membership
@@ -323,6 +355,10 @@ were added to `enrich_upsetplot`; `bias_diagnostic_plot`
    pl.set_style
    pl.set_nature_style
    pl.style_context
+   pl.set_vector_friendly
+   pl.get_vector_friendly
+   pl.vector_friendly_context
    pl.figure_export_context
    pl.save_all_figures
+   pl.savefig
 ```

@@ -194,6 +194,96 @@ def _subset_obs_mask(
     return normed.isin(wanted)
 
 
+_HISTORY_SUMMARY_KEYS = (
+    "analysis",
+    "mode",
+    "target_group",
+    "reference_group",
+    "timestamp",
+)
+_HISTORY_MAX_ENTRIES = 5
+
+
+def _history_sort_key(key: Any) -> tuple[int, int | str]:
+    text = str(key)
+    try:
+        return (0, int(text))
+    except (TypeError, ValueError):
+        return (1, text)
+
+
+def _uns_safe_scalar(value: Any) -> Any:
+    """Coerce a history field to an h5ad-writable scalar, or None to drop."""
+    if value is None:
+        return None
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _history_entries(history: Any) -> list[dict[str, Any]]:
+    """Normalize ``uns['scatrans']['history']`` to a list of dicts.
+
+    Accepts the current nested-mapping form and the legacy list-of-dicts form
+    (the latter cannot be written by AnnData/h5py).
+    """
+    if history is None:
+        return []
+    if isinstance(history, dict):
+        items = sorted(history.items(), key=lambda kv: _history_sort_key(kv[0]))
+        return [dict(v) for _, v in items if isinstance(v, dict)]
+    if isinstance(history, np.ndarray):
+        history = history.tolist()
+    if isinstance(history, (list, tuple)):
+        return [dict(v) for v in history if isinstance(v, dict)]
+    return []
+
+
+def _history_to_uns(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Store run history as a nested mapping so ``AnnData.write()`` can serialize it.
+
+    AnnData writes Python lists as arrays. A list of dicts becomes an object
+    array and h5py then fails with ``TypeError: Can't implicitly convert
+    non-string objects to strings`` at ``/uns/scatrans/history``.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    kept = entries[-_HISTORY_MAX_ENTRIES:]
+    for i, entry in enumerate(kept):
+        cleaned: dict[str, Any] = {}
+        for key, value in entry.items():
+            scalar = _uns_safe_scalar(value)
+            if scalar is None:
+                continue
+            cleaned[str(key)] = scalar
+        out[str(i)] = cleaned
+    return out
+
+
+def _record_scatrans_history(existing: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Append a lightweight previous-run summary; return an h5ad-safe mapping."""
+    entries = _history_entries(existing.get("history"))
+    if "analysis" in existing:
+        prev = {}
+        for key in _HISTORY_SUMMARY_KEYS:
+            if key not in existing:
+                continue
+            scalar = _uns_safe_scalar(existing.get(key))
+            if scalar is None:
+                continue
+            prev[key] = scalar
+        if prev:
+            entries.append(prev)
+    return _history_to_uns(entries)
+
+
 def _merge_scatrans_uns(
     existing: dict[str, Any],
     meta: dict[str, Any],
@@ -213,6 +303,8 @@ def _merge_scatrans_uns(
     - All other keys from a previous run are **dropped**, then ``meta`` is applied.
     - ``meta`` values that are ``None`` **remove** the key (explicit "feature off")
       so a second analysis cannot inherit e.g. ``sample_col`` from a prior mixed-model run.
+    - ``history`` is always coerced to a nested mapping (h5ad-writable). A legacy
+      list of dicts is converted rather than passed through.
     """
     out: dict[str, Any] = {}
     for k in sticky_keys:
@@ -228,6 +320,8 @@ def _merge_scatrans_uns(
         out["history"] = meta["history"]
     elif "history" in existing:
         out["history"] = existing["history"]
+    if "history" in out:
+        out["history"] = _history_to_uns(_history_entries(out["history"]))
     return out
 
 
@@ -1460,6 +1554,31 @@ def _fit_huber_bias_correction(
 
     residual[~valid_expr] = 0.0
     return residual, bias_info
+
+
+def _is_categorical_series(series: pd.Series) -> bool:
+    """True iff *series* is a pandas Categorical.
+
+    ``hasattr(series, "cat")`` is always True (a CachedAccessor), so it cannot
+    be used to detect categoricals — accessing ``.cat.categories`` on an
+    object-dtype Series raises AttributeError.
+    """
+    return isinstance(series.dtype, pd.CategoricalDtype)
+
+
+def _categorical_or_unique(series: pd.Series, *, drop_unused: bool = True) -> list:
+    """Ordered grouping levels from a Series.
+
+    Categorical columns keep category order (optionally dropping unused
+    categories). Non-categorical columns use first-seen unique values.
+    """
+    if _is_categorical_series(series):
+        cats = list(series.cat.categories)
+        if drop_unused:
+            present = set(series.dropna())
+            return [g for g in cats if g in present]
+        return cats
+    return list(pd.unique(series))
 
 
 # warnings imported at top of file (used inside _fit_huber_bias_correction and pseudobulk creation)

@@ -114,7 +114,7 @@ def filter_active_genes(
     effective_gamma_min: Any = _NOT_PROVIDED,
     effective_gamma_max: Any = _NOT_PROVIDED,
     delta_variance_min: Any = _NOT_PROVIDED,
-    select_by: str = "composite",
+    select_by: str = "de",
     return_mask: bool = False,
     inplace: bool = False,
     **deprecated_kwargs: Any,
@@ -160,8 +160,9 @@ def filter_active_genes(
 
     If you explicitly pass any cutoff parameter, it takes precedence over the preset.
 
-    Calling with no arguments (or only the DataFrame) and no preset returns the full
-    `all_results` (fully permissive).
+    Calling with no preset and ``select_by="de"`` (the default) applies the DE
+    standard (padj<0.05 and ``|log2FC|``>1). Pass ``select_by="composite"`` with
+    no preset for the fully permissive (no-cutoff) path, or ``preset="permissive"``.
 
     Only filters corresponding to columns present in the DataFrame are applied.
     This is safe whether or not `use_permutation=True` or `use_mixed_model=True` was used.
@@ -236,10 +237,7 @@ def filter_active_genes(
     select_by : {"composite", "de"}
         Which axis DEFINES gene-list membership.
 
-        - "composite" (default): the current behavior — the nascent proxy
-          (active_score / unspliced_excess_residual / their FDRs) participates in
-          selection alongside DE.
-        - "de": **DE SELECTS, proxy ANNOTATES.** Membership is decided ONLY by the
+        - "de" (default): **DE SELECTS, proxy ANNOTATES.** Membership is decided ONLY by the
           differential-expression gates (p_adj / logFC + direction, and mixedlm_coef
           direction when present); the active_score, unspliced_excess_residual,
           active_score_fdr, unspliced_excess_fdr, effective_gamma and delta_variance
@@ -248,6 +246,9 @@ def filter_active_genes(
           logFC (direction-aware), never by active_score. When no preset / explicit
           cutoffs are given, DE defaults padj<0.05 and ``|log2FC|``>1 apply. Not
           compatible with preset="significant".
+        - "composite": explicit opt-in for the previous behavior — the nascent proxy
+          (active_score / unspliced_excess_residual / their FDRs) participates in
+          selection alongside DE.
 
     Returns
     -------

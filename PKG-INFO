@@ -1,3 +1,55 @@
+Metadata-Version: 2.4
+Name: scatrans
+Version: 0.10.16
+Summary: Single-cell Active Transcription Analysis
+Author-email: "Zhao Li (李钊)" <leelieber@gmail.com>
+License-Expression: Apache-2.0
+Project-URL: Homepage, https://github.com/leelieber2025/scATrans
+Project-URL: Documentation, https://scatrans.readthedocs.io
+Project-URL: Changelog, https://scatrans.readthedocs.io/en/latest/changelog.html
+Keywords: single-cell,RNA-seq,unspliced,nascent RNA,active transcription,bioinformatics
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: scanpy>=1.9
+Requires-Dist: anndata>=0.8
+Requires-Dist: numpy>=1.21
+Requires-Dist: pandas>=1.3
+Requires-Dist: pyarrow>=10.0
+Requires-Dist: scipy>=1.7
+Requires-Dist: scikit-learn>=1.0
+Requires-Dist: joblib>=1.2
+Requires-Dist: statsmodels>=0.13
+Requires-Dist: matplotlib>=3.5
+Requires-Dist: seaborn>=0.12
+Requires-Dist: adjustText>=0.7
+Requires-Dist: importlib_resources>=5.0; python_version < "3.10"
+Provides-Extra: advanced
+Requires-Dist: scvelo>=0.3.0; extra == "advanced"
+Provides-Extra: pseudobulk
+Requires-Dist: pydeseq2>=0.4.0; extra == "pseudobulk"
+Provides-Extra: gene-features
+Requires-Dist: gtfparse>=1.3.0; extra == "gene-features"
+Provides-Extra: memento
+Requires-Dist: memento-de<0.3.0,>=0.1.0; extra == "memento"
+Provides-Extra: gsea
+Requires-Dist: gseapy>=1.1; extra == "gsea"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: ruff>=0.4.0; extra == "dev"
+Requires-Dist: pre-commit>=3.5; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Dynamic: license-file
+
 # scATrans
 
 [![PyPI version](https://img.shields.io/pypi/v/scatrans.svg)](https://pypi.org/project/scatrans/)
@@ -102,7 +154,7 @@ Please cite the preprint:
 > *bioRxiv* (2026). doi:10.64898/2026.08.03.740741
 
 For the software itself, cite the Zenodo DOI above. Pin the installed
-version in Methods (this tree is `scatrans==0.10.17`). See `CITATION.cff`.
+version in Methods (this tree is `scatrans==0.10.15`). See `CITATION.cff`.
 
 ## License
 

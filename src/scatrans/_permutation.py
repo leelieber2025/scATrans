@@ -522,15 +522,28 @@ def run_permutation_test(
             for i in range(n_perm)
         )
 
-    # Filter out any replicates that failed to produce a distinct shuffle (returned NaNs).
-    # This prevents using original labels for the null (which would bias p-values upward).
+    # Keep a shuffle if the score vector is usable. Drop only if s/res is None,
+    # length-mismatched vs the observed score, or ALL values are NaN.
+    # A single-gene NaN used to discard the whole replicate; that under-powered
+    # genes whose other scores were finite. Per-gene NaNs are treated as
+    # non-exceedances below (np.nan >= x is False) rather than dropping n_success.
+    # All-NaN vectors are still discarded: they are the sentinel for a failed
+    # distinct shuffle (original labels), which would bias p-values upward.
+    expected_n = int(np.asarray(real_score).reshape(-1).size)
     valid_scores = []
     valid_residuals = []
     for r in perm_results:
         s, res = r
-        if s is not None and res is not None and not np.any(np.isnan(np.asarray(s))):
-            valid_scores.append(s)
-            valid_residuals.append(res)
+        if s is None or res is None:
+            continue
+        s_arr = np.asarray(s, dtype=float).reshape(-1)
+        res_arr = np.asarray(res, dtype=float).reshape(-1)
+        if s_arr.size != expected_n or res_arr.size != expected_n:
+            continue
+        if np.all(np.isnan(s_arr)) or np.all(np.isnan(res_arr)):
+            continue
+        valid_scores.append(s_arr)
+        valid_residuals.append(res_arr)
     n_success = len(valid_scores)
     if n_success == 0:
         logger.warning(
@@ -549,12 +562,19 @@ def run_permutation_test(
     perm_scores_matrix = np.vstack(valid_scores)
     perm_residual_matrix = np.vstack(valid_residuals)
 
-    exceed_count = np.sum(perm_scores_matrix >= real_score.reshape(1, -1), axis=0)
+    real_score_row = np.asarray(real_score, dtype=float).reshape(1, -1)
+    # Per-gene NaNs are non-exceedances (skip that gene in that replicate).
+    exceed_count = np.sum(
+        np.isfinite(perm_scores_matrix) & (perm_scores_matrix >= real_score_row),
+        axis=0,
+    )
     active_score_pval = (1.0 + exceed_count) / (n_success + 1.0)
 
     # One-sided test for positive unspliced excess (matches active-gene direction filter).
+    real_res_row = np.asarray(real_residual, dtype=float).reshape(1, -1)
     exceed_res = np.sum(
-        perm_residual_matrix >= np.asarray(real_residual, dtype=float).reshape(1, -1), axis=0
+        np.isfinite(perm_residual_matrix) & (perm_residual_matrix >= real_res_row),
+        axis=0,
     )
     unspliced_excess_pval = (1.0 + exceed_res) / (n_success + 1.0)
 

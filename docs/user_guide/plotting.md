@@ -40,7 +40,26 @@ and accepts `label_genes=[...]` for manual labels. Custom palettes: `fills=`
 
 Plotters support `ax=` / `axes=` for multi-panel figures and `save_path=`
 (files are written at **≥300 dpi** even when on-screen `dpi` is lower).
+PDF / SVG / PS exports keep **editable text** (TrueType, not outlined Type 3
+glyphs), so labels can be changed in Illustrator, Inkscape, or Affinity.
 Helpers such as `set_style` and `build_gene_membership` do not take `ax=`.
+
+**Vector-friendly export** (scanpy `settings._vector_friendly`-style, **on by
+default**): dense point clouds (`volcano_plot`, `comet_plot`, `volcano_3d`,
+`bias_diagnostic_plot`, `velocity_phase_portraits`, `gamma_shrinkage_plot`,
+and the node scatter in `enrich_network_plot`) are rasterized to a
+high-resolution bitmap layer when saved as PDF/SVG/EPS, while axes, legends,
+colorbars, and every text label stay real editable vector content —
+matplotlib's `rasterized=True` only flattens the marked scatter artist, not
+the rest of the figure. Files with tens of thousands of points stay small and
+fast to open in Illustrator/Inkscape without losing editable text.
+
+```python
+scat.pl.set_vector_friendly(False)  # every point becomes a real vector path
+with scat.pl.vector_friendly_context(False):
+    scat.pl.volcano_plot(all_results, save_path="fully_vector.svg")
+scat.pl.get_vector_friendly()  # current setting
+```
 
 ## Display defaults (notebook-first)
 
@@ -52,12 +71,14 @@ Defaults are tuned for notebooks and docs, not full-page journal panels:
 | `figsize` | modest (~6×4.5) | `context="paper"` → ~8×6 |
 | `fontsize` / gene labels | **10** / **8**, normal weight | larger under `context="paper"` |
 | `top_n` (comet / volcano) | **8** / **6** | raise if you want more labels |
-| `save_path` | — | always ≥**300** dpi on disk |
+| `save_path` | — | always ≥**300** dpi on disk; PDF/SVG keep editable text |
 
 ```python
 scat.pl.volcano_plot(all_results)                 # notebook defaults
 scat.pl.volcano_plot(all_results, context="paper")  # larger fonts / dpi=300
-scat.pl.volcano_plot(all_results, save_path="fig.pdf")  # sharp export
+scat.pl.volcano_plot(all_results, save_path="fig.pdf")  # vector PDF, editable type
+fig, ax = scat.pl.volcano_plot(all_results, show=False)
+scat.pl.savefig(fig, "fig.pdf")  # same contract if you save the Figure yourself
 ```
 
 Default volcano **`style` remains `"auto"`**, coloring by the nascent excess
@@ -94,6 +115,14 @@ and `scat_YlGnBu` (sequential). The visualization tutorial shows every
 set as a strip and wires `cmap=` / `fills=` / `set_color=` into the
 plotters: {doc}`../tutorials/t_synthetic_visualization`.
 
+`pl.MECHANISM_CLASS_COLORS` is a fixed `{label: hex}` mapping (same hexes as
+the `"mechanism"` qualitative palette) for `mechanism_class` values
+(`transcription-driven` / `stabilization-driven` / `ambiguous` /
+`unclassified_down` / `unknown`). `group_stat_plot` and
+`composition_barplot` apply it automatically whenever the grouping/hue column
+holds those labels, so the same label gets the same color across figures
+regardless of which subset is present or its order in the data.
+
 All `scat.pl.*` functions support `ax=` / `axes=` (for embedding in
 multi-panel figures), `save_path=`, `show=`, `use_style=`, `figsize=`, and
 (on major plotters) `context=` for consistency. Most return `(fig, ax)`
@@ -120,6 +149,43 @@ so multipanel layouts do not clip an exterior legend.
 - `scat.pl.bias_diagnostic_plot(results_df, point_size=10, ...)`
   Before/after view of the effect of length+intron bias correction on the
   velocity delta. `point_size` controls the gene cloud density.
+
+- `scat.pl.de_summary_barplot(summary, mode="stacked", ...)` — bar chart of
+  up/down-regulated gene counts across groups, e.g. the `.summary` table from
+  `scat.compare_de_across_groups` (see {doc}`workflow`). `mode` is
+  `"stacked"` (default; up+down stacked, matching the classic "total changed
+  genes" summary bar), `"diverging"` (two-sided tornado bar, down below
+  zero), `"grouped"` (side-by-side), or `"up"` / `"down"` for a single
+  direction. `sort_by="total"` / `"up"` / `"down"` reorders groups;
+  `show_values=True` (default) annotates bar/segment counts.
+
+- `scat.pl.group_stat_plot(data, value_col, groupby, kind="violin", ...)` —
+  compare a continuous column (e.g. `active_score`,
+  `unspliced_excess_residual`, `mechanism_confidence`) across groups as a
+  violin / box / bar / strip plot with pairwise significance brackets
+  (Mann-Whitney U by default, `test="ttest"` for Welch's t-test; multiple
+  comparisons get BH-FDR correction via `multiple_testing="fdr_bh"`).
+  `comparisons=[(g1, g2), ...]` picks which pairs to annotate;
+  `return_stats=True` also returns a DataFrame with the exact
+  statistic/p-value/p_adj per comparison. When `groupby` values are scATrans
+  `mechanism_class` labels, colors default automatically to
+  `pl.MECHANISM_CLASS_COLORS` (same fixed transcription/stabilization/
+  ambiguous hexes used everywhere else in the package).
+
+  ```python
+  scat.pl.group_stat_plot(
+      result.gene_table, value_col="unspliced_excess_residual",
+      groupby="mechanism_class", kind="violin",
+      comparisons=[("transcription-driven", "stabilization-driven")],
+  )
+  ```
+
+- `scat.pl.composition_barplot(data, groupby, hue, normalize=True, ...)` —
+  100%-stacked (or raw-count) composition bar: the share of each `hue`
+  category within every `groupby` level. The flagship use is a
+  `mechanism_class` breakdown across cell types or programs (also
+  auto-colored via `pl.MECHANISM_CLASS_COLORS` when applicable);
+  `return_table=True` returns the plotted group x hue matrix.
 
 - `scat.pl.volcano_3d(results_df, point_scale=..., min_size=2, s=None, ...)`
   3D version of the volcano. Same size controls (`s` for fixed size).
@@ -148,6 +214,17 @@ so multipanel layouts do not clip an exterior legend.
     groups; `show_terms=` can pin an explicit term list.
   - Use `enrich_dotplot(..., facet_by_cluster=True)` when you prefer separate
     panels rather than a single compare grid.
+
+- `scat.pl.enrich_network_plot(enrich_df, top_n=30, min_similarity=0.2, ...)`
+  Enrichment map: a term-similarity network (clusterProfiler `emapplot`
+  style) for one enrichment table. Nodes are the `top_n` most significant
+  terms; an edge is drawn when two terms' gene sets have Jaccard (or
+  `similarity="overlap"`) similarity ≥ `min_similarity`, so redundant/related
+  GO terms visually cluster instead of listing flat. Node size defaults to
+  `-log10(p.adjust)`, color to `p.adjust`. Layout uses a small built-in
+  force-directed algorithm (pure numpy — no `networkx` dependency). The
+  gene-list column is auto-detected (`Genes_list` / `Genes` / `leading_edge`
+  / `geneID` / ...); pass `gene_col=` to override.
 
 - `scat.pl.enrich_upsetplot(enrich_df, ...)` / `scat.pl.enrich_vennplot(enrich_df, ...)`
   Set-overlap views across clusters/contrasts (significant **terms** by
@@ -190,8 +267,16 @@ so multipanel layouts do not clip an exterior legend.
   horizontal bar plot of the top-ranked genes (gradient fill by magnitude).
   Default `top_n` is 15 under notebook display defaults.
 
-- `scat.pl.active_genes_heatmap(adata, genes, groupby=..., ...)` —
+- `scat.pl.active_genes_heatmap(adata, genes, groupby=..., gene_annotation=None, ...)` —
   convenience wrapper around `scanpy.pl.heatmap` for selected genes.
+  `gene_annotation` (a `str` naming an `adata.var` column, or a `{gene:
+  category}` mapping/Series — e.g. built from `result.gene_table`'s
+  `mechanism_class`) reorders genes into contiguous category blocks and adds
+  a labeled bracket above the heatmap (lightweight version of SCP's
+  `FeatureHeatmap` gene grouping — uses scanpy's own public
+  `var_group_positions`/`var_group_labels`, no bundled TF/pathway database,
+  no custom heatmap engine). `annotation_order=[...]` controls the
+  left-to-right category order.
 
 - `scat.pl.velocity_phase_portraits(adata, genes, groupby=..., ...)` — quick
   unspliced vs. spliced phase portraits for selected genes (useful for
@@ -208,9 +293,14 @@ so multipanel layouts do not clip an exterior legend.
 
 - `scat.pl.set_nature_style()` (legacy alias for `set_style`).
 
+- `scat.pl.savefig(fig, path)` — save a matplotlib Figure with the same
+  vector-text contract as `save_path=` (TrueType in PDF/PS; SVG as text).
+  Prefer this over `fig.savefig(...)` when assembling panels yourself.
+
 - `scat.pl.figure_export_context(directory=...)` /
   `scat.pl.save_all_figures(figures, directory=...)` — batch figure export
-  helpers for multipanel manuscript figure packs.
+  helpers for multipanel manuscript figure packs (default `fmt="pdf"`
+  keeps editable text).
 
 Label repel on comet/volcano uses optional `adjustText`
 (`label_repel=True` by default). Pass `label_repel=False` to skip if the

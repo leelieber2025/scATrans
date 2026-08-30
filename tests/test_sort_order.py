@@ -110,5 +110,5 @@ def test_preset_significant_orders_de_first_not_by_active_score():
         "use_fdr_for_significance": True,
         "is_pseudobulk": False,
     }
-    out = filter_active_genes(df, preset="significant")
+    out = filter_active_genes(df, preset="significant", select_by="composite")
     assert list(out.index) == ["A", "B", "C"]  # DE-first, not active_score order (B, C, A)

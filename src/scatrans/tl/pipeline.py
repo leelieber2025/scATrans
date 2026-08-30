@@ -464,7 +464,7 @@ def run_default_pipeline(
     bias_method: str | None = None,
     adaptive_weighting: bool = False,
     adaptive_anchor: Any = "de",
-    select_by: str = "composite",
+    select_by: str = "de",
     annotate_mechanism: bool = False,
 ) -> PipelineResult:
     """
@@ -509,14 +509,14 @@ def run_default_pipeline(
     recorded under the corresponding ``meta`` key.
 
     - ``select_by``: which axis defines ``candidates`` membership.
-      ``"composite"`` (default) keeps the current behavior (proxy participates in
-      selection via ``filter_preset``). ``"de"`` switches to **DE SELECTS, proxy
-      ANNOTATES**: ``candidates`` are chosen by the DE gates only (padj<0.05 &
-      ``|log2FC|``>1 by default) via ``filter_active_genes(select_by="de")``, and the
-      nascent-proxy columns remain on ``all_results`` as annotations rather than
-      gating membership. ``significant`` (the built-in composite list) is
-      unchanged; use ``candidates`` for the DE-selected list. Recorded in
-      ``meta["select_by"]``.
+      ``"de"`` (default) is **DE SELECTS, proxy ANNOTATES**: ``candidates`` are
+      chosen by the DE gates only (padj<0.05 & ``|log2FC|``>1 by default) via
+      ``filter_active_genes(select_by="de")``, and the nascent-proxy columns remain
+      on ``all_results`` as annotations rather than gating membership.
+      ``"composite"`` is an explicit opt-in for the previous (deprecated) behavior
+      where the proxy participates in selection via ``filter_preset``.
+      ``significant`` (the built-in composite list) is unchanged; use
+      ``candidates`` for the DE-selected list. Recorded in ``meta["select_by"]``.
     - ``annotate_mechanism``: ``True`` runs
       :func:`~scatrans.tl.mechanism.annotate_mechanism_class`, adding
       ``transcription_support`` / ``mechanism_class`` / ``mechanism_confidence``
@@ -589,7 +589,7 @@ def run_default_pipeline(
         # proxy columns ride along on all_results as annotations, not gates.
         candidates = filter_active_genes(all_results, select_by="de")
     else:
-        candidates = filter_active_genes(all_results, preset=filter_preset)
+        candidates = filter_active_genes(all_results, preset=filter_preset, select_by="composite")
 
     # active_score writes rich run metadata under .uns["scatrans"] (diagnostics,
     # gamma_method, use_permutation, …). Keep this separate from the result

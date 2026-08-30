@@ -510,5 +510,5 @@ def test_significant_matches_filter_heuristic_preset(adata_basic):
         n_jobs=1,
         show_plot=False,
     )
-    filt = scat.filter_active_genes(allr, preset="heuristic")
+    filt = scat.filter_active_genes(allr, preset="heuristic", select_by="composite")
     assert sig.index.tolist() == filt.index.tolist()

@@ -1,5 +1,7 @@
 """Additional plotting tests."""
 
+from pathlib import Path
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -257,6 +259,39 @@ def test_volcano_save_path_uses_at_least_300_dpi(results_df, tmp_path):
     fig, ax = scat.pl.volcano_plot(results_df, top_n=2, show=False, save_path=str(out), dpi=150)
     assert out.is_file() and out.stat().st_size > 0
     plt.close(fig)
+
+
+def _pdf_has_editable_truetype(path) -> bool:
+    """TrueType (fonttype 42) embeds as /TrueType or /FontFile2; Type 3 is not editable."""
+    data = path.read_bytes()
+    has_truetype = b"/TrueType" in data or b"/FontFile2" in data
+    has_type3 = b"/Subtype /Type3" in data or b"/Subtype/Type3" in data
+    return has_truetype and not has_type3
+
+
+def test_save_path_pdf_keeps_editable_truetype_text(results_df, tmp_path):
+    """save_path PDF must embed TrueType so labels stay editable (not Type 3)."""
+    out = tmp_path / "volc.pdf"
+    fig, ax = scat.pl.volcano_plot(results_df, top_n=2, show=False, save_path=str(out), dpi=150)
+    plt.close(fig)
+    assert out.is_file() and out.stat().st_size > 0
+    assert _pdf_has_editable_truetype(out)
+
+
+def test_savefig_helper_pdf_keeps_editable_truetype_text(results_df, tmp_path):
+    fig, ax = scat.pl.volcano_plot(results_df, top_n=2, show=False)
+    out = tmp_path / "via_helper.pdf"
+    scat.pl.savefig(fig, out, dpi=150)
+    plt.close(fig)
+    assert _pdf_has_editable_truetype(out)
+
+
+def test_figure_export_context_pdf_keeps_editable_truetype_text(results_df, tmp_path):
+    fig, ax = scat.pl.comet_plot(results_df, top_n=2, show=False)
+    with scat.pl.figure_export_context(str(tmp_path / "figs"), fmt="pdf", dpi=150) as export:
+        path = export.save(fig, "comet")
+    plt.close(fig)
+    assert _pdf_has_editable_truetype(Path(path))
 
 
 def test_enrich_dotplot_embedded_ax_does_not_raise(enrich_df):

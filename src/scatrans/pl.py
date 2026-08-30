@@ -15,6 +15,10 @@ Design and implementation details draw from high-quality patterns in:
 - OmicVerse (https://github.com/omicverse/omicverse) and gseapy — constrained
   layout, ``s=`` size control, dense-scatter diagnostics, ranked barplots
 - ggVolcano — two-sided volcano color conventions
+- Scanpy (``settings._vector_friendly`` / ``sc.set_figure_params(vector_friendly=...)``)
+  — rasterizing dense scatter clouds on vector export while keeping text/axes vector
+- SCP (https://zhanghao-njmu.github.io/SCP/) — ``FeatureStatPlot``-style grouped
+  violin/box/bar comparisons with pairwise significance brackets (:func:`group_stat_plot`)
 
 Internal `set_style()` is called by plotting functions **only when use_style=True**.
 Default is now use_style=False to avoid surprising global rcParams changes in notebooks
@@ -29,6 +33,17 @@ and shared environments.
 - Display defaults are notebook-oriented (dpi=150, modest figsize/fonts). Pass
   ``context="paper"`` or ``context="cns"`` on major plotters for journal-sized
   defaults, or override kwargs. ``save_path`` always writes at least 300 dpi.
+- PDF/PS/SVG export keeps **editable text** (TrueType fonttype 42 / SVG as
+  ``<text>``), even when ``use_style=False``. Raster formats (PNG) still
+  flatten glyphs. Prefer ``save_path="fig.pdf"`` or :func:`savefig`.
+- **Vector-friendly mode is on by default** (``set_vector_friendly()``, scanpy-
+  style): dense gene/cell scatter clouds (``volcano_plot``, ``comet_plot``,
+  ``volcano_3d``, ``bias_diagnostic_plot``, ``velocity_phase_portraits``,
+  ``gamma_shrinkage_plot``) are rasterized to a high-resolution bitmap layer
+  when saved as PDF/SVG/EPS, while axes, legends, colorbars, and all text stay
+  real editable vector content. Disable with
+  ``scat.pl.set_vector_friendly(False)`` (or scope it with
+  ``vector_friendly_context(False)``) to keep every point a real vector path.
 """
 
 from __future__ import annotations
@@ -53,6 +68,7 @@ from ._utils import (
     LEGACY_VELOCITY_RESIDUAL_COL,
     UNSPLICED_EXCESS_DELTA_COL,
     UNSPLICED_EXCESS_RESIDUAL_COL,
+    _categorical_or_unique,
     _resolve_results_column,
 )
 
@@ -82,6 +98,24 @@ _DEFAULT_CMAP_SEQUENTIAL = "scat_YlGnBu"
 _DEFAULT_POINT_EDGE = "none"  # soft dense clouds; set "#444444" for outlines
 _DEFAULT_POINT_EDGEWIDTH = 0.0
 _DEFAULT_REF_LINE = "#9A9A9A"
+
+# Matplotlib's default pdf/ps fonttype 3 converts glyphs to Type 3 bitmaps /
+# paths that Illustrator, Inkscape, and Affinity cannot edit as text.
+# Type 42 embeds TrueType; SVG "none" keeps <text> instead of outlines.
+_VECTOR_TEXT_RC: dict[str, object] = {
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+    "svg.fonttype": "none",
+}
+
+# Vector-friendly export (scanpy ``settings._vector_friendly`` /
+# ``sc.set_figure_params(vector_friendly=...)`` pattern): dense point clouds
+# (volcano/comet/phase-portrait gene or cell scatters) are rasterized into a
+# high-resolution bitmap layer at export time, while axes, ticks, legends,
+# colorbars, and text stay real vector objects — matplotlib's ``rasterized=``
+# scatter kwarg only flattens the marked ``PathCollection`` artist, so nothing
+# else in the same PDF/SVG/EPS is affected. On by default.
+_VECTOR_FRIENDLY: bool = True
 
 _CONTEXT_PRESETS: dict[str, dict[str, object]] = {
     "notebook": {
@@ -259,6 +293,20 @@ _QUALITATIVE_PALETTES: dict[str, list[str]] = {
     # scATrans domain: down / ns / up (volcano categories)
     "volcano": ["#5189BB", GRAY, RED],
     "mechanism": ["#3C5488", "#00A087", "#E64B35", "#F39B7F", GRAY],
+}
+
+# Fixed label -> color mapping for scATrans mechanism_class values (same hexes
+# as the "mechanism" qualitative palette, in the canonical order emitted by
+# tl.annotate_mechanism_class). Plots that group/color by mechanism_class
+# (e.g. group_stat_plot, composition_barplot) use this automatically so the
+# same label always gets the same color across figures, independent of which
+# subset of labels is present or what order they appear in the data.
+MECHANISM_CLASS_COLORS: dict[str, str] = {
+    "transcription-driven": "#3C5488",
+    "stabilization-driven": "#00A087",
+    "ambiguous": "#E64B35",
+    "unclassified_down": "#F39B7F",
+    "unknown": GRAY,
 }
 
 _CONTINUOUS_CMAP_DATA: dict[str, list[list[float]]] = {
@@ -441,6 +489,7 @@ def set_style(
     palette_name: str = "default",
     color_map: str | None = None,
     title_fontweight: str | int = "bold",
+    vector_friendly: bool | None = None,
     **kwargs,
 ):
     """
@@ -476,9 +525,17 @@ def set_style(
         Default ``image.cmap`` for continuous data (default ``scat_BuRd``).
     title_fontweight
         Weight for axes titles (default ``"bold"``).
+    vector_friendly
+        If not ``None``, also calls :func:`set_vector_friendly` with this
+        value — rasterizes dense scatter clouds (volcano/comet/phase
+        portraits) on PDF/SVG/EPS export while keeping axes, legends, and
+        text as real vector content. Left ``None`` (default) leaves the
+        current global setting (on by default) untouched.
     **kwargs
         Any additional matplotlib rcParams (will override the defaults).
     """
+    if vector_friendly is not None:
+        set_vector_friendly(vector_friendly)
     _register_scat_colormaps()
     if fonts is None:
         fonts = ["Helvetica", "Helvetica Neue", "Arial", "DejaVu Sans"]
@@ -566,19 +623,77 @@ def style_context(**kwargs):
     """
     Context manager for temporary style application.
     """
+    global _VECTOR_FRIENDLY
     original_rc = mpl.rcParams.copy()
     original_sns = sns.axes_style()
+    original_vector_friendly = _VECTOR_FRIENDLY
     try:
         set_style(**kwargs)
         yield
     finally:
         mpl.rcParams.update(original_rc)
         sns.set_style(original_sns)
+        _VECTOR_FRIENDLY = original_vector_friendly
 
 
 def _style_context_if(use_style: bool):
     """Safe context (nullcontext when not using style)."""
     return style_context() if use_style else nullcontext()
+
+
+def get_vector_friendly() -> bool:
+    """Return whether dense scatter clouds are rasterized on vector export."""
+    return _VECTOR_FRIENDLY
+
+
+def set_vector_friendly(enabled: bool = True) -> None:
+    """
+    Globally toggle vector-friendly export (default: **on**).
+
+    When enabled, the dense gene/cell scatter clouds in plots such as
+    :func:`volcano_plot`, :func:`comet_plot`, :func:`volcano_3d`,
+    :func:`bias_diagnostic_plot`, and :func:`velocity_phase_portraits` are
+    rasterized to a bitmap layer when saved as PDF/SVG/EPS, while axes,
+    ticks, legends, colorbars, and gene labels remain real editable vector
+    text/paths. This is the same trick as ``scanpy.settings._vector_friendly``
+    / ``sc.set_figure_params(vector_friendly=...)``: matplotlib's
+    ``rasterized=True`` scatter kwarg only flattens the marked
+    ``PathCollection``, not the rest of the figure. It keeps files with tens
+    of thousands of points small and fast to open in Illustrator/Inkscape
+    without sacrificing editable labels/axes.
+
+    The rasterization resolution follows the ``dpi`` used at save time
+    (:func:`savefig` / ``save_path=`` write at least 300 dpi by default), so
+    the flattened points stay high-resolution.
+
+    Pass ``enabled=False`` to keep every point as a real vector path instead
+    (exact, infinitely zoomable, but slower to render and much larger files
+    for dense clouds). PNG/JPEG/TIFF raster exports are unaffected either
+    way — the whole figure is already a bitmap.
+
+    See also :func:`vector_friendly_context` for a scoped override, and
+    ``set_style(vector_friendly=...)`` to set it alongside other style
+    defaults.
+    """
+    global _VECTOR_FRIENDLY
+    _VECTOR_FRIENDLY = bool(enabled)
+
+
+@contextmanager
+def vector_friendly_context(enabled: bool = True):
+    """Temporarily override :func:`set_vector_friendly` within a ``with`` block."""
+    global _VECTOR_FRIENDLY
+    previous = _VECTOR_FRIENDLY
+    _VECTOR_FRIENDLY = bool(enabled)
+    try:
+        yield
+    finally:
+        _VECTOR_FRIENDLY = previous
+
+
+def _rasterize_kwargs() -> dict:
+    """``rasterized=`` kwarg for dense scatter clouds; see :func:`set_vector_friendly`."""
+    return {"rasterized": _VECTOR_FRIENDLY}
 
 
 def setup_ax(
@@ -748,6 +863,77 @@ def _maybe_repel_labels(
 
 
 @contextmanager
+def _vector_text_save_context():
+    """Temporarily force editable vector text in PDF/PS/SVG backends."""
+    with mpl.rc_context(_VECTOR_TEXT_RC):
+        yield
+
+
+def savefig(
+    fig,
+    path,
+    *,
+    dpi: int | None = None,
+    bbox_inches: str | None = "tight",
+    transparent: bool | None = None,
+    **kwargs,
+) -> str:
+    """
+    Save a figure with publication-friendly **editable vector text**.
+
+    PDF and PostScript embed TrueType fonts (``pdf.fonttype`` / ``ps.fonttype``
+    42) so axis labels, tick labels, legends, and gene names remain real text
+    in Adobe Illustrator, Inkscape, Affinity Designer, and similar editors.
+    SVG keeps glyphs as ``<text>`` rather than converting them to paths.
+    Raster formats (PNG, JPEG, TIFF) are unchanged — pixels cannot be edited
+    as type.
+
+    Use this instead of ``fig.savefig(...)`` when you built a figure with
+    ``show=False`` and want the same export contract as ``save_path=``.
+    Plotters that receive ``save_path`` already go through this helper.
+
+    Parameters
+    ----------
+    fig
+        A matplotlib ``Figure`` (or any object with ``savefig``).
+    path
+        Output path. The suffix selects the format (``.pdf``, ``.svg``,
+        ``.png``, …).
+    dpi
+        Rasterization resolution for bitmaps and for ``rasterized=True``
+        artists inside a vector file. Text itself is not rasterized in
+        PDF/SVG.
+    bbox_inches, transparent
+        Forwarded to ``Figure.savefig``. ``bbox_inches`` defaults to
+        ``"tight"``.
+    **kwargs
+        Additional ``Figure.savefig`` keyword arguments.
+
+    Returns
+    -------
+    str
+        The output path as a string.
+
+    Examples
+    --------
+    >>> fig, ax = scat.pl.volcano_plot(results, show=False)
+    >>> scat.pl.savefig(fig, "volcano.pdf")
+    """
+    from pathlib import Path
+
+    save_kw: dict[str, Any] = dict(kwargs)
+    if bbox_inches is not None:
+        save_kw.setdefault("bbox_inches", bbox_inches)
+    if dpi is not None:
+        save_kw["dpi"] = dpi
+    if transparent is not None:
+        save_kw["transparent"] = transparent
+    with _vector_text_save_context():
+        fig.savefig(path, **save_kw)
+    return str(path if isinstance(path, (str, Path)) else path)
+
+
+@contextmanager
 def figure_export_context(
     directory: str,
     *,
@@ -757,6 +943,9 @@ def figure_export_context(
 ):
     """
     Context manager for batch-saving figures in multi-panel workflows.
+
+    Vector formats (default ``fmt="pdf"``) keep text as editable TrueType.
+    See :func:`savefig`.
 
     Example::
 
@@ -775,7 +964,7 @@ def figure_export_context(
     class _Exporter:
         def save(self, fig, name: str) -> str:
             path = out_dir / f"{name}.{fmt}"
-            fig.savefig(path, dpi=dpi, bbox_inches=bbox_inches)
+            savefig(fig, path, dpi=dpi, bbox_inches=bbox_inches)
             saved.append(str(path))
             return str(path)
 
@@ -800,7 +989,8 @@ def save_all_figures(
     Batch-save a mapping of ``name -> matplotlib Figure``.
 
     Convenience wrapper around :func:`figure_export_context` for notebooks that
-    already hold figure objects.
+    already hold figure objects. Default ``fmt="pdf"`` keeps editable text
+    (see :func:`savefig`).
 
     Example::
 
@@ -915,12 +1105,19 @@ def _save_and_maybe_show(fig, save_path=None, dpi=None, show=True, created=True,
 
     Display figures use modest ``dpi`` (default 150). When ``save_path`` is set, the file
     is written at least at ``_DEFAULT_SAVE_DPI`` (300) so exports stay publication-sharp
-    even if the on-screen figure is lighter.
+    even if the on-screen figure is lighter. Vector formats embed editable text
+    (see :func:`savefig`).
     """
     if save_path:
         fig_dpi = int(dpi) if dpi is not None else _DEFAULT_DPI
         save_dpi = max(fig_dpi, _DEFAULT_SAVE_DPI)
-        fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight", transparent=transparent)
+        savefig(
+            fig,
+            save_path,
+            dpi=save_dpi,
+            bbox_inches="tight",
+            transparent=transparent,
+        )
         logger.info("Figure saved to %s (dpi=%s)", save_path, save_dpi)
     if created and show:
         plt.show()
@@ -1091,6 +1288,7 @@ def comet_plot(
             alpha=alpha,
             zorder=3,
             **_scatter_edge_kwargs(),
+            **_rasterize_kwargs(),
         )
 
         ax.axhline(0, color=_DEFAULT_REF_LINE, linestyle="--", linewidth=0.7, alpha=0.65, zorder=1)
@@ -1260,6 +1458,7 @@ def volcano_3d(
             alpha=alpha,
             zorder=3,
             **_scatter_edge_kwargs(),
+            **_rasterize_kwargs(),
         )
 
         for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
@@ -4267,6 +4466,7 @@ def volcano_plot(
                         linewidths=0.35,
                         alpha=alpha,
                         zorder=3,
+                        **_rasterize_kwargs(),
                     )
                 if add_cutoff_lines:
                     _volcano_ggvolcano_cutoff_lines(
@@ -4333,6 +4533,7 @@ def volcano_plot(
                     linewidths=0.35,
                     alpha=alpha,
                     zorder=3,
+                    **_rasterize_kwargs(),
                 )
                 if add_cutoff_lines:
                     _volcano_ggvolcano_cutoff_lines(
@@ -4474,6 +4675,7 @@ def volcano_plot(
             "alpha": alpha,
             "zorder": 3,
             **_scatter_edge_kwargs(),
+            **_rasterize_kwargs(),
         }
         if colors_for_scatter is not None:
             # Classic up/down/ns: provide explicit color list (do not pass c= together with color=)
@@ -4560,6 +4762,798 @@ def volcano_plot(
         return fig, ax
 
 
+def _bar_label_nonzero(v: Any) -> str:
+    """Bar count label: blank for zero (avoids cluttering empty segments)."""
+    n = int(round(abs(float(v))))
+    return "" if n == 0 else str(n)
+
+
+def de_summary_barplot(
+    summary,
+    mode: str = "stacked",
+    *,
+    title: str = "DE genes by group",
+    up_color: str = RED,
+    down_color: str = BLUE,
+    bar_width: float = 0.62,
+    bar_edgecolor: str = "white",
+    bar_edgewidth: float = 0.4,
+    show_values: bool = True,
+    order: Iterable[str] | None = None,
+    sort_by: str | None = None,
+    ascending: bool = False,
+    legend_loc: str = "outside",
+    figsize=_DEFAULT_FIGSIZE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
+    context: str | None = None,
+    ax=None,
+    save_path=None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Bar chart comparing up/down-regulated DE gene counts across groups
+    (cell types, clusters, or any other contrast run per-group), e.g. the
+    output of :func:`scatrans.compare_de_across_groups`.
+
+    Follows the same journal-ready conventions as the rest of :mod:`scatrans.pl`
+    (cnsplots-inspired): fine despined axes via :func:`setup_ax`, thin white bar
+    edges for crisp separation (matching :func:`enrich_barplot`), the same
+    Up/Down accent colors used by :func:`volcano_plot`'s classic significance
+    coloring (``RED``/``BLUE``), a frameless legend, and editable vector text on
+    PDF/SVG export (see :func:`savefig`).
+
+    Parameters
+    ----------
+    summary : DataFrame or CompareDEResult
+        Either the ``.summary`` table from
+        :class:`~scatrans.tl.CompareDEResult` (index = group name, columns
+        ``"up"`` / ``"down"`` and optionally ``"total"``), or the
+        ``CompareDEResult`` itself (``.summary`` is used automatically). Any
+        DataFrame with ``"up"`` / ``"down"`` columns works.
+    mode : {"stacked", "diverging", "grouped", "up", "down"}
+        - ``"stacked"`` (default): up and down counts stacked into one bar per
+          group (up on the bottom) — the classic "total changed genes"
+          summary bar (as in ``ax.bar(..., bottom=up)``).
+        - ``"diverging"``: up bars rise from zero, down bars drop below zero
+          (two-sided "tornado" bar) — clearest for comparing the up/down
+          balance across groups at a glance. Y-axis ticks show magnitudes
+          (the sign is only a plotting direction, not a real negative count).
+        - ``"grouped"``: up and down as side-by-side bars per group.
+        - ``"up"`` / ``"down"``: single-direction bar chart only.
+    show_values
+        Annotate each bar (or bar segment) with its gene count. Stacked bars
+        also get a bold total above the full stack.
+    order
+        Explicit group order for the x-axis. Default: input order.
+    sort_by : {"up", "down", "total", None}
+        Sort groups by this column before plotting (takes precedence over
+        ``order``). ``"total"`` is computed as ``up + down`` if not already a
+        column.
+    ascending
+        Sort direction used with ``sort_by``.
+    legend_loc
+        Any matplotlib legend ``loc`` string, or ``"outside"`` (default) to
+        place a frameless legend to the right of the axes — avoids covering
+        bars or value labels regardless of data shape (matplotlib's
+        ``"best"`` only scores bar patches, not the ``show_values`` text, so
+        it can still collide with a label near the top of a bar).
+
+    Examples
+    --------
+    >>> cmp = scat.compare_de_across_groups(adata, split_by="cell_type", ...)
+    >>> scat.pl.de_summary_barplot(cmp, mode="stacked", sort_by="total")
+    >>> scat.pl.de_summary_barplot(cmp.summary, mode="diverging")
+    """
+    with _style_context_if(use_style):
+        if hasattr(summary, "summary") and isinstance(summary.summary, pd.DataFrame):
+            summary = summary.summary
+        figsize, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
+        )
+
+        placeholder = _placeholder_for_unplottable(
+            summary,
+            ["up", "down"],
+            ax=ax,
+            figsize=figsize,
+            dpi=dpi,
+            message="No DE summary to plot",
+        )
+        if placeholder is not None:
+            fig, ax0, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, ax0
+
+        mode_norm = str(mode).lower().strip()
+        if mode_norm not in ("stacked", "diverging", "grouped", "up", "down"):
+            raise ValueError(
+                f"mode must be 'stacked', 'diverging', 'grouped', 'up', or 'down'; got {mode!r}"
+            )
+
+        df = summary.copy()
+        if sort_by is not None:
+            if sort_by not in df.columns:
+                if sort_by == "total":
+                    df = df.assign(total=df["up"] + df["down"])
+                else:
+                    raise ValueError(
+                        f"sort_by={sort_by!r} not found in summary columns {list(df.columns)}"
+                    )
+            df = df.sort_values(sort_by, ascending=ascending)
+        elif order is not None:
+            df = df.loc[[g for g in order if g in df.index]]
+
+        # Widen automatically for many groups so tilted labels don't collide
+        # (same idea as enrich_barplot's height-scaling for many terms).
+        auto_figsize = (max(figsize[0], 0.5 * len(df) + 1.8), figsize[1])
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=auto_figsize, dpi=dpi, constrained_layout=True)
+            _created_fig = True
+        else:
+            fig = ax.figure
+            _created_fig = False
+
+        x = np.arange(len(df))
+        labels = [str(i) for i in df.index]
+        bar_kw = {"edgecolor": bar_edgecolor, "linewidth": bar_edgewidth, "zorder": 3}
+        label_kw = {"fontsize": max(7, fontsize - 2), "padding": 2, "color": INK}
+
+        if mode_norm == "stacked":
+            up_bars = ax.bar(x, df["up"], bar_width, label="Up-regulated", color=up_color, **bar_kw)
+            down_bars = ax.bar(
+                x,
+                df["down"],
+                bar_width,
+                bottom=df["up"],
+                label="Down-regulated",
+                color=down_color,
+                **bar_kw,
+            )
+            if show_values:
+                ax.bar_label(
+                    up_bars,
+                    labels=[_bar_label_nonzero(v) for v in df["up"]],
+                    label_type="center",
+                    **label_kw,
+                )
+                ax.bar_label(
+                    down_bars,
+                    labels=[_bar_label_nonzero(v) for v in df["down"]],
+                    label_type="center",
+                    **label_kw,
+                )
+                totals = (df["up"] + df["down"]).to_numpy()
+                for xi, total in zip(x, totals):
+                    ax.text(
+                        xi,
+                        total,
+                        f"{int(total)}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=max(7, fontsize - 1),
+                        fontweight="bold",
+                        color=INK,
+                    )
+        elif mode_norm == "diverging":
+            up_bars = ax.bar(x, df["up"], bar_width, label="Up-regulated", color=up_color, **bar_kw)
+            down_bars = ax.bar(
+                x, -df["down"], bar_width, label="Down-regulated", color=down_color, **bar_kw
+            )
+            ax.axhline(0, color="black", linewidth=0.7, zorder=4)
+            if show_values:
+                ax.bar_label(up_bars, labels=[_bar_label_nonzero(v) for v in df["up"]], **label_kw)
+                ax.bar_label(
+                    down_bars, labels=[_bar_label_nonzero(v) for v in df["down"]], **label_kw
+                )
+            ax.yaxis.set_major_formatter(lambda v, _pos: f"{abs(v):g}")
+        elif mode_norm == "grouped":
+            w = bar_width / 2.0
+            up_bars = ax.bar(x - w / 2, df["up"], w, label="Up-regulated", color=up_color, **bar_kw)
+            down_bars = ax.bar(
+                x + w / 2, df["down"], w, label="Down-regulated", color=down_color, **bar_kw
+            )
+            if show_values:
+                ax.bar_label(up_bars, labels=[_bar_label_nonzero(v) for v in df["up"]], **label_kw)
+                ax.bar_label(
+                    down_bars, labels=[_bar_label_nonzero(v) for v in df["down"]], **label_kw
+                )
+        elif mode_norm == "up":
+            up_bars = ax.bar(x, df["up"], bar_width, label="Up-regulated", color=up_color, **bar_kw)
+            if show_values:
+                ax.bar_label(up_bars, labels=[_bar_label_nonzero(v) for v in df["up"]], **label_kw)
+        else:  # "down"
+            down_bars = ax.bar(
+                x, df["down"], bar_width, label="Down-regulated", color=down_color, **bar_kw
+            )
+            if show_values:
+                ax.bar_label(
+                    down_bars, labels=[_bar_label_nonzero(v) for v in df["down"]], **label_kw
+                )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=max(7, fontsize - 2))
+        ax.set_ylabel("Number of DE genes", fontsize=fontsize)
+        if title:
+            ax.set_title(title, fontsize=fontsize + 1, fontweight="bold", pad=8)
+        if mode_norm in ("stacked", "diverging", "grouped"):
+            legend_kw = {
+                "frameon": False,
+                "fontsize": max(7, fontsize - 1),
+                "handlelength": 0.9,
+                "handletextpad": 0.4,
+            }
+            if legend_loc == "outside":
+                ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), **legend_kw)
+            else:
+                ax.legend(loc=legend_loc, **legend_kw)
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2), grid=False)
+        ax.margins(x=max(0.04, 0.6 / max(len(df), 1)))
+        # Value labels (bar_label / totals text) sit above the tallest bar;
+        # "best" cannot see them (matplotlib only scores Line2D/Patch extents
+        # for legend placement), so pad the data range to keep the legend and
+        # any autoscale-triggered elements clear of the top label.
+        if show_values:
+            ax.margins(y=0.12)
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        return fig, ax
+
+
+def _signif_stars(p: float) -> str:
+    """ggpubr/Prism-style significance stars for a p-value."""
+    if p is None or not np.isfinite(p):
+        return "ns"
+    if p < 1e-4:
+        return "****"
+    if p < 1e-3:
+        return "***"
+    if p < 1e-2:
+        return "**"
+    if p < 5e-2:
+        return "*"
+    return "ns"
+
+
+def group_stat_plot(
+    data: pd.DataFrame,
+    value_col: str,
+    groupby: str,
+    *,
+    kind: str = "violin",
+    order: Iterable[str] | None = None,
+    comparisons: list[tuple[str, str]] | None = None,
+    test: str = "mannwhitney",
+    multiple_testing: str | None = "fdr_bh",
+    sig_format: str = "stars",
+    show_points: bool = False,
+    point_size: float = 8.0,
+    point_alpha: float = 0.35,
+    palette_name: str = "default",
+    colors: Mapping[str, str] | None = None,
+    title: str | None = None,
+    ylabel: str | None = None,
+    return_stats: bool = False,
+    figsize=_DEFAULT_FIGSIZE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
+    context: str | None = None,
+    ax=None,
+    save_path=None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Compare a continuous column across groups with a violin/box/bar/strip plot
+    and pairwise significance brackets (inspired by SCP's ``FeatureStatPlot``
+    / ggpubr's ``stat_compare_means``, reimplemented here with scipy/statsmodels
+    to avoid a new dependency).
+
+    Typical use in scATrans: comparing a per-gene score (``active_score``,
+    ``unspliced_excess_residual``, ``logFC``, ``mechanism_confidence``, ...)
+    across a categorical column of the same results table — most naturally
+    ``mechanism_class`` (pass ``palette_name="mechanism"`` for the package's
+    standard transcription/stabilization/ambiguous colors), but any groupby
+    column works (cell type, condition, program, ...).
+
+    Parameters
+    ----------
+    data
+        Long-format table containing both ``value_col`` and ``groupby``.
+    value_col
+        Numeric column to compare.
+    groupby
+        Categorical column defining the groups (x-axis).
+    kind : {"violin", "box", "bar", "strip"}
+        - ``"violin"`` (default): full distribution.
+        - ``"box"``: quartiles + whiskers.
+        - ``"bar"``: mean +/- SEM.
+        - ``"strip"``: jittered individual points only.
+    order
+        Explicit group order for the x-axis. Default: categorical order if
+        ``groupby`` is a pandas Categorical, else first-seen order.
+    comparisons
+        Explicit list of ``(group_a, group_b)`` pairs to test and annotate
+        with a significance bracket. Default: the single pair when there are
+        exactly 2 groups; no brackets are drawn for >2 groups unless you pass
+        ``comparisons`` explicitly (avoids a cluttered default for many
+        groups — mirrors SCP's opt-in ``comparisons=`` behavior).
+    test : {"mannwhitney", "ttest"}
+        Pairwise test. ``"mannwhitney"`` (default, Wilcoxon rank-sum) matches
+        SCP/ggpubr's non-parametric default; ``"ttest"`` runs Welch's t-test.
+    multiple_testing
+        ``statsmodels`` correction method (e.g. ``"fdr_bh"``) applied across
+        all requested ``comparisons`` when there is more than one. Pass
+        ``None`` to annotate raw (uncorrected) p-values.
+    sig_format : {"stars", "pvalue"}
+        Show ``"ns"``/``"*"``/``"**"``/``"***"``/``"****"`` or the formatted
+        p-value above each bracket.
+    show_points
+        Overlay jittered individual points on top of violin/box/bar.
+    return_stats
+        If True, return ``(fig, ax, stats_df)`` where ``stats_df`` has one row
+        per tested comparison (``group_a``, ``group_b``, ``test``, ``statistic``,
+        ``p_value``, ``p_adj``, ``stars``) — useful for reporting exact numbers.
+
+    Examples
+    --------
+    >>> scat.pl.group_stat_plot(
+    ...     gene_table, value_col="unspliced_excess_residual", groupby="mechanism_class",
+    ...     kind="violin", palette_name="mechanism",
+    ...     comparisons=[("transcription-driven", "stabilization-driven")],
+    ... )
+    """
+    from scipy import stats as _spstats
+
+    with _style_context_if(use_style):
+        figsize, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
+        )
+
+        placeholder = _placeholder_for_unplottable(
+            data,
+            [value_col, groupby],
+            ax=ax,
+            figsize=figsize,
+            dpi=dpi,
+            message="No data to plot",
+        )
+        if placeholder is not None:
+            fig, ax0, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return (fig, ax0, pd.DataFrame()) if return_stats else (fig, ax0)
+
+        kind_norm = str(kind).lower().strip()
+        if kind_norm not in ("violin", "box", "bar", "strip"):
+            raise ValueError(f"kind must be 'violin', 'box', 'bar', or 'strip'; got {kind!r}")
+        test_norm = str(test).lower().strip()
+        if test_norm not in ("mannwhitney", "ttest"):
+            raise ValueError(f"test must be 'mannwhitney' or 'ttest'; got {test!r}")
+        if sig_format not in ("stars", "pvalue"):
+            raise ValueError(f"sig_format must be 'stars' or 'pvalue'; got {sig_format!r}")
+
+        df = data[[value_col, groupby]].copy()
+        df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+        df = df.dropna(subset=[value_col, groupby])
+
+        if order is not None:
+            groups = [g for g in order if g in set(df[groupby])]
+        else:
+            groups = _categorical_or_unique(df[groupby])
+
+        if len(groups) < 1 or df.empty:
+            fig, ax0 = _empty_placeholder_fig("No data to plot", figsize=figsize, dpi=dpi)
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return (fig, ax0, pd.DataFrame()) if return_stats else (fig, ax0)
+
+        values = [df.loc[df[groupby] == g, value_col].to_numpy(dtype=float) for g in groups]
+        group_labels = [str(g) for g in groups]
+
+        if colors is not None:
+            face_colors = [colors.get(g, GRAY) for g in groups]
+        elif palette_name == "default" and set(group_labels) <= set(MECHANISM_CLASS_COLORS):
+            face_colors = [MECHANISM_CLASS_COLORS[g] for g in group_labels]
+        else:
+            face_colors = palette(palette_name, n=len(groups))
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+            _created_fig = True
+        else:
+            fig = ax.figure
+            _created_fig = False
+
+        x = np.arange(len(groups))
+
+        if kind_norm == "violin":
+            parts = ax.violinplot(
+                values, positions=x, showmeans=False, showmedians=True, widths=0.7
+            )
+            for body, c in zip(parts["bodies"], face_colors):
+                body.set_facecolor(c)
+                body.set_edgecolor("black")
+                body.set_linewidth(0.5)
+                body.set_alpha(0.85)
+                body.set_zorder(2)
+            for key in ("cmedians", "cmins", "cmaxes", "cbars"):
+                if key in parts:
+                    parts[key].set_color("black")
+                    parts[key].set_linewidth(0.7)
+        elif kind_norm == "box":
+            bp = ax.boxplot(
+                values,
+                positions=x,
+                widths=0.55,
+                patch_artist=True,
+                medianprops={"color": "black", "linewidth": 1.0},
+                flierprops={
+                    "marker": "o",
+                    "markersize": 2.5,
+                    "markerfacecolor": GRAY,
+                    "markeredgecolor": "none",
+                    "alpha": 0.6,
+                },
+                boxprops={"linewidth": 0.5, "edgecolor": "black"},
+                whiskerprops={"linewidth": 0.6, "color": "black"},
+                capprops={"linewidth": 0.6, "color": "black"},
+                zorder=2,
+            )
+            for patch, c in zip(bp["boxes"], face_colors):
+                patch.set_facecolor(c)
+                patch.set_alpha(0.85)
+        elif kind_norm == "bar":
+            means = np.array([np.mean(v) if v.size else np.nan for v in values])
+            sems = np.array(
+                [np.std(v, ddof=1) / np.sqrt(v.size) if v.size > 1 else 0.0 for v in values]
+            )
+            ax.bar(
+                x,
+                means,
+                0.6,
+                yerr=sems,
+                color=face_colors,
+                edgecolor="black",
+                linewidth=0.5,
+                capsize=3,
+                error_kw={"elinewidth": 0.7, "ecolor": "black"},
+                zorder=2,
+            )
+        else:  # strip
+            pass  # points only, drawn below
+
+        if show_points or kind_norm == "strip":
+            rng = np.random.default_rng(0)
+            for xi, v, c in zip(x, values, face_colors):
+                if v.size == 0:
+                    continue
+                jitter = rng.uniform(-0.16, 0.16, size=v.size)
+                ax.scatter(
+                    xi + jitter,
+                    v,
+                    s=point_size,
+                    color=c if kind_norm == "strip" else "black",
+                    alpha=point_alpha,
+                    edgecolors="none",
+                    zorder=1 if kind_norm != "strip" else 2,
+                    **_rasterize_kwargs(),
+                )
+
+        # --- pairwise significance brackets ---
+        stats_rows: list[dict[str, Any]] = []
+        pairs = comparisons
+        if pairs is None and len(groups) == 2:
+            pairs = [(groups[0], groups[1])]
+        pairs = pairs or []
+
+        pvals = []
+        valid_pairs = []
+        for g1, g2 in pairs:
+            if g1 not in groups or g2 not in groups:
+                logger.warning(
+                    "group_stat_plot: comparison (%r, %r) references a group not in %s; skipping.",
+                    g1,
+                    g2,
+                    group_labels,
+                )
+                continue
+            v1 = df.loc[df[groupby] == g1, value_col].to_numpy(dtype=float)
+            v2 = df.loc[df[groupby] == g2, value_col].to_numpy(dtype=float)
+            if v1.size < 2 or v2.size < 2:
+                logger.warning(
+                    "group_stat_plot: comparison (%r, %r) has too few observations; skipping.",
+                    g1,
+                    g2,
+                )
+                continue
+            if test_norm == "mannwhitney":
+                stat, p = _spstats.mannwhitneyu(v1, v2, alternative="two-sided")
+            else:
+                stat, p = _spstats.ttest_ind(v1, v2, equal_var=False, nan_policy="omit")
+            pvals.append(float(p))
+            valid_pairs.append((g1, g2, float(stat)))
+
+        if pvals:
+            if multiple_testing and len(pvals) > 1:
+                from statsmodels.stats.multitest import multipletests
+
+                _, p_adj, _, _ = multipletests(pvals, method=multiple_testing)
+            else:
+                p_adj = np.asarray(pvals, dtype=float)
+
+            all_vals = (
+                np.concatenate([v for v in values if v.size])
+                if any(v.size for v in values)
+                else np.array([0.0])
+            )
+            data_max = float(np.nanmax(all_vals))
+            data_min = float(np.nanmin(all_vals))
+            span = max(data_max - data_min, 1e-9)
+            step = span * 0.08
+            y0 = data_max + span * 0.05
+
+            for i, ((g1, g2, stat), p_raw, p_c) in enumerate(zip(valid_pairs, pvals, p_adj)):
+                x1, x2 = group_labels.index(str(g1)), group_labels.index(str(g2))
+                y = y0 + i * step
+                h = step * 0.25
+                ax.plot(
+                    [x1, x1, x2, x2], [y, y + h, y + h, y], color="black", linewidth=0.8, zorder=5
+                )
+                label = _signif_stars(p_c) if sig_format == "stars" else f"p={p_c:.2g}"
+                ax.text(
+                    (x1 + x2) / 2,
+                    y + h,
+                    label,
+                    ha="center",
+                    va="bottom",
+                    fontsize=max(7, fontsize - 2),
+                    color="black",
+                    zorder=5,
+                )
+                stats_rows.append(
+                    {
+                        "group_a": str(g1),
+                        "group_b": str(g2),
+                        "test": test_norm,
+                        "statistic": stat,
+                        "p_value": p_raw,
+                        "p_adj": float(p_c),
+                        "stars": _signif_stars(p_c),
+                    }
+                )
+            ax.set_ylim(top=y0 + len(valid_pairs) * step + step)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(group_labels, rotation=45, ha="right", fontsize=max(7, fontsize - 2))
+        ax.set_ylabel(ylabel or value_col, fontsize=fontsize)
+        if title:
+            ax.set_title(title, fontsize=fontsize + 1, fontweight="bold", pad=8)
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2), grid=False)
+        ax.margins(x=max(0.04, 0.6 / max(len(groups), 1)))
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        if return_stats:
+            return fig, ax, pd.DataFrame(stats_rows)
+        return fig, ax
+
+
+def _contrast_text_color(hex_color: str) -> str:
+    """White text on dark bar fills, dark text on light fills (WCAG-ish luminance)."""
+    try:
+        h = hex_color.lstrip("#")
+        r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except Exception:
+        return INK
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return "white" if luminance < 0.55 else INK
+
+
+def composition_barplot(
+    data: pd.DataFrame,
+    groupby: str,
+    hue: str,
+    *,
+    normalize: bool = True,
+    order: Iterable[str] | None = None,
+    hue_order: Iterable[str] | None = None,
+    palette_name: str = "default",
+    colors: Mapping[str, str] | None = None,
+    bar_width: float = 0.7,
+    show_values: bool = False,
+    min_label_pct: float = 5.0,
+    title: str | None = None,
+    ylabel: str | None = None,
+    legend_loc: str = "outside",
+    return_table: bool = False,
+    figsize=_DEFAULT_FIGSIZE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
+    context: str | None = None,
+    ax=None,
+    save_path=None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Stacked composition bar chart: the share (default) or count of each
+    ``hue`` category within every level of ``groupby``.
+
+    Modeled on SCP's ``CellStatPlot`` compositional bars. The flagship use in
+    scATrans is a ``mechanism_class`` breakdown (transcription-driven /
+    stabilization-driven / ambiguous / ...) across cell types, programs, or
+    any other grouping — when ``hue`` values are scATrans mechanism-class
+    labels, bar colors default automatically to the package's fixed
+    label -> color mapping (:data:`MECHANISM_CLASS_COLORS`), so the same
+    label always has the same color across figures regardless of which
+    subset is present or its order in the data (pass ``colors=`` or a
+    different ``palette_name`` to override).
+
+    Parameters
+    ----------
+    data
+        Long-format table containing both ``groupby`` and ``hue`` columns
+        (e.g. a per-gene results/gene_table with ``mechanism_class``, or a
+        :func:`scatrans.compare_de_across_groups` per-group gene table
+        concatenated with a group column).
+    groupby
+        Column defining the bars (x-axis), e.g. ``"cell_type"``.
+    hue
+        Categorical column whose composition is shown within each bar, e.g.
+        ``"mechanism_class"``.
+    normalize
+        If True (default), stack to 100% per bar (share). If False, stack raw
+        counts (like :func:`de_summary_barplot`'s ``"stacked"`` mode, but for
+        an arbitrary number of categories instead of just up/down).
+    order, hue_order
+        Explicit ordering for groups / hue categories. Default: categorical
+        order if the column is a pandas Categorical, else first-seen order.
+    show_values
+        Annotate each segment with its percentage (or count). Segments below
+        ``min_label_pct`` (percent of the bar, only meaningful when
+        ``normalize=True``) are left unlabeled to avoid clutter.
+    legend_loc
+        Any matplotlib legend ``loc`` string, or ``"outside"`` (default) to
+        place a frameless legend to the right of the axes.
+    return_table
+        If True, return ``(fig, ax, table)`` where ``table`` is the
+        group x hue matrix actually plotted (percentages or counts).
+
+    Examples
+    --------
+    >>> scat.pl.composition_barplot(
+    ...     gene_table, groupby="cell_type", hue="mechanism_class",
+    ... )
+    """
+    with _style_context_if(use_style):
+        figsize, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
+        )
+
+        placeholder = _placeholder_for_unplottable(
+            data,
+            [groupby, hue],
+            ax=ax,
+            figsize=figsize,
+            dpi=dpi,
+            message="No data to plot",
+        )
+        if placeholder is not None:
+            fig, ax0, _created_fig = placeholder
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return (fig, ax0, pd.DataFrame()) if return_table else (fig, ax0)
+
+        df = data[[groupby, hue]].dropna()
+        if df.empty:
+            fig, ax0 = _empty_placeholder_fig("No data to plot", figsize=figsize, dpi=dpi)
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return (fig, ax0, pd.DataFrame()) if return_table else (fig, ax0)
+
+        present_groups = set(df[groupby])
+        if order is not None:
+            groups = [g for g in order if g in present_groups]
+        else:
+            groups = _categorical_or_unique(df[groupby])
+
+        present_hues = set(df[hue])
+        if hue_order is not None:
+            hues = [h for h in hue_order if h in present_hues]
+        else:
+            hues = _categorical_or_unique(df[hue])
+
+        counts = pd.crosstab(df[groupby], df[hue]).reindex(index=groups, columns=hues, fill_value=0)
+        if normalize:
+            row_sums = counts.sum(axis=1).replace(0, np.nan)
+            plot_df = counts.div(row_sums, axis=0) * 100.0
+            ylab = ylabel or "Percentage of genes (%)"
+        else:
+            plot_df = counts.astype(float)
+            ylab = ylabel or "Number of genes"
+        plot_df = plot_df.fillna(0.0)
+
+        hue_labels = [str(h) for h in hues]
+        if colors is not None:
+            face_colors = [colors.get(h, GRAY) for h in hues]
+        elif palette_name == "default" and set(hue_labels) <= set(MECHANISM_CLASS_COLORS):
+            face_colors = [MECHANISM_CLASS_COLORS[h] for h in hue_labels]
+        else:
+            face_colors = palette(palette_name, n=len(hues))
+
+        auto_figsize = (max(figsize[0], 0.5 * len(groups) + 1.8), figsize[1])
+        if ax is None:
+            fig, ax = plt.subplots(figsize=auto_figsize, dpi=dpi, constrained_layout=True)
+            _created_fig = True
+        else:
+            fig = ax.figure
+            _created_fig = False
+
+        x = np.arange(len(groups))
+        bottom = np.zeros(len(groups))
+        for h_raw, h, c in zip(hues, hue_labels, face_colors):
+            vals = plot_df[h_raw].to_numpy(dtype=float)
+            bars = ax.bar(
+                x,
+                vals,
+                bar_width,
+                bottom=bottom,
+                label=h,
+                color=c,
+                edgecolor="white",
+                linewidth=0.4,
+                zorder=3,
+            )
+            if show_values:
+                if normalize:
+                    seg_labels = [f"{v:.0f}%" if v >= min_label_pct else "" for v in vals]
+                else:
+                    seg_labels = [_bar_label_nonzero(v) for v in vals]
+                ax.bar_label(
+                    bars,
+                    labels=seg_labels,
+                    label_type="center",
+                    fontsize=max(6, fontsize - 3),
+                    color=_contrast_text_color(c),
+                )
+            bottom += vals
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [str(g) for g in groups], rotation=45, ha="right", fontsize=max(7, fontsize - 2)
+        )
+        ax.set_ylabel(ylab, fontsize=fontsize)
+        if normalize:
+            ax.set_ylim(0, 100)
+        if title:
+            ax.set_title(title, fontsize=fontsize + 1, fontweight="bold", pad=8)
+
+        if legend_loc == "outside":
+            ax.legend(
+                frameon=False,
+                fontsize=max(7, fontsize - 1),
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1.0),
+                handlelength=0.9,
+                handletextpad=0.4,
+                title=hue,
+                title_fontsize=max(7, fontsize - 1),
+            )
+        else:
+            ax.legend(
+                frameon=False,
+                fontsize=max(7, fontsize - 1),
+                loc=legend_loc,
+                handlelength=0.9,
+                handletextpad=0.4,
+            )
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2), grid=False)
+        ax.margins(x=max(0.04, 0.6 / max(len(groups), 1)))
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        if return_table:
+            return fig, ax, plot_df
+        return fig, ax
+
+
 def bias_diagnostic_plot(
     results_df,
     save_path=None,
@@ -4641,7 +5635,9 @@ def bias_diagnostic_plot(
     # Left: Before correction
     x = np.log1p(plot_df["gene_length"])
     y_raw = plot_df[delta_col]
-    ax1.scatter(x, y_raw, s=point_size, alpha=0.45, c=raw_color, edgecolors="none", rasterized=True)
+    ax1.scatter(
+        x, y_raw, s=point_size, alpha=0.45, c=raw_color, edgecolors="none", **_rasterize_kwargs()
+    )
     if show_regression:
         from scipy.stats import linregress
 
@@ -4678,7 +5674,13 @@ def bias_diagnostic_plot(
     # Right: After correction
     y_res = plot_df[residual_col]
     ax2.scatter(
-        x, y_res, s=point_size, alpha=0.45, c=corrected_color, edgecolors="none", rasterized=True
+        x,
+        y_res,
+        s=point_size,
+        alpha=0.45,
+        c=corrected_color,
+        edgecolors="none",
+        **_rasterize_kwargs(),
     )
     ax2.axhline(0, color=trend_color, linestyle="--", lw=0.9, alpha=0.8)
     ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
@@ -4886,6 +5888,332 @@ def enrich_barplot(
         return fig, ax
 
 
+def _split_gene_cell(v: Any) -> list[str]:
+    """Parse one enrichment-table gene-list cell into a clean gene list.
+
+    Accepts a Python list/tuple/set already, or a delimited string (tries
+    ``;``, then ``/``, then ``,`` — covers this package's own ``Genes`` /
+    ``Genes_list`` / ``leading_edge`` columns as well as clusterProfiler-style
+    ``geneID`` (``/``-joined) tables from elsewhere).
+    """
+    if isinstance(v, (list, tuple, set, np.ndarray, pd.Series)):
+        return [str(g).strip() for g in v if str(g).strip()]
+    s = "" if v is None else str(v)
+    if not s or s.lower() in ("nan", "none"):
+        return []
+    for sep in (";", "/", ","):
+        if sep in s:
+            return [g.strip() for g in s.split(sep) if g.strip()]
+    return [s.strip()] if s.strip() else []
+
+
+def _spring_layout(
+    n: int, edges: list[tuple[int, int]], weights: list[float], *, seed: int = 0, n_iter: int = 200
+) -> np.ndarray:
+    """Minimal Fruchterman-Reingold force-directed layout (numpy only, no
+    networkx dependency — see :func:`enrich_network_plot`)."""
+    rng = np.random.default_rng(seed)
+    pos = rng.uniform(-1.0, 1.0, size=(n, 2))
+    if n <= 1:
+        return pos
+    k = 1.0 / np.sqrt(n)
+    edge_arr = np.asarray(edges, dtype=int) if edges else np.empty((0, 2), dtype=int)
+    w_arr = np.asarray(weights, dtype=float) if weights else np.empty((0,), dtype=float)
+    for it in range(n_iter):
+        delta = pos[:, None, :] - pos[None, :, :]
+        dist = np.linalg.norm(delta, axis=-1)
+        np.fill_diagonal(dist, 1e-3)
+        rep = (k * k / dist**2)[..., None] * (delta / dist[..., None])
+        disp = rep.sum(axis=1)
+        if edge_arr.shape[0]:
+            i_idx, j_idx = edge_arr[:, 0], edge_arr[:, 1]
+            d = pos[i_idx] - pos[j_idx]
+            dist_ij = np.linalg.norm(d, axis=1) + 1e-3
+            f = (dist_ij**2 / k) * (0.4 + w_arr)
+            step = (d / dist_ij[:, None]) * f[:, None]
+            np.subtract.at(disp, i_idx, step)
+            np.add.at(disp, j_idx, step)
+        temp = 0.12 * (1.0 - it / max(n_iter, 1))
+        disp_len = np.linalg.norm(disp, axis=1, keepdims=True)
+        disp_len[disp_len < 1e-9] = 1.0
+        pos = pos + disp / disp_len * np.minimum(disp_len, temp)
+        pos = pos - pos.mean(axis=0)
+    return pos
+
+
+def enrich_network_plot(
+    enrich_df,
+    top_n: int = 30,
+    *,
+    gene_col: str | None = None,
+    similarity: str = "jaccard",
+    min_similarity: float = 0.2,
+    size_by: str | None = None,
+    color_by: str | None = None,
+    cmap: str = _DEFAULT_CMAP_SEQUENTIAL,
+    node_scale: float = 1.0,
+    label_top_n: int | None = None,
+    label_repel: bool = True,
+    seed: int = 0,
+    n_iter: int = 200,
+    title: str = "Enrichment Map",
+    figsize=_DEFAULT_FIGSIZE_WIDE,
+    dpi=_DEFAULT_DPI,
+    fontsize=_DEFAULT_FONTSIZE,
+    context: str | None = None,
+    ax=None,
+    save_path=None,
+    show: bool = True,
+    use_style: bool = False,
+):
+    """
+    Enrichment map: a term-similarity network for one enrichment table
+    (:func:`run_enrichment` / :func:`run_go` / :func:`run_kegg` /
+    :func:`run_gsea` output), inspired by SCP's / clusterProfiler's
+    ``emapplot``.
+
+    Nodes are the top-``top_n`` most significant terms; an edge is drawn
+    between two terms when the Jaccard (or overlap) similarity of their gene
+    sets is >= ``min_similarity``, so clusters of overlapping terms visually
+    group together — this is usually more informative than a flat bar/dot
+    list when many redundant GO terms pass significance. Node position uses a
+    small built-in force-directed layout (pure numpy; no networkx dependency
+    is required).
+
+    Parameters
+    ----------
+    enrich_df
+        Enrichment result table. Needs a term-name column (``Term`` /
+        ``Description``) and a gene-list column (auto-detected among
+        ``"Genes_list"``, ``"Genes"``, ``"leading_edge"``, ``"geneID"``,
+        ``"genes"``, ``"core_enrichment"`` — override with ``gene_col``).
+    top_n
+        Number of most-significant terms to include as nodes.
+    similarity : {"jaccard", "overlap"}
+        Gene-set similarity metric for edges. ``"jaccard"`` = |A∩B|/|A∪B|;
+        ``"overlap"`` (overlap coefficient) = |A∩B|/min(|A|,|B|), which is
+        more forgiving when term sizes differ a lot.
+    min_similarity
+        Minimum similarity to draw an edge between two terms.
+    size_by, color_by
+        Numeric columns for node size / color. Default: size by
+        ``-log10(p.adjust)`` (else ``Count``), color by ``p.adjust`` (else
+        ``NES``).
+    label_top_n
+        Only label the N most significant nodes (default: label all nodes
+        shown — fine for the default ``top_n=30``; lower this for very
+        crowded maps).
+
+    Examples
+    --------
+    >>> go = scat.run_go(candidates.index.tolist(), organism="mouse", adata=adata)
+    >>> scat.pl.enrich_network_plot(go, top_n=25, min_similarity=0.25)
+    """
+    with _style_context_if(use_style):
+        figsize, dpi, fontsize, _ = _resolve_display_params(
+            context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
+        )
+        if enrich_df is None or (hasattr(enrich_df, "empty") and enrich_df.empty):
+            logger.warning("Enrichment dataframe is empty. Nothing to plot.")
+            fig, ax0 = _empty_placeholder_fig(
+                "No enrichment terms to plot", figsize=figsize, dpi=dpi
+            )
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        sim_norm = str(similarity).lower().strip()
+        if sim_norm not in ("jaccard", "overlap"):
+            raise ValueError(f"similarity must be 'jaccard' or 'overlap'; got {similarity!r}")
+
+        df = enrich_df.copy()
+
+        # Term label: prefer Description, coalesce to Term (bundled GO/KEGG
+        # ship Description as "" — same convention as enrich_barplot).
+        if "Description" not in df.columns and "Term" not in df.columns:
+            raise ValueError("enrich_network_plot requires a 'Term' or 'Description' column.")
+        if "Description" in df.columns:
+            desc = df["Description"].astype(str).str.strip()
+            desc_missing = desc.eq("") | desc.str.lower().isin(("nan", "none", "null"))
+            df["_term_label"] = (
+                desc.where(~desc_missing, df["Term"].astype(str).str.strip())
+                if "Term" in df.columns
+                else desc.mask(desc_missing, "")
+            )
+        else:
+            df["_term_label"] = df["Term"].astype(str).str.strip()
+
+        gene_col_resolved = gene_col
+        if gene_col_resolved is None:
+            for cand in (
+                "Genes_list",
+                "Genes",
+                "leading_edge",
+                "geneID",
+                "genes",
+                "core_enrichment",
+            ):
+                if cand in df.columns:
+                    gene_col_resolved = cand
+                    break
+        if gene_col_resolved is None or gene_col_resolved not in df.columns:
+            raise ValueError(
+                "enrich_network_plot could not find a gene-list column. Pass gene_col= "
+                f"explicitly (available columns: {list(df.columns)})."
+            )
+
+        padj_col = None
+        for c in ("p.adjust", "padj", "Adjusted P-value", "FDR q-val"):
+            if c in df.columns:
+                padj_col = c
+                break
+
+        if size_by is None:
+            if padj_col is not None:
+                df["_size_val"] = -np.log10(
+                    pd.to_numeric(df[padj_col], errors="coerce").clip(lower=1e-300)
+                )
+                size_label = r"$-\log_{10}$(p.adjust)"
+            elif "Count" in df.columns:
+                df["_size_val"] = pd.to_numeric(df["Count"], errors="coerce")
+                size_label = "Count"
+            else:
+                df["_size_val"] = 1.0
+                size_label = None
+        else:
+            df["_size_val"] = pd.to_numeric(df[size_by], errors="coerce")
+            size_label = size_by
+
+        if color_by is None:
+            color_by = (
+                padj_col if padj_col is not None else ("NES" if "NES" in df.columns else None)
+            )
+        color_label = color_by
+
+        sort_col = padj_col if padj_col is not None else "_size_val"
+        sort_asc = padj_col is not None
+        df = df.sort_values(sort_col, ascending=sort_asc).head(int(top_n)).reset_index(drop=True)
+        df["_genes"] = df[gene_col_resolved].apply(_split_gene_cell)
+        df = df[df["_genes"].map(len) > 0].reset_index(drop=True)
+
+        if df.empty:
+            fig, ax0 = _empty_placeholder_fig(
+                "No terms with a usable gene list to plot", figsize=figsize, dpi=dpi
+            )
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax0
+
+        n = len(df)
+        gene_sets = [set(g) for g in df["_genes"]]
+        edges: list[tuple[int, int]] = []
+        weights: list[float] = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                inter = len(gene_sets[i] & gene_sets[j])
+                if inter == 0:
+                    continue
+                if sim_norm == "jaccard":
+                    denom = len(gene_sets[i] | gene_sets[j])
+                else:
+                    denom = min(len(gene_sets[i]), len(gene_sets[j]))
+                sim = inter / denom if denom else 0.0
+                if sim >= min_similarity:
+                    edges.append((i, j))
+                    weights.append(sim)
+
+        pos = _spring_layout(n, edges, weights, seed=seed, n_iter=n_iter)
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+            _created_fig = True
+        else:
+            fig = ax.figure
+            _created_fig = False
+
+        if edges:
+            from matplotlib.collections import LineCollection
+
+            segs = [[pos[i], pos[j]] for i, j in edges]
+            w_arr = np.asarray(weights, dtype=float)
+            lc = LineCollection(
+                segs,
+                colors=GRAY,
+                linewidths=0.4 + 2.2 * w_arr,
+                alpha=0.35 + 0.35 * w_arr,
+                zorder=1,
+                **_rasterize_kwargs(),
+            )
+            ax.add_collection(lc)
+
+        raw_size = df["_size_val"].to_numpy(dtype=float)
+        raw_size = np.nan_to_num(
+            raw_size, nan=np.nanmin(raw_size) if np.isfinite(raw_size).any() else 1.0
+        )
+        smin, smax = np.nanmin(raw_size), np.nanmax(raw_size)
+        if smax > smin:
+            node_sizes = 40.0 + (raw_size - smin) / (smax - smin) * 260.0
+        else:
+            node_sizes = np.full(n, 120.0)
+        node_sizes = node_sizes * node_scale
+
+        _register_scat_colormaps()
+        if color_label is not None and color_label in df.columns:
+            color_vals = pd.to_numeric(df[color_label], errors="coerce")
+            sc = ax.scatter(
+                pos[:, 0],
+                pos[:, 1],
+                s=node_sizes,
+                c=color_vals,
+                cmap=cmap,
+                edgecolors="white",
+                linewidths=0.5,
+                zorder=3,
+                **_rasterize_kwargs(),
+            )
+            cbar = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.02, aspect=20)
+            cbar.set_label(color_label, fontsize=max(7, fontsize - 1), rotation=270, labelpad=12)
+            _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
+        else:
+            ax.scatter(
+                pos[:, 0],
+                pos[:, 1],
+                s=node_sizes,
+                c=TEAL,
+                edgecolors="white",
+                linewidths=0.5,
+                zorder=3,
+                **_rasterize_kwargs(),
+            )
+
+        label_n = n if label_top_n is None else min(int(label_top_n), n)
+        texts = []
+        for i in range(label_n):
+            txt = ax.text(
+                pos[i, 0],
+                pos[i, 1],
+                str(df.loc[i, "_term_label"])[:60],
+                fontsize=max(6, fontsize - 3),
+                color=INK,
+                ha="center",
+                va="center",
+            )
+            texts.append(txt)
+        _maybe_repel_labels(texts, pos[:, 0], pos[:, 1], ax, label_repel=label_repel)
+
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        pad = 0.15
+        ax.set_xlim(pos[:, 0].min() - pad, pos[:, 0].max() + pad)
+        ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad)
+        if title:
+            ax.set_title(title, fontsize=fontsize + 1, fontweight="bold", pad=8)
+        _ = size_label  # reserved for a future size legend
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        return fig, ax
+
+
 def active_score_rankplot(
     results_df,
     top_n=_DEFAULT_TOP_N_RANK,
@@ -5013,6 +6341,9 @@ def active_genes_heatmap(
     adata,
     genes=None,
     groupby=None,
+    *,
+    gene_annotation: str | Mapping[str, Any] | pd.Series | None = None,
+    annotation_order: Iterable[str] | None = None,
     save_path=None,
     show: bool = True,
     use_style: bool = False,
@@ -5023,6 +6354,31 @@ def active_genes_heatmap(
 
     Users are encouraged to call scanpy.pl.heatmap directly with the genes
     returned by active_score for full control.
+
+    gene_annotation : str, Mapping, or pandas Series, optional
+        Lightweight, SCP ``FeatureHeatmap``-inspired gene grouping: adds a
+        labeled bracket above the heatmap grouping ``genes`` by a categorical
+        annotation you already have (no bundled TF/pathway databases —
+        just whatever categorical column or per-gene mapping you pass in).
+
+        - str: an ``adata.var`` column name (e.g. a ``mechanism_class``
+          column you stored there).
+        - Mapping / pandas Series: an explicit ``{gene: category}`` lookup,
+          e.g. built straight from a scored results table —
+          ``dict(zip(gene_table["gene"], gene_table["mechanism_class"]))``.
+
+        ``genes`` are reordered (grouped contiguously by category, stable
+        order preserved within each category; genes with no annotation are
+        grouped last under ``"NA"``) so the bracket renders as clean blocks,
+        then passed to scanpy as ``var_group_positions``/``var_group_labels``
+        (public, stable scanpy API — no custom heatmap engine, no per-block
+        recoloring, since scanpy draws all brackets as a single black-line
+        path that cannot be recolored per group). Pass ``annotation_order``
+        to control the left-to-right category order.
+    annotation_order
+        Explicit left-to-right category order when ``gene_annotation`` is
+        used. Default: first-seen order among the categories present
+        (``"NA"`` always last).
 
     show/use_style are accepted for API consistency with other pl.* functions.
     """
@@ -5038,6 +6394,45 @@ def active_genes_heatmap(
             fig, ax = _empty_placeholder_fig("No active genes to heatmap")
             return fig, ax
 
+    if gene_annotation is not None:
+        if isinstance(gene_annotation, str):
+            ann_series = adata.var[gene_annotation]
+        elif isinstance(gene_annotation, pd.Series):
+            ann_series = gene_annotation
+        else:
+            ann_series = pd.Series(dict(gene_annotation))
+
+        cats = ann_series.reindex(genes)
+        cats = cats.where(cats.notna(), "NA").astype(str)
+
+        if annotation_order is not None:
+            cat_order = [c for c in annotation_order if c in set(cats)]
+            cat_order += [c for c in dict.fromkeys(cats) if c not in cat_order]
+        else:
+            cat_order = [c for c in dict.fromkeys(cats) if c != "NA"]
+            if "NA" in set(cats):
+                cat_order.append("NA")
+
+        gene_by_cat: dict[str, list[str]] = {c: [] for c in cat_order}
+        for g, c in zip(genes, cats):
+            gene_by_cat[c].append(g)
+
+        ordered_genes: list[str] = []
+        var_group_positions: list[tuple[int, int]] = []
+        var_group_labels: list[str] = []
+        for c in cat_order:
+            block = gene_by_cat[c]
+            if not block:
+                continue
+            start = len(ordered_genes)
+            ordered_genes.extend(block)
+            var_group_positions.append((start, len(ordered_genes) - 1))
+            var_group_labels.append(c)
+        genes = ordered_genes
+
+        kwargs.setdefault("var_group_positions", var_group_positions)
+        kwargs.setdefault("var_group_labels", var_group_labels)
+
     logger.info(
         "active_genes_heatmap: delegating to scanpy.pl.heatmap (recommended for full control)"
     )
@@ -5052,7 +6447,8 @@ def active_genes_heatmap(
             **kwargs,
         )
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            target = fig if hasattr(fig, "savefig") else plt.gcf()
+            savefig(target, save_path, dpi=300, bbox_inches="tight")
             logger.info("Heatmap saved → %s", save_path)
         if show:
             plt.show()
@@ -5192,10 +6588,10 @@ def velocity_phase_portraits(
                 s=7,
                 alpha=0.55,
                 edgecolors="none",
-                rasterized=True,
+                **_rasterize_kwargs(),
             )
         else:
-            ax.scatter(s, u, c=TEAL, s=7, alpha=0.55, edgecolors="none", rasterized=True)
+            ax.scatter(s, u, c=TEAL, s=7, alpha=0.55, edgecolors="none", **_rasterize_kwargs())
         ax.set_xlabel("Spliced", fontsize=9)
         ax.set_ylabel("Unspliced", fontsize=9)
         ax.set_title(str(g), fontsize=10, fontweight="bold")
@@ -5331,6 +6727,7 @@ def gamma_shrinkage_plot(
             s=12,
             alpha=0.65,
             edgecolors="none",
+            **_rasterize_kwargs(),
         )
         if c_vals is not None:
             cbar = fig.colorbar(scatter, ax=ax, shrink=0.75, pad=0.02)
@@ -5356,6 +6753,9 @@ __all__ = [
     "set_style",
     "set_nature_style",
     "style_context",
+    "set_vector_friendly",
+    "get_vector_friendly",
+    "vector_friendly_context",
     "setup_ax",
     "add_panel_label",
     "palette",
@@ -5363,9 +6763,15 @@ __all__ = [
     "get_cmap",
     "figure_export_context",
     "save_all_figures",
+    "savefig",
     "comet_plot",
     "volcano_plot",
     "volcano_3d",
+    "de_summary_barplot",
+    "group_stat_plot",
+    "composition_barplot",
+    "enrich_network_plot",
+    "MECHANISM_CLASS_COLORS",
     "bias_diagnostic_plot",
     "enrich_dotplot",
     "compare_dotplot",

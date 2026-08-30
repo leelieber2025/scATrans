@@ -193,11 +193,13 @@ def generate_gene_features_from_gtf(
     if exon.empty:
         gene_length = pd.Series(dtype=float, name="gene_length")
     else:
-        gene_length = (
-            exon.groupby("gene_id")
-            .apply(_exon_union_length, include_groups=False)
-            .rename("gene_length")
-        )
+        grouped = exon.groupby("gene_id")
+        try:
+            gene_length = grouped.apply(_exon_union_length, include_groups=False)
+        except TypeError:
+            # pandas < 2.2 does not accept include_groups=
+            gene_length = grouped.apply(_exon_union_length)
+        gene_length = gene_length.rename("gene_length")
 
     # 2. intron_number: a *proxy* using the transcript with the largest exon count.
     #    intron_number ≈ max_exons_over_transcripts - 1

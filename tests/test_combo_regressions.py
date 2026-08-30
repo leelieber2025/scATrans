@@ -368,6 +368,7 @@ def test_filter_residual_follows_logfc_direction():
     up = scat.filter_active_genes(
         df,
         preset=None,
+        select_by="composite",
         padj_cutoff=0.05,
         logfc_cutoff=0.5,
         logfc_direction="up",
@@ -377,6 +378,7 @@ def test_filter_residual_follows_logfc_direction():
     down = scat.filter_active_genes(
         df,
         preset=None,
+        select_by="composite",
         padj_cutoff=0.05,
         logfc_cutoff=0.5,
         logfc_direction="down",
@@ -386,6 +388,7 @@ def test_filter_residual_follows_logfc_direction():
     both = scat.filter_active_genes(
         df,
         preset=None,
+        select_by="composite",
         padj_cutoff=0.05,
         logfc_cutoff=0.5,
         logfc_direction="both",

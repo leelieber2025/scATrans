@@ -37,6 +37,7 @@ from .pp_bias import (
 )
 from .tl import (
     WORKFLOW_PRESETS,
+    CompareDEResult,
     PartitionResult,
     PipelineResult,
     active_score,
@@ -46,6 +47,8 @@ from .tl import (
     add_abundance_normalized_residual,
     add_adaptive_score,
     annotate_mechanism_class,
+    assign_pseudo_replicates,
+    compare_de_across_groups,
     diagnose_design,
     differential_expression,
     differential_expression_simple,
@@ -82,8 +85,11 @@ __all__ = [
     "active_score_simple",
     "differential_expression",
     "differential_expression_simple",
+    "compare_de_across_groups",
+    "CompareDEResult",
     "diagnose_design",
     "recommend_workflow",
+    "assign_pseudo_replicates",
     "WORKFLOW_PRESETS",
     "run_default_pipeline",
     "PipelineResult",

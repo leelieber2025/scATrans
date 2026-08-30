@@ -22,7 +22,9 @@ from .._utils import (
     _clear_log_preprocess_metadata,
     _get_raw_snapshot,
     _is_integer_counts_like,
+    _merge_scatrans_uns,
     _pseudobulk_with_layers,
+    _record_scatrans_history,
     _resolve_aligned_raw_counts,
     _subset_obs_mask,
     _validate_group_contrast,
@@ -966,7 +968,7 @@ def differential_expression(
         # Mean of the matrix DE actually used (PB sample sums when aggregated).
         try:
             means = np.asarray(adata_de.X.mean(axis=0)).ravel()
-            adata.var["baseMean"] = means
+            adata.var["baseMean"] = pd.Series(means, index=adata_de.var_names)
             cols.append("baseMean")
         except Exception:
             pass
@@ -979,18 +981,7 @@ def differential_expression(
 
     # Metadata — merge to preserve raw_gene_list etc. from store_raw_counts()
     existing = dict(adata.uns.get("scatrans", {}))
-    history = existing.get("history", [])
-    if "analysis" in existing:
-        prev = {
-            k: existing.get(k)
-            for k in ("analysis", "mode", "target_group", "reference_group")
-            if k in existing
-        }
-        if prev:
-            history.append(prev)
-            if len(history) > 5:
-                history = history[-5:]
-    existing["history"] = history
+    existing["history"] = _record_scatrans_history(existing)
 
     if use_pseudobulk:
         for k in (
@@ -1051,8 +1042,6 @@ def differential_expression(
             ),
         },
     }
-
-    from .._utils import _merge_scatrans_uns
 
     de_meta = {
         "mode": "differential_expression",
