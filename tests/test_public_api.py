@@ -11,7 +11,7 @@ def test_all_exports_importable():
 def test_version_string():
     assert isinstance(scat.__version__, str)
     assert len(scat.__version__) > 0
-    assert scat.__version__ == "0.10.17"
+    assert scat.__version__ == "0.10.18"
 
 
 def test_submodules_exposed():

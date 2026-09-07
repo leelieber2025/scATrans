@@ -143,6 +143,11 @@ def compare_de_across_groups(
     col = adata.obs[split_by]
     groups = _categorical_or_unique(col, drop_unused=False) if groups is None else list(groups)
 
+    # String keys must not silently overwrite distinct group results.
+    group_names = [str(g) for g in groups]
+    if len(set(group_names)) != len(group_names):
+        raise ValueError("groups must have unique string representations")
+
     de_kwargs = dict(de_kwargs or {})
     filt_kwargs: dict[str, Any] = {
         "select_by": "de",
@@ -162,7 +167,7 @@ def compare_de_across_groups(
 
     for grp in groups:
         gname = str(grp)
-        mask = (col == grp).to_numpy()
+        mask = (col == grp).fillna(False).to_numpy(dtype=bool)
         n_cells = int(mask.sum())
         if n_cells < min_cells:
             msg = f"only {n_cells} cell(s) in this level (< min_cells={min_cells})"

@@ -27,8 +27,8 @@ from scatrans.tl.filter import filter_active_genes
 from scatrans.tl.pipeline import run_default_pipeline
 
 
-def test_version_is_0_10_17():
-    assert scat.__version__ == "0.10.17"
+def test_version_is_current():
+    assert scat.__version__ == "0.10.18"
 
 
 def test_logfc_cutoffs_remain_distinct():
@@ -229,7 +229,8 @@ def test_run_default_pipeline_default_select_by_de(adata_basic):
 # ---------------------------------------------------------------------------
 # E. permutation: one-NaN score vector still counts toward n_success
 # ---------------------------------------------------------------------------
-def test_permutation_single_nan_score_counts_toward_n_success(monkeypatch):
+@pytest.mark.parametrize("missing", [np.nan, np.inf, -np.inf])
+def test_permutation_single_nan_score_counts_toward_n_success(monkeypatch, missing):
     import anndata as ad
 
     import scatrans._permutation as perm_mod
@@ -249,16 +250,20 @@ def test_permutation_single_nan_score_counts_toward_n_success(monkeypatch):
     spl = X * 0.5
     real_score = np.full(n_genes, 50.0)
     real_residual = np.full(n_genes, 1.0)
+    real_score[1] = missing
+    real_residual[1] = missing
     n_perm = 5
 
     def one_nan_task(*args, **kwargs):
         s = np.zeros(n_genes)
-        s[0] = np.nan
-        return s, np.zeros(n_genes)
+        s[0] = missing
+        residual = np.zeros(n_genes)
+        residual[0] = missing
+        return s, residual
 
     monkeypatch.setattr(perm_mod, "_single_permutation_task", one_nan_task)
 
-    pvals, *_rest, use_fdr, reason = run_permutation_test(
+    pvals, fdr, residual_pvals, residual_fdr, use_fdr, reason = run_permutation_test(
         n_perm=n_perm,
         effective_n_jobs=1,
         random_seed=0,
@@ -290,9 +295,13 @@ def test_permutation_single_nan_score_counts_toward_n_success(monkeypatch):
         valid_expr=np.ones(n_genes, dtype=bool),
     )
     assert reason != "permutation_shuffle_failed"
-    # scores are 0 (or NaN) vs observed 50 → no exceedances; p = 1/(n_success+1)
+    # Missing null statistics cannot make a gene significant.
     expected = 1.0 / (n_perm + 1.0)
-    assert np.allclose(pvals, expected)
+    for values in (pvals, residual_pvals):
+        assert np.all(values[:2] == 1.0)
+        assert np.allclose(values[2:], expected)
+    assert np.all(fdr[:2] == 1.0)
+    assert np.all(residual_fdr[:2] == 1.0)
     assert use_fdr is False
 
 

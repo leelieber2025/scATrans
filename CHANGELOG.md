@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.10.18] - 2026-09-06
+
+### Fixed
+
+- Permutation tests conservatively count non-finite null statistics as
+  exceedances instead of allowing failed calculations to lower p-values.
+  Non-finite observed scores/residuals now receive p=1 and FDR=1.
+  This supersedes the per-gene NaN behavior introduced in 0.10.17.
+- Cross-group DE supports nullable grouping columns without crashing on
+  missing cells, and rejects duplicate/string-colliding group names before
+  results can silently overwrite one another.
+- Require setuptools >=77.0.3 to match the SPDX license metadata used by the
+  package; synchronize the Bioconda recipe version and build requirement.
+  Its source checksum still needs the published release artifact.
+
 ## [0.10.17] - 2026-08-29
 
 ### Changed

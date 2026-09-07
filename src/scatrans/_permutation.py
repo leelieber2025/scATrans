@@ -524,9 +524,8 @@ def run_permutation_test(
 
     # Keep a shuffle if the score vector is usable. Drop only if s/res is None,
     # length-mismatched vs the observed score, or ALL values are NaN.
-    # A single-gene NaN used to discard the whole replicate; that under-powered
-    # genes whose other scores were finite. Per-gene NaNs are treated as
-    # non-exceedances below (np.nan >= x is False) rather than dropping n_success.
+    # Missing null statistics count as exceedances conservatively; failed
+    # calculations must not create evidence against the null.
     # All-NaN vectors are still discarded: they are the sentinel for a failed
     # distinct shuffle (original labels), which would bias p-values upward.
     expected_n = int(np.asarray(real_score).reshape(-1).size)
@@ -563,9 +562,9 @@ def run_permutation_test(
     perm_residual_matrix = np.vstack(valid_residuals)
 
     real_score_row = np.asarray(real_score, dtype=float).reshape(1, -1)
-    # Per-gene NaNs are non-exceedances (skip that gene in that replicate).
+    # Conservative upper bound when some null statistics are unavailable.
     exceed_count = np.sum(
-        np.isfinite(perm_scores_matrix) & (perm_scores_matrix >= real_score_row),
+        ~np.isfinite(perm_scores_matrix) | (perm_scores_matrix >= real_score_row),
         axis=0,
     )
     active_score_pval = (1.0 + exceed_count) / (n_success + 1.0)
@@ -573,10 +572,13 @@ def run_permutation_test(
     # One-sided test for positive unspliced excess (matches active-gene direction filter).
     real_res_row = np.asarray(real_residual, dtype=float).reshape(1, -1)
     exceed_res = np.sum(
-        np.isfinite(perm_residual_matrix) & (perm_residual_matrix >= real_res_row),
+        ~np.isfinite(perm_residual_matrix) | (perm_residual_matrix >= real_res_row),
         axis=0,
     )
     unspliced_excess_pval = (1.0 + exceed_res) / (n_success + 1.0)
+
+    active_score_pval[~np.isfinite(real_score_row.ravel())] = 1.0
+    unspliced_excess_pval[~np.isfinite(real_res_row.ravel())] = 1.0
 
     active_score_fdr = np.ones(adata.n_vars)
     unspliced_excess_fdr = np.ones(adata.n_vars)
