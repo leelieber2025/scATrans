@@ -4672,7 +4672,7 @@ def volcano_plot(
                     }
                     # Prefer an inside corner with the fewest points; if every
                     # quadrant is crowded, park the legend outside on the right.
-                    emptiest = min(counts, key=counts.get)
+                    emptiest = min(counts, key=lambda corner: counts[corner])
                     n_pts = int(finite.sum())
                     if n_pts and counts[emptiest] > 0.28 * n_pts:
                         leg_key = "outside"
