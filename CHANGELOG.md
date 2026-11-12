@@ -46,10 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `"Count"`. Override them with `ylabel=`.
 - **`palette()` warns** when it has to cycle because there are more categories
   than colors.
-- **Result-table sorting** no longer calls
-  `DataFrame.sort_values(..., inplace=True)`, which pandas 3 deprecates.
-  Sorted contents match the previous order. The same DataFrame object and
-  its `.attrs` are kept.
+- **Result-table sorting and row/column drops** no longer call
+  `DataFrame.sort_values(..., inplace=True)` or `DataFrame.drop(..., inplace=True)`,
+  which pandas 3 deprecates. Sorted contents match the previous order. The
+  same DataFrame object and its `.attrs` are kept.
+- **`scatrans[gene_features]` caps `gtfparse` below 3.1.** gtfparse 3.1
+  requires pandas 3, and current AnnData (`0.12.19`, `pandas<3`) cannot
+  write the Arrow string indexes that pandas 3 creates.
 
 ### Fixed
 

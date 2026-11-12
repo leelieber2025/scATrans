@@ -25,6 +25,29 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+def _drop_inplace(df: pd.DataFrame, *, index=None, columns=None) -> pd.DataFrame:
+    """Remove rows or columns without ``DataFrame.drop(..., inplace=True)``.
+
+    Keeps the same DataFrame object and ``.attrs``. Pass ``index`` or
+    ``columns``, matching ``DataFrame.drop``.
+    """
+    if (index is None) == (columns is None):
+        raise TypeError("pass exactly one of index or columns")
+    attrs = dict(df.attrs)
+    if columns is not None:
+        for col in list(columns):
+            del df[col]
+        df.attrs.update(attrs)
+        return df
+    kept = df.drop(index=index)
+    # Row count changes, so column assignment cannot do this. This is the
+    # same internal update DataFrame.drop(inplace=True) used before pandas
+    # deprecated that keyword.
+    df._update_inplace(kept)
+    df.attrs.update(attrs)
+    return df
+
+
 def _sort_values_inplace(df: pd.DataFrame, by, *, ascending=True) -> pd.DataFrame:
     """Reorder rows of ``df`` in place without deprecated ``DataFrame.sort_values(inplace=True)``.
 
@@ -337,7 +360,7 @@ def filter_active_genes(
                 # Drop non-passing rows; re-sort surviving rows (preserves identity + attrs)
                 to_drop = results.index.difference(filtered.index)
                 if len(to_drop) > 0:
-                    results.drop(index=to_drop, inplace=True)
+                    _drop_inplace(results, index=to_drop)
                 _rc, _ra = _de_first_sort_keys(results.columns)
                 if _rc:
                     _sort_values_inplace(results, _rc, ascending=_ra)
@@ -691,7 +714,7 @@ def filter_active_genes(
         # Mutate caller's DataFrame: drop non-matching rows, keep sorted order
         to_drop = results.index.difference(filtered.index)
         if len(to_drop) > 0:
-            results.drop(index=to_drop, inplace=True)
+            _drop_inplace(results, index=to_drop)
         # Re-apply the sort in place on the surviving rows
         if "active_score" in results.columns and not _de_only:
             _sort_values_inplace(results, "active_score", ascending=False)
@@ -713,7 +736,7 @@ def filter_active_genes(
                     ascending.append(False)
             _sort_values_inplace(results, sort_cols, ascending=ascending)
             if "_logfc_abs" in results.columns:
-                results.drop(columns=["_logfc_abs"], inplace=True)
+                _drop_inplace(results, columns=["_logfc_abs"])
         return results
 
     return filtered
