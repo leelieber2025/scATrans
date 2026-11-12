@@ -194,10 +194,9 @@ pytest -m "not plot and not slow" --cov=scatrans --cov-report=xml:coverage-defau
 
 # With slow (GSEA etc.)
 pytest -m "not plot" -q
-```
 
-```bash
-python scripts/make_release_zips.py
+# Release artifacts
+python -m build
 ```
 
 ---

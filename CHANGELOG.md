@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Python 3.13** classifier and CI matrix entry. `requires-python` stays
   `>=3.9`.
 
+### Removed
+
+- **Tracked `PKG-INFO`.** That file is setuptools output and the committed
+  copy was still 0.10.16. Builds regenerate it; it is gitignored.
+
 ### Changed
 
 - **Raster saves default to an opaque white background.** PDF, SVG, and EPS

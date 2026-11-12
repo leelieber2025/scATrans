@@ -82,7 +82,7 @@ pip install -e ".[dev]"
 The single source of truth is `src/scatrans/_version.py`. Runtime
 `scatrans.__version__`, packaging metadata, and docs release strings all read
 it. For a release: bump `__version__`, update `CHANGELOG.md`, then
-`python -m build` or `python scripts/make_release_zips.py`.
+`python -m build`.
 
 ## Logging
 
