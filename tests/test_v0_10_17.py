@@ -28,7 +28,7 @@ from scatrans.tl.pipeline import run_default_pipeline
 
 
 def test_version_is_current():
-    assert scat.__version__ == "0.10.18"
+    assert scat.__version__ == "0.11.0"
 
 
 def test_logfc_cutoffs_remain_distinct():

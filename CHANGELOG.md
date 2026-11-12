@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.11.0] - 2026-11-11
+
+### Added
+
+- **`scat.pl.colors_from_uns`**: category colors prefer `adata.uns["{groupby}_colors"]`
+  and fall back to the active palette. `velocity_phase_portraits` uses it for
+  both the scatter and the legend.
+- **`de_summary_barplot` column aliases.** `n_up` / `n_down` and `num_up` /
+  `num_down` are accepted. A non-empty table that still cannot be interpreted
+  raises `ValueError` with the actual column names.
+- **Optional Excel extra:** `pip install scatrans[excel]` installs
+  `openpyxl>=3.0` for Excel report export.
+- **Python 3.13** classifier and CI matrix entry. `requires-python` stays
+  `>=3.9`.
+
+### Changed
+
+- **Raster saves default to an opaque white background.** PDF, SVG, and EPS
+  stay transparent unless `transparent=` is set. This stops PNG files from
+  looking black in dark viewers.
+- **Enrichment plots color p-value columns as `-log10(p)`** (`enrich_dotplot`,
+  `compare_dotplot`, `enrich_barplot`, `enrich_network_plot`). The colorbar
+  label is `$-\log_{10}$(p.adjust)`. NES and other non-p-value columns are
+  unchanged. Faceted `enrich_dotplot` shares one color scale across panels.
+- **`active_score_rankplot` puts rank 1 at the top.**
+- **`ggvolcano` legend position defaults to `"auto"`** (the emptiest corner,
+  or outside the axes when every corner is crowded). `"UL"` / `"UR"` /
+  `"DL"` / `"DR"` / `"outside"` still work.
+- **`compare_dotplot` rotates x labels** when the real tick text, including
+  `name (count)`, would collide.
+- **`gseaplot`** default figure DPI is `_DEFAULT_DPI` (150), matching other
+  plots. Saved files are still at least 300 DPI. The rank axis uses a short
+  integer locator instead of one tick per gene.
+- **`composition_barplot` y-axis labels** are `"Percentage (%)"` and
+  `"Count"`. Override them with `ylabel=`.
+- **`palette()` warns** when it has to cycle because there are more categories
+  than colors.
+- **Result-table sorting** no longer calls
+  `DataFrame.sort_values(..., inplace=True)`, which pandas 3 deprecates.
+  Sorted contents match the previous order. The same DataFrame object and
+  its `.attrs` are kept.
+
+### Fixed
+
+- **`use_style=True` no longer leaks global `rcParams`** in
+  `bias_diagnostic_plot`, `active_score_rankplot`, `active_genes_heatmap`,
+  and `velocity_phase_portraits`.
+- **`velocity_phase_portraits` missing groups** are drawn in gray and do not
+  steal a color from a real category. The legend shows an NA entry when any
+  cells are missing.
+- **Empty inputs still honor `save_path` / `show`** in `gseaplot`,
+  `active_genes_heatmap`, and `velocity_phase_portraits`.
+- **`active_genes_heatmap` returns `(Figure, Axes or dict)`** after the same
+  save/show path as other plots, including when scanpy's heatmap returns a
+  dict.
+- **pandas 3 NA labels** in `enrich_barplot` and `enrich_network_plot` fall
+  back to the term id instead of raising on a float `nan`.
+
 ## [0.10.18] - 2026-09-06
 
 ### Fixed

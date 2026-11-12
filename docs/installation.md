@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.9+ (CI covers 3.9–3.12)
+- Python 3.9+ (CI covers 3.9–3.13)
 - A normal scientific stack (NumPy, SciPy, pandas, AnnData, scanpy) — pulled in
   as dependencies
 

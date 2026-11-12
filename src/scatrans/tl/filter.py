@@ -25,6 +25,21 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+def _sort_values_inplace(df: pd.DataFrame, by, *, ascending=True) -> pd.DataFrame:
+    """Reorder rows of ``df`` in place without deprecated ``DataFrame.sort_values(inplace=True)``.
+
+    Preserves object identity (and ``.attrs``) so ``inplace=True`` callers keep
+    the same DataFrame. Values are written positionally to avoid index-alignment
+    surprises when the index has duplicates.
+    """
+    ordered = df.sort_values(by, ascending=ascending)
+    data = {col: ordered[col].copy().array for col in list(df.columns)}
+    for col, values in data.items():
+        df[col] = values
+    df.index = ordered.index.copy()
+    return df
+
+
 def _read_filter_context(results: pd.DataFrame) -> dict[str, Any]:
     ctx = results.attrs.get("scatrans_filter_context")
     return dict(ctx) if isinstance(ctx, dict) else {}
@@ -325,7 +340,7 @@ def filter_active_genes(
                     results.drop(index=to_drop, inplace=True)
                 _rc, _ra = _de_first_sort_keys(results.columns)
                 if _rc:
-                    results.sort_values(_rc, ascending=_ra, inplace=True)
+                    _sort_values_inplace(results, _rc, ascending=_ra)
                 return results
             return filtered
         if p in ("heuristic", "single_cell", "default"):
@@ -679,7 +694,7 @@ def filter_active_genes(
             results.drop(index=to_drop, inplace=True)
         # Re-apply the sort in place on the surviving rows
         if "active_score" in results.columns and not _de_only:
-            results.sort_values("active_score", ascending=False, inplace=True)
+            _sort_values_inplace(results, "active_score", ascending=False)
         elif "p_adj" in results.columns:
             sort_cols = ["p_adj"]
             ascending = [True]
@@ -696,7 +711,7 @@ def filter_active_genes(
                 else:
                     sort_cols.append("logFC")
                     ascending.append(False)
-            results.sort_values(sort_cols, ascending=ascending, inplace=True)
+            _sort_values_inplace(results, sort_cols, ascending=ascending)
             if "_logfc_abs" in results.columns:
                 results.drop(columns=["_logfc_abs"], inplace=True)
         return results

@@ -30,7 +30,7 @@ Docs: [Read the Docs](https://scatrans.readthedocs.io/en/latest/).
 
 ## What you need
 
-- Python 3.9+ (tested 3.9–3.12)
+- Python 3.9+ (tested 3.9–3.13)
 - An AnnData object with a condition column in `.obs`
 - For mechanism analysis: `spliced`/`unspliced` (or `mature`/`nascent`) layers
 - Nothing yet? `scat.datasets.load_toy()` ships a synthetic example — see [First run](#first-run).
@@ -103,7 +103,7 @@ Please cite the preprint:
 > *bioRxiv* (2026). doi:10.64898/2026.08.03.740741
 
 For the software itself, cite the Zenodo DOI above. Pin the installed
-version in Methods (this tree is `scatrans==0.10.18`). See `CITATION.cff`.
+version in Methods (this tree is `scatrans==0.11.0`). See `CITATION.cff`.
 
 ## License
 

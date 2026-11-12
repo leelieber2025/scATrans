@@ -851,14 +851,18 @@ def differential_expression(
                 "Count-based DE was requested but no safely aligned raw counts were found. "
                 "Call scat.store_raw_counts(adata) before HVG/normalize, or pass counts= explicitly."
             )
-    elif counts is not None and use_pseudobulk:
+    elif (
+        counts is not None
+        and use_pseudobulk
+        and hasattr(counts, "shape")
+        and getattr(counts, "shape", (0, 0))[0] != adata_de.n_obs
+    ):
         # Cell-level counts= matrix is invalid after aggregation; prefer pb layer / .X.
-        if hasattr(counts, "shape") and getattr(counts, "shape", (0, 0))[0] != adata_de.n_obs:
-            logger.info(
-                "differential_expression: counts= matrix is cell-level but data is now "
-                "pseudobulk; using aggregated layers['counts']/.X instead."
-            )
-            counts = _resolve_aligned_raw_counts(adata_de, layer="counts", require_integer=True)
+        logger.info(
+            "differential_expression: counts= matrix is cell-level but data is now "
+            "pseudobulk; using aggregated layers['counts']/.X instead."
+        )
+        counts = _resolve_aligned_raw_counts(adata_de, layer="counts", require_integer=True)
 
     # DE preprocess
     # (Memento coercion to 'none' already performed early via _coerce_memento_de_preprocess)

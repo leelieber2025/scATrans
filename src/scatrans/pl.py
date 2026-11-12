@@ -411,8 +411,96 @@ def palette(name: str = "default", n: int | None = None) -> list[str]:
         raise ValueError("n must be positive")
     if n <= len(colors):
         return colors[:n]
-    # cycle
+    warnings.warn(
+        f"palette {name!r} has {len(colors)} colors but n={n} was requested; "
+        "colors will cycle and some categories will share a color.",
+        UserWarning,
+        stacklevel=2,
+    )
     return [colors[i % len(colors)] for i in range(n)]
+
+
+_PVALUE_COLOR_ALIASES = {
+    "p.adjust",
+    "adjusted p-value",
+    "padj",
+    "p_adj",
+    "pvalue",
+    "p_value",
+    "p.value",
+    "pval",
+    "p-value",
+    "fdr",
+    "qvalue",
+    "q_value",
+    "q.val",
+}
+
+_CBAR_NEGLOG10_PADJ = r"$-\log_{10}$(p.adjust)"
+
+
+def _as_text_series(s: pd.Series) -> pd.Series:
+    """Stringify a label column, mapping NA to "" (pandas 3 leaves NA after astype(str))."""
+    return s.map(lambda v: "" if pd.isna(v) else str(v)).astype(str).str.strip()
+
+
+def _is_pvalue_color_column(name) -> bool:
+    """True when *name* is a p / FDR / q-value column that should be plotted as -log10."""
+    if name is None:
+        return False
+    return str(name).strip().lower() in _PVALUE_COLOR_ALIASES
+
+
+def _enrichment_color_values(raw, source_name=None):
+    """Return (array, colorbar_label) for enrichment coloring.
+
+    p-value-like columns are converted to ``-log10(p)`` so larger values (darker
+    on a sequential map such as ``scat_YlGnBu``) are more significant.
+    """
+    vals = pd.to_numeric(raw, errors="coerce")
+    if _is_pvalue_color_column(source_name):
+        plotted = np.asarray(_safe_neg_log10(vals), dtype=float)
+        return plotted, _CBAR_NEGLOG10_PADJ
+    return np.asarray(vals, dtype=float), (str(source_name) if source_name is not None else None)
+
+
+def colors_from_uns(
+    adata,
+    groupby: str,
+    *,
+    categories=None,
+    palette_name: str = "default",
+) -> list[str]:
+    """Return per-category colors, preferring ``adata.uns[f"{groupby}_colors"]``.
+
+    Follows the scanpy convention so plots stay consistent with UMAP / violin /
+    dotplot coloring. Missing or incomplete uns colors fall back to
+    :func:`palette`.
+    """
+    if categories is not None:
+        cats = [str(c) for c in list(categories)]
+    elif groupby in getattr(adata, "obs", {}):
+        ser = adata.obs[groupby]
+        if isinstance(ser.dtype, pd.CategoricalDtype):
+            cats = [str(c) for c in ser.cat.categories]
+        else:
+            cats = [str(c) for c in pd.Index(ser.dropna().unique())]
+    else:
+        cats = []
+
+    uns = getattr(adata, "uns", None) or {}
+    stored = uns.get(f"{groupby}_colors")
+    if stored is not None and len(list(stored)) > 0:
+        stored_list = [str(c) for c in list(stored)]
+        if not cats:
+            return stored_list
+        if len(stored_list) >= len(cats):
+            return stored_list[: len(cats)]
+        extra = palette(palette_name, n=len(cats) - len(stored_list))
+        return stored_list + list(extra)
+    if not cats:
+        return []
+    return palette(palette_name, n=len(cats))
 
 
 def get_cmap(name: str | None = None):
@@ -905,7 +993,10 @@ def savefig(
         PDF/SVG.
     bbox_inches, transparent
         Forwarded to ``Figure.savefig``. ``bbox_inches`` defaults to
-        ``"tight"``.
+        ``"tight"``. ``transparent=None`` (the default) picks a format-aware
+        background: raster formats (PNG, JPEG, TIFF) are saved opaque on
+        white; vector formats (PDF, SVG, EPS) stay transparent so they can
+        be composited. Pass ``True`` / ``False`` to override.
     **kwargs
         Additional ``Figure.savefig`` keyword arguments.
 
@@ -926,8 +1017,16 @@ def savefig(
         save_kw.setdefault("bbox_inches", bbox_inches)
     if dpi is not None:
         save_kw["dpi"] = dpi
-    if transparent is not None:
-        save_kw["transparent"] = transparent
+    suffix = Path(str(path)).suffix.lower().lstrip(".")
+    _RASTER_SUFFIXES = {"png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp"}
+    if transparent is None:
+        # Raster: opaque white (transparent PNGs composite as black in many
+        # viewers). Vector: transparent so the file can sit on any background.
+        transparent = suffix not in _RASTER_SUFFIXES
+    save_kw["transparent"] = transparent
+    if not transparent:
+        save_kw.setdefault("facecolor", "white")
+        save_kw.setdefault("edgecolor", "white")
     with _vector_text_save_context():
         fig.savefig(path, **save_kw)
     return str(path if isinstance(path, (str, Path)) else path)
@@ -1100,13 +1199,14 @@ def _parse_gene_ratio(x):
     return pd.to_numeric(x, errors="coerce")
 
 
-def _save_and_maybe_show(fig, save_path=None, dpi=None, show=True, created=True, transparent=True):
+def _save_and_maybe_show(fig, save_path=None, dpi=None, show=True, created=True, transparent=None):
     """Internal: centralized save + conditional show to keep behavior identical across plotters.
 
     Display figures use modest ``dpi`` (default 150). When ``save_path`` is set, the file
     is written at least at ``_DEFAULT_SAVE_DPI`` (300) so exports stay publication-sharp
     even if the on-screen figure is lighter. Vector formats embed editable text
-    (see :func:`savefig`).
+    (see :func:`savefig`). ``transparent=None`` uses the format-aware default
+    in :func:`savefig` (opaque white PNGs, transparent PDF/SVG).
     """
     if save_path:
         fig_dpi = int(dpi) if dpi is not None else _DEFAULT_DPI
@@ -1548,6 +1648,8 @@ def enrich_dotplot(
     facet_by_cluster: bool = False,
     return_data: bool = False,
     context: str | None = None,
+    color_vmin: float | None = None,
+    color_vmax: float | None = None,
 ):
     """
     Dotplot for enrichment results (clusterProfiler style).
@@ -1620,56 +1722,93 @@ def enrich_dotplot(
         )
 
         # Facet support: delegate to subplots (reuses full logic, avoids code duplication)
-        if facet_by_cluster and has_cluster:
+        do_facet = bool(facet_by_cluster and has_cluster)
+        ax_list = None
+        if do_facet:
             clusters = [
                 str(x) for x in pd.Series(enrich_df[cluster_col]).dropna().unique().tolist()
             ]
             n = len(clusters)
-            if n > 1:
-                import math as _math
+            if n <= 1:
+                do_facet = False
+            elif ax is not None:
+                if isinstance(ax, (list, tuple, np.ndarray)):
+                    ax_list = list(np.asarray(ax, dtype=object).ravel())
+                    if len(ax_list) < n:
+                        raise ValueError(
+                            f"enrich_dotplot(facet_by_cluster=True) needs {n} axes "
+                            f"(one per cluster); received {len(ax_list)}."
+                        )
+                else:
+                    logger.warning(
+                        "enrich_dotplot(facet_by_cluster=True) needs a grid of axes; "
+                        "a single ax= was provided, so faceting is disabled and all "
+                        "clusters are drawn on that axes."
+                    )
+                    do_facet = False
+        if do_facet:
+            import math as _math
 
-                ncols = min(3, n)
-                nrows = _math.ceil(n / ncols)
-                fig_w = figsize[0] * min(ncols, 2.5)
-                fig_h = figsize[1] * max(0.7, nrows * 0.85)
+            ncols = min(3, n)
+            nrows = _math.ceil(n / ncols)
+            fig_w = figsize[0] * min(ncols, 2.5)
+            fig_h = figsize[1] * max(0.7, nrows * 0.85)
+            if ax_list is not None:
+                axes = ax_list
+                fig = axes[0].figure
+                _created_fig = False
+            else:
                 fig, axes = plt.subplots(
                     nrows, ncols, figsize=(fig_w, fig_h), constrained_layout=True, dpi=dpi
                 )
                 axes = np.asarray(axes).ravel().tolist() if hasattr(axes, "ravel") else [axes]
                 _created_fig = True
-                for i, cl in enumerate(clusters):
-                    ax_i = axes[i] if i < len(axes) else axes[-1]
-                    sub = enrich_df[enrich_df[cluster_col].astype(str) == cl].copy()
-                    # recurse without facet to fill the ax
-                    enrich_dotplot(
-                        sub,
-                        top_n=top_n,
-                        show_terms=show_terms,
-                        title=f"{title} — {cl}" if title else str(cl),
-                        save_path=None,
-                        figsize=(fig_w / ncols * 0.95, fig_h / nrows * 0.9),
-                        dpi=dpi,
-                        fontsize=fontsize,
-                        x=x,
-                        color_by=color_by,
-                        size_by=size_by,
-                        cmap=cmap,
-                        dot_max=dot_max,
-                        dot_min=dot_min,
-                        smallest_dot=smallest_dot,
-                        ax=ax_i,
-                        show=False,
-                        use_style=use_style,
-                        cluster_col=cluster_col,
-                        facet_by_cluster=False,
-                    )
-                # hide unused axes
-                for j in range(n, len(axes)):
-                    axes[j].axis("off")
-                _save_and_maybe_show(
-                    fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig
+
+            # Shared color scale across facets so colorbars are comparable.
+            cvmin, cvmax = color_vmin, color_vmax
+            if cvmin is None or cvmax is None:
+                cands = [color_by, "p.adjust", "Adjusted P-value", "padj", "p_adj"]
+                color_src = next((c for c in cands if c and c in enrich_df.columns), None)
+                if color_src is not None:
+                    plotted, _ = _enrichment_color_values(enrich_df[color_src], color_src)
+                    finite = plotted[np.isfinite(plotted)]
+                    if finite.size:
+                        if cvmin is None:
+                            cvmin = float(finite.min())
+                        if cvmax is None:
+                            cvmax = float(finite.max())
+
+            for i, cl in enumerate(clusters):
+                ax_i = axes[i] if i < len(axes) else axes[-1]
+                sub = enrich_df[enrich_df[cluster_col].astype(str) == cl].copy()
+                enrich_dotplot(
+                    sub,
+                    top_n=top_n,
+                    show_terms=show_terms,
+                    title=f"{title} — {cl}" if title else str(cl),
+                    save_path=None,
+                    figsize=(fig_w / ncols * 0.95, fig_h / nrows * 0.9),
+                    dpi=dpi,
+                    fontsize=fontsize,
+                    x=x,
+                    color_by=color_by,
+                    size_by=size_by,
+                    cmap=cmap,
+                    dot_max=dot_max,
+                    dot_min=dot_min,
+                    smallest_dot=smallest_dot,
+                    ax=ax_i,
+                    show=False,
+                    use_style=use_style,
+                    cluster_col=cluster_col,
+                    facet_by_cluster=False,
+                    color_vmin=cvmin,
+                    color_vmax=cvmax,
                 )
-                return fig, axes[0] if axes else fig
+            for j in range(n, len(axes)):
+                axes[j].axis("off")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+            return fig, axes[0] if axes else fig
 
         if dot_min is not None and dot_max is not None and dot_min > dot_max:
             raise ValueError("dot_min must be <= dot_max.")
@@ -2031,16 +2170,23 @@ def enrich_dotplot(
             _created_fig = False
 
         _register_scat_colormaps()
+        color_vals, cbar_from_scale = _enrichment_color_values(plot_df[color_col], color_col)
+        scatter_kw = {}
+        if color_vmin is not None:
+            scatter_kw["vmin"] = color_vmin
+        if color_vmax is not None:
+            scatter_kw["vmax"] = color_vmax
         scatter = ax.scatter(
             x=plot_df[x_col],
             y=plot_df["Term_Clean"],
             s=sizes,
-            c=plot_df[color_col],
+            c=color_vals,
             cmap=cmap,
             edgecolors="white",
             linewidths=0.4,
             alpha=0.92,
             zorder=3,
+            **scatter_kw,
         )
 
         ax.set_xlabel(x_label, fontsize=fontsize, labelpad=6)
@@ -2056,9 +2202,7 @@ def enrich_dotplot(
         # Colorbar (p.adjust or equivalent) - compact placement on the right.
         # shrink/aspect/pad tuned following gseapy/omicverse-style dotplots for clean stacking with size legend.
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.28, aspect=12, pad=0.02)
-        cbar_label = color_col
-        if color_col == "Adjusted P-value":
-            cbar_label = "Adjusted P-value (smaller = more sig.)"
+        cbar_label = cbar_from_scale if cbar_from_scale else color_col
         cbar.set_label(cbar_label, fontsize=max(7, fontsize - 1), rotation=270, labelpad=14)
         _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
 
@@ -2402,17 +2546,20 @@ def compare_dotplot(
             lo, hi = float(np.nanmin(finite_s)), float(np.nanmax(finite_s))
             sizes = s_min + (np.nan_to_num(svals, nan=lo) - lo) / (hi - lo) * (s_max - s_min)
 
-        # -- colormap (clusterProfiler red=low p.adjust) --------------------
+        # -- colormap. p-value columns are shown as -log10(p) so high=sig ----
         from matplotlib.colors import LinearSegmentedColormap
 
-        is_pval_color = color_c in ("p.adjust", "Adjusted P-value", "p_adj", "padj", "pvalue")
+        is_pval_color = _is_pvalue_color_column(color_c)
+        cbar_label = color_c
+        if is_pval_color:
+            cvals, cbar_label = _enrichment_color_values(cvals, color_c)
         _register_scat_colormaps()
         if cmap == "auto":
-            # p-value: red (sig) → blue (ns); else sequential journal map
+            # After -log10 transform, red should be the HIGH (significant) end.
             eff_cmap = (
                 LinearSegmentedColormap.from_list(
-                    "cp_red_blue",
-                    ["#B2182B", "#F4A582", "#F7F7F7", "#92C5DE", "#2166AC"],
+                    "cp_blue_red",
+                    ["#2166AC", "#92C5DE", "#F7F7F7", "#F4A582", "#B2182B"],
                 )
                 if is_pval_color
                 else _DEFAULT_CMAP_SEQUENTIAL
@@ -2470,10 +2617,22 @@ def compare_dotplot(
         # that fit fine unrotated with few clusters, and rotating a two-line
         # "name\n(count)" tick label at 30 degrees makes those cases collide worse,
         # not better.
-        avail_col_width_in = figsize0[0] / max(len(clusters), 1)
-        est_label_width_in = (
-            max((len(str(cl)) for cl in clusters), default=0) * fontsize * 0.65 / 72.0
+        # Use the actual tick strings (including "name\n(count)") and subtract
+        # space taken by y-tick labels and the right-side colorbar/legend from
+        # the figure width; figsize0[0] / n_clusters overestimates column width
+        # and left medium names like "Monocytes" unrotated.
+        tick_labels = [lab.get_text() for lab in ax.get_xticklabels()]
+        longest = max(
+            (max((len(line) for line in str(s).splitlines()), default=0) for s in tick_labels),
+            default=0,
         )
+        y_label_lens = [len(str(t)) for t in ordered]
+        ylabel_in = 0.5 * fontsize / 72.0 * (max(y_label_lens) if y_label_lens else 8)
+        ylabel_in = min(max(ylabel_in, 1.0), figsize0[0] * 0.55)
+        right_in = 1.3  # colorbar + size legend
+        plot_w = max(figsize0[0] - ylabel_in - right_in, 0.8)
+        avail_col_width_in = plot_w / max(len(clusters), 1)
+        est_label_width_in = longest * fontsize * 0.7 / 72.0
         if len(clusters) > 4 or est_label_width_in > avail_col_width_in * 0.8:
             for lab in ax.get_xticklabels():
                 lab.set_rotation(30)
@@ -2503,7 +2662,7 @@ def compare_dotplot(
 
         # colorbar
         cbar = fig.colorbar(scatter, ax=ax, shrink=0.35, aspect=14, pad=0.02)
-        cbar.set_label(color_c, fontsize=max(7, fontsize - 1), rotation=270, labelpad=14)
+        cbar.set_label(cbar_label, fontsize=max(7, fontsize - 1), rotation=270, labelpad=14)
         _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
 
         # size legend
@@ -3937,7 +4096,7 @@ def gseaplot(
     term: str | None = None,
     title: str | None = None,
     figsize: tuple[float, float] = (6.5, 5.5),
-    dpi: int = 300,
+    dpi: int = _DEFAULT_DPI,
     color: str = TEAL,
     cmap: str = _DEFAULT_CMAP_DIVERGING,
     ax: Any | None = None,
@@ -3995,7 +4154,8 @@ def gseaplot(
         ranked.index = ranked.index.astype(str)
         if len(ranked) == 0:
             logger.warning("No ranked genes for gseaplot")
-            fig, ax = _empty_placeholder_fig("No ranked genes")
+            fig, ax = _empty_placeholder_fig("No ranked genes", figsize=figsize, dpi=dpi)
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
             return fig, ax
 
         # Prefer gseapy's post-sort ranking so RES/hits and the bottom bar share one axis.
@@ -4082,7 +4242,10 @@ def gseaplot(
                 logger.warning(
                     "Could not recover gene set or RES for term %s. Plotting empty.", term
                 )
-                fig, ax = _empty_placeholder_fig(f"No data for term {term}")
+                fig, ax = _empty_placeholder_fig(
+                    f"No data for term {term}", figsize=figsize, dpi=dpi
+                )
+                _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
                 return fig, ax
 
             # Weighted KS running enrichment score (classic GSEA-style).
@@ -4194,6 +4357,11 @@ def gseaplot(
         ax3.text(0.98, 0.05, pheno_neg, transform=ax3.transAxes, ha="right", fontsize=8, color=BLUE)
 
         setup_ax(ax3, labelsize=8, ticksize=7, outward=None)
+        # Thousands of rank positions would otherwise produce smeared tick labels.
+        from matplotlib.ticker import MaxNLocator
+
+        ax3.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+        ax3.tick_params(axis="x", labelsize=7)
 
         _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
         # return the main ax (RES) for consistency, or the fig and list
@@ -4303,7 +4471,7 @@ def volcano_plot(
     pval_cutoff=0.05,
     color_by="unspliced_excess_residual",
     style: str = "auto",
-    legend_position: str = "UL",
+    legend_position: str = "auto",
     fills: tuple[str, str, str] | None = None,
     colors: tuple[str, str, str] | None = None,
     add_cutoff_lines: bool = True,
@@ -4347,8 +4515,11 @@ def volcano_plot(
           `ggVolcano <https://github.com/BioSenior/ggVolcano>`_ (teal Down /
           gray Normal / orange Up, ``theme_bw``, dashed cutoffs, labels by FDR).
         - ``"gradual"``: ``gradual_volcano`` gradient fill/size by ``-log10(FDR)``.
-    legend_position : {"UL", "UR", "DL", "DR"}, default "UL"
-        In-axes legend anchor (ggVolcano styles only).
+    legend_position : {"auto", "outside", "UL", "UR", "DL", "DR"}, default "auto"
+        In-axes legend anchor (ggVolcano styles only). ``"auto"`` picks the
+        emptiest quadrant, or ``"outside"`` when every corner is crowded.
+        Explicit ``"UL"`` / ``"UR"`` / ``"DL"`` / ``"DR"`` / ``"outside"``
+        still work as before.
     fills, colors : tuple of 3 hex colors, optional
         Override Down / Normal / Up fill and stroke (``style="ggvolcano"``).
     add_cutoff_lines : bool, default True
@@ -4486,20 +4657,55 @@ def volcano_plot(
                     )
                     for c in ("Down", "Normal", "Up")
                 ]
-                leg_pos = legend_position.upper()
-                anchor = _GGVOLCANO_LEGEND_ANCHORS.get(leg_pos, _GGVOLCANO_LEGEND_ANCHORS["UL"])
-                ax.legend(
-                    handles=legend_handles,
-                    title="Regulate",
-                    frameon=True,
-                    facecolor="white",
-                    edgecolor="none",
-                    fontsize=max(8, fontsize - 2),
-                    title_fontsize=max(9, fontsize - 1),
-                    loc="upper left",
-                    bbox_to_anchor=(anchor[0], anchor[1]),
-                    bbox_transform=ax.transAxes,
-                )
+                leg_key = str(legend_position).strip().lower()
+                if leg_key in ("auto", ""):
+                    xpts = plot_df["logFC"].to_numpy(dtype=float)
+                    ypts = plot_df["neg_log_pval"].to_numpy(dtype=float)
+                    finite = np.isfinite(xpts) & np.isfinite(ypts)
+                    xmid = 0.0
+                    ymid = float(np.nanmedian(ypts[finite])) if finite.any() else 0.0
+                    counts = {
+                        "UL": int(np.sum(finite & (xpts <= xmid) & (ypts >= ymid))),
+                        "UR": int(np.sum(finite & (xpts > xmid) & (ypts >= ymid))),
+                        "DL": int(np.sum(finite & (xpts <= xmid) & (ypts < ymid))),
+                        "DR": int(np.sum(finite & (xpts > xmid) & (ypts < ymid))),
+                    }
+                    # Prefer an inside corner with the fewest points; if every
+                    # quadrant is crowded, park the legend outside on the right.
+                    emptiest = min(counts, key=counts.get)
+                    n_pts = int(finite.sum())
+                    if n_pts and counts[emptiest] > 0.28 * n_pts:
+                        leg_key = "outside"
+                    else:
+                        leg_key = emptiest.lower()
+                if leg_key == "outside":
+                    ax.legend(
+                        handles=legend_handles,
+                        title="Regulate",
+                        frameon=True,
+                        facecolor="white",
+                        edgecolor="none",
+                        fontsize=max(8, fontsize - 2),
+                        title_fontsize=max(9, fontsize - 1),
+                        loc="upper left",
+                        bbox_to_anchor=(1.02, 1.0),
+                        bbox_transform=ax.transAxes,
+                    )
+                else:
+                    leg_pos = leg_key.upper()
+                    anchor = _GGVOLCANO_LEGEND_ANCHORS.get(leg_pos, _GGVOLCANO_LEGEND_ANCHORS["UL"])
+                    ax.legend(
+                        handles=legend_handles,
+                        title="Regulate",
+                        frameon=True,
+                        facecolor="white",
+                        edgecolor="none",
+                        fontsize=max(8, fontsize - 2),
+                        title_fontsize=max(9, fontsize - 1),
+                        loc="upper left" if anchor[2] == "left" else "upper right",
+                        bbox_to_anchor=(anchor[0], anchor[1]),
+                        bbox_transform=ax.transAxes,
+                    )
             else:  # gradual
                 from matplotlib.colors import LinearSegmentedColormap
 
@@ -4768,6 +4974,51 @@ def _bar_label_nonzero(v: Any) -> str:
     return "" if n == 0 else str(n)
 
 
+_DE_SUMMARY_UP_ALIASES = ("up", "n_up", "nup", "num_up", "nUp")
+_DE_SUMMARY_DOWN_ALIASES = ("down", "n_down", "ndown", "num_down", "nDown")
+
+
+def _normalize_de_summary_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Accept ``n_up`` / ``n_down`` aliases and an optional ``group`` column.
+
+    Raises ``ValueError`` listing the actual columns when up/down cannot be
+    resolved, instead of silently drawing an empty placeholder.
+    """
+    out = df.copy()
+    lower_cols = {str(c).lower(): c for c in out.columns}
+
+    def _rename_first(frame, aliases, dest):
+        if dest in frame.columns:
+            return frame
+        for alias in aliases:
+            key = alias.lower()
+            if key in lower_cols:
+                return frame.rename(columns={lower_cols[key]: dest})
+        return frame
+
+    has_count = any(
+        a.lower() in lower_cols for a in _DE_SUMMARY_UP_ALIASES + _DE_SUMMARY_DOWN_ALIASES
+    )
+    for gcol_alias in ("group", "Group", "cell_type", "celltype", "cluster"):
+        src = lower_cols.get(gcol_alias.lower())
+        if src is None or not has_count:
+            continue
+        if isinstance(out.index, pd.RangeIndex) or list(out.index) == list(range(len(out))):
+            out = out.set_index(src)
+            lower_cols = {str(c).lower(): c for c in out.columns}
+        break
+
+    out = _rename_first(out, _DE_SUMMARY_UP_ALIASES, "up")
+    out = _rename_first(out, _DE_SUMMARY_DOWN_ALIASES, "down")
+    if "up" not in out.columns or "down" not in out.columns:
+        raise ValueError(
+            "de_summary_barplot requires 'up' and 'down' columns "
+            "(aliases accepted: n_up / n_down, num_up / num_down). "
+            f"Available columns: {list(df.columns)}"
+        )
+    return out
+
+
 def de_summary_barplot(
     summary,
     mode: str = "stacked",
@@ -4811,7 +5062,9 @@ def de_summary_barplot(
         :class:`~scatrans.tl.CompareDEResult` (index = group name, columns
         ``"up"`` / ``"down"`` and optionally ``"total"``), or the
         ``CompareDEResult`` itself (``.summary`` is used automatically). Any
-        DataFrame with ``"up"`` / ``"down"`` columns works.
+        DataFrame with ``"up"`` / ``"down"`` columns (or aliases
+        ``n_up`` / ``n_down``) works. An optional ``group`` column is
+        promoted to the index when the current index is a RangeIndex.
     mode : {"stacked", "diverging", "grouped", "up", "down"}
         - ``"stacked"`` (default): up and down counts stacked into one bar per
           group (up on the bottom) — the classic "total changed genes"
@@ -4852,6 +5105,8 @@ def de_summary_barplot(
         figsize, dpi, fontsize, _ = _resolve_display_params(
             context, figsize=figsize, dpi=dpi, fontsize=fontsize, label_fontsize=None
         )
+        if isinstance(summary, pd.DataFrame) and not summary.empty:
+            summary = _normalize_de_summary_table(summary)
 
         placeholder = _placeholder_for_unplottable(
             summary,
@@ -5465,10 +5720,10 @@ def composition_barplot(
         if normalize:
             row_sums = counts.sum(axis=1).replace(0, np.nan)
             plot_df = counts.div(row_sums, axis=0) * 100.0
-            ylab = ylabel or "Percentage of genes (%)"
+            ylab = ylabel or "Percentage (%)"
         else:
             plot_df = counts.astype(float)
-            ylab = ylabel or "Number of genes"
+            ylab = ylabel or "Count"
         plot_df = plot_df.fillna(0.0)
 
         hue_labels = [str(h) for h in hues]
@@ -5587,119 +5842,122 @@ def bias_diagnostic_plot(
     diagnostics in ``adata.uns["scatrans"]`` for the multi-covariate fit.
     """
     logger.info("Generating bias correction diagnostic plot...")
-    if use_style:
-        set_style()
+    with _style_context_if(use_style):
+        delta_col = _excess_delta_col(results_df)
+        residual_col = _excess_residual_col(results_df)
+        _require_columns(
+            results_df,
+            [delta_col, residual_col, "gene_length", "intron_number"],
+            "bias_diagnostic_plot",
+        )
 
-    delta_col = _excess_delta_col(results_df)
-    residual_col = _excess_residual_col(results_df)
-    _require_columns(
-        results_df,
-        [delta_col, residual_col, "gene_length", "intron_number"],
-        "bias_diagnostic_plot",
-    )
+        plot_df = results_df.dropna(
+            subset=[delta_col, residual_col, "gene_length", "intron_number"]
+        ).copy()
+        if len(plot_df) < 10:
+            logger.warning("Too few genes with valid features for diagnostic plot.")
+            # Create a 1x2 placeholder figure to match normal return type (fig, (ax1, ax2))
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+            for a in (ax1, ax2):
+                a.text(
+                    0.5,
+                    0.5,
+                    "Too few genes for bias diagnostic",
+                    ha="center",
+                    va="center",
+                    transform=a.transAxes,
+                    fontsize=9,
+                )
+                a.axis("off")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, (ax1, ax2)
 
-    plot_df = results_df.dropna(
-        subset=[delta_col, residual_col, "gene_length", "intron_number"]
-    ).copy()
-    if len(plot_df) < 10:
-        logger.warning("Too few genes with valid features for diagnostic plot.")
-        # Create a 1x2 placeholder figure to match normal return type (fig, (ax1, ax2))
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
-        for a in (ax1, ax2):
-            a.text(
-                0.5,
-                0.5,
-                "Too few genes for bias diagnostic",
-                ha="center",
-                va="center",
-                transform=a.transAxes,
-                fontsize=9,
-            )
-            a.axis("off")
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
-        return fig, (ax1, ax2)
+        if axes is None:
+            fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi, constrained_layout=True)
+            _created_fig = True
+            ax1 = axes[0]
+            ax2 = axes[1]
+        else:
+            if len(axes) != 2 or not all(isinstance(a, mpl.axes.Axes) for a in axes):
+                raise ValueError("axes must be a sequence of exactly two matplotlib Axes")
+            fig = axes[0].figure
+            _created_fig = False
+            ax1 = axes[0]
+            ax2 = axes[1]
 
-    if axes is None:
-        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi, constrained_layout=True)
-        _created_fig = True
-        ax1 = axes[0]
-        ax2 = axes[1]
-    else:
-        if len(axes) != 2 or not all(isinstance(a, mpl.axes.Axes) for a in axes):
-            raise ValueError("axes must be a sequence of exactly two matplotlib Axes")
-        fig = axes[0].figure
-        _created_fig = False
-        ax1 = axes[0]
-        ax2 = axes[1]
+        # Left: Before correction
+        x = np.log1p(plot_df["gene_length"])
+        y_raw = plot_df[delta_col]
+        ax1.scatter(
+            x,
+            y_raw,
+            s=point_size,
+            alpha=0.45,
+            c=raw_color,
+            edgecolors="none",
+            **_rasterize_kwargs(),
+        )
+        if show_regression:
+            from scipy.stats import linregress
 
-    # Left: Before correction
-    x = np.log1p(plot_df["gene_length"])
-    y_raw = plot_df[delta_col]
-    ax1.scatter(
-        x, y_raw, s=point_size, alpha=0.45, c=raw_color, edgecolors="none", **_rasterize_kwargs()
-    )
-    if show_regression:
-        from scipy.stats import linregress
+            try:
+                slope, intercept, _, _, _ = linregress(x, y_raw)
+                x_line = np.linspace(x.min(), x.max(), 100)
+                ax1.plot(
+                    x_line,
+                    slope * x_line + intercept,
+                    "--",
+                    color=trend_color,
+                    lw=1.1,
+                    label="Trend (raw)",
+                )
+            except Exception:
+                pass
+        ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
+        ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize)
+        ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+        # Clarify that the drawn trend is 1D length-only (actual fit uses length+intron)
+        ax1.text(
+            0.02,
+            0.02,
+            "Trend: length only\n(fit uses length+intron)",
+            transform=ax1.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=max(7, fontsize - 3),
+            color=GRAY,
+        )
+        ax1.legend(frameon=False, fontsize=max(7, fontsize - 2))
+        setup_ax(ax1, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
-        try:
-            slope, intercept, _, _, _ = linregress(x, y_raw)
-            x_line = np.linspace(x.min(), x.max(), 100)
-            ax1.plot(
-                x_line,
-                slope * x_line + intercept,
-                "--",
-                color=trend_color,
-                lw=1.1,
-                label="Trend (raw)",
-            )
-        except Exception:
-            pass
-    ax1.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
-    ax1.set_ylabel("Unspliced excess delta (raw)", fontsize=fontsize)
-    ax1.set_title("Before Bias Correction", fontsize=fontsize + 1, fontweight="bold")
-    # Clarify that the drawn trend is 1D length-only (actual fit uses length+intron)
-    ax1.text(
-        0.02,
-        0.02,
-        "Trend: length only\n(fit uses length+intron)",
-        transform=ax1.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=max(7, fontsize - 3),
-        color=GRAY,
-    )
-    ax1.legend(frameon=False, fontsize=max(7, fontsize - 2))
-    setup_ax(ax1, labelsize=fontsize, ticksize=max(7, fontsize - 2))
+        # Right: After correction
+        y_res = plot_df[residual_col]
+        ax2.scatter(
+            x,
+            y_res,
+            s=point_size,
+            alpha=0.45,
+            c=corrected_color,
+            edgecolors="none",
+            **_rasterize_kwargs(),
+        )
+        ax2.axhline(0, color=trend_color, linestyle="--", lw=0.9, alpha=0.8)
+        ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
+        ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize)
+        ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
+        setup_ax(ax2, labelsize=fontsize, ticksize=max(7, fontsize - 2))
 
-    # Right: After correction
-    y_res = plot_df[residual_col]
-    ax2.scatter(
-        x,
-        y_res,
-        s=point_size,
-        alpha=0.45,
-        c=corrected_color,
-        edgecolors="none",
-        **_rasterize_kwargs(),
-    )
-    ax2.axhline(0, color=trend_color, linestyle="--", lw=0.9, alpha=0.8)
-    ax2.set_xlabel("log1p(Gene Length)", fontsize=fontsize)
-    ax2.set_ylabel("Unspliced excess residual (bias-corrected)", fontsize=fontsize)
-    ax2.set_title("After Bias Correction", fontsize=fontsize + 1, fontweight="bold")
-    setup_ax(ax2, labelsize=fontsize, ticksize=max(7, fontsize - 2))
+        if title:
+            fig.suptitle(title, fontsize=fontsize + 2, fontweight="bold", y=1.02)
 
-    if title:
-        fig.suptitle(title, fontsize=fontsize + 2, fontweight="bold", y=1.02)
+        # constrained_layout handles the two-panel + suptitle cleanly.
 
-    # constrained_layout handles the two-panel + suptitle cleanly.
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
+        return fig, axes
 
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created_fig)
-    return fig, axes
-
-
-# =============================================================================
-# Additional / legacy plotting helpers
-# =============================================================================
+    # =============================================================================
+    # Additional / legacy plotting helpers
+    # =============================================================================
 
 
 def enrich_barplot(
@@ -5757,14 +6015,17 @@ def enrich_barplot(
         if "Description" not in df.columns and "Term" not in df.columns:
             raise ValueError("enrich_barplot requires a 'Term' or 'Description' column.")
         if "Description" in df.columns:
-            desc = df["Description"].astype(str).str.strip()
+            # pandas 3: Series.astype(str) leaves NA as float nan (not "nan"),
+            # so fill first or the coalescing mask never fires.
+            desc = _as_text_series(df["Description"])
             desc_missing = desc.eq("") | desc.str.lower().isin(("nan", "none", "null"))
             if "Term" in df.columns:
-                df["_term_label"] = desc.where(~desc_missing, df["Term"].astype(str).str.strip())
+                term = _as_text_series(df["Term"])
+                df["_term_label"] = desc.where(~desc_missing, term)
             else:
                 df["_term_label"] = desc.mask(desc_missing, "")
         else:
-            df["_term_label"] = df["Term"].astype(str).str.strip()
+            df["_term_label"] = _as_text_series(df["Term"])
         term_col = "_term_label"
 
         padj_col = None
@@ -5835,14 +6096,17 @@ def enrich_barplot(
         df = df.iloc[::-1]
 
         color_vals = None
+        cbar_label = None
+        color_src = None
         if color_by is None and padj_col is not None:
-            color_vals = pd.to_numeric(df[padj_col], errors="coerce")
-            cbar_label = padj_col
+            color_src = padj_col
         elif color_by is not None and color_by in df.columns:
-            color_vals = pd.to_numeric(df[color_by], errors="coerce")
-            cbar_label = color_by
-        else:
-            cbar_label = None
+            color_src = color_by
+        if color_src is not None:
+            plotted, cbar_label = _enrichment_color_values(df[color_src], color_src)
+            color_vals = pd.Series(plotted, index=df.index)
+            if cbar_label is None:
+                cbar_label = color_src
 
         _created = ax is None
         if ax is None:
@@ -6032,15 +6296,15 @@ def enrich_network_plot(
         if "Description" not in df.columns and "Term" not in df.columns:
             raise ValueError("enrich_network_plot requires a 'Term' or 'Description' column.")
         if "Description" in df.columns:
-            desc = df["Description"].astype(str).str.strip()
+            desc = _as_text_series(df["Description"])
             desc_missing = desc.eq("") | desc.str.lower().isin(("nan", "none", "null"))
             df["_term_label"] = (
-                desc.where(~desc_missing, df["Term"].astype(str).str.strip())
+                desc.where(~desc_missing, _as_text_series(df["Term"]))
                 if "Term" in df.columns
                 else desc.mask(desc_missing, "")
             )
         else:
-            df["_term_label"] = df["Term"].astype(str).str.strip()
+            df["_term_label"] = _as_text_series(df["Term"])
 
         gene_col_resolved = gene_col
         if gene_col_resolved is None:
@@ -6157,7 +6421,9 @@ def enrich_network_plot(
 
         _register_scat_colormaps()
         if color_label is not None and color_label in df.columns:
-            color_vals = pd.to_numeric(df[color_label], errors="coerce")
+            color_vals, cbar_lab = _enrichment_color_values(df[color_label], color_label)
+            if cbar_lab is None:
+                cbar_lab = color_label
             sc = ax.scatter(
                 pos[:, 0],
                 pos[:, 1],
@@ -6170,7 +6436,7 @@ def enrich_network_plot(
                 **_rasterize_kwargs(),
             )
             cbar = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.02, aspect=20)
-            cbar.set_label(color_label, fontsize=max(7, fontsize - 1), rotation=270, labelpad=12)
+            cbar.set_label(cbar_lab, fontsize=max(7, fontsize - 1), rotation=270, labelpad=12)
             _style_colorbar(cbar, labelsize=max(7, fontsize - 2))
         else:
             ax.scatter(
@@ -6240,101 +6506,101 @@ def active_score_rankplot(
     For richer single-gene context prefer `pl.comet_plot` or `pl.volcano_plot`.
     """
     logger.info("Generating active score rank plot...")
-    if use_style:
-        set_style()
-    _fs0 = float(fontsize)
-    _fig0 = figsize if figsize is not None else (6.0, max(3.5, 0.32 * int(top_n)))
-    _fig0, dpi, fontsize, label_fontsize = _resolve_display_params(
-        context, figsize=_fig0, dpi=dpi, fontsize=_fs0, label_fontsize=label_fontsize
-    )
-    figsize = _fig0
+    with _style_context_if(use_style):
+        _fs0 = float(fontsize)
+        _fig0 = figsize if figsize is not None else (6.0, max(3.5, 0.32 * int(top_n)))
+        _fig0, dpi, fontsize, label_fontsize = _resolve_display_params(
+            context, figsize=_fig0, dpi=dpi, fontsize=_fs0, label_fontsize=label_fontsize
+        )
+        figsize = _fig0
 
-    if results_df is None or results_df.empty:
-        logger.warning("No results to plot.")
-        fig, ax = _empty_placeholder_fig("No results to plot")
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
-        return fig, ax
+        if results_df is None or results_df.empty:
+            logger.warning("No results to plot.")
+            fig, ax = _empty_placeholder_fig("No results to plot")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
 
-    _require_columns(results_df, ["active_score"], "active_score_rankplot")
+        _require_columns(results_df, ["active_score"], "active_score_rankplot")
 
-    plot_df = results_df.copy()
-    plot_df["active_score"] = pd.to_numeric(plot_df["active_score"], errors="coerce")
-    plot_df = plot_df.dropna(subset=["active_score"])
+        plot_df = results_df.copy()
+        plot_df["active_score"] = pd.to_numeric(plot_df["active_score"], errors="coerce")
+        plot_df = plot_df.dropna(subset=["active_score"])
 
-    if plot_df.empty:
-        logger.warning("No valid numeric active_score values to plot.")
-        fig, ax = _empty_placeholder_fig("No valid active_score values")
-        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
-        return fig, ax
+        if plot_df.empty:
+            logger.warning("No valid numeric active_score values to plot.")
+            fig, ax = _empty_placeholder_fig("No valid active_score values")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
 
-    # Use nlargest for safety: does not assume the input df is already sorted by active_score.
-    plot_df = plot_df.nlargest(top_n, "active_score").iloc[::-1]  # top at top for horizontal bar
+        # nlargest returns highest first. seaborn.barplot draws the first category
+        # at the top of the y-axis, so keep this order: rank #1 appears at the top.
+        plot_df = plot_df.nlargest(top_n, "active_score")
 
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
-        _created = True
-    else:
-        fig = ax.figure
-        _created = False
-
-    # Gradient coloring by score (journal sequential map)
-    _register_scat_colormaps()
-    vmin = float(plot_df["active_score"].min())
-    vmax = float(plot_df["active_score"].max())
-    if vmin == vmax:
-        vmax = vmin + 1e-9  # avoid singular Normalize when all scores identical
-    norm = Normalize(vmin=vmin, vmax=vmax)
-    _cmap = plt.get_cmap(_DEFAULT_CMAP_SEQUENTIAL)
-    colors = [_cmap(float(v)) for v in norm(plot_df["active_score"].to_numpy(dtype=float))]
-
-    bars = sns.barplot(
-        data=plot_df,
-        y=plot_df.index,
-        x="active_score",
-        ax=ax,
-        palette=colors,
-        hue=plot_df.index,
-        legend=False,
-        edgecolor="white",
-        linewidth=0.4,
-    )
-
-    # Add value labels on bars (clean, small). Use data range for offset (works for negative scores too).
-    score_min = plot_df["active_score"].min()
-    score_max = plot_df["active_score"].max()
-    x_range = (score_max - score_min) if score_max > score_min else 1.0
-    offset = 0.02 * x_range
-    for bar, val in zip(bars.patches, plot_df["active_score"]):
-        if val >= 0:
-            x = val + offset
-            ha = "left"
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+            _created = True
         else:
-            x = val - offset
-            ha = "right"
-        ax.text(
-            x,
-            bar.get_y() + bar.get_height() / 2,
-            f"{val:.2f}",
-            va="center",
-            ha=ha,
-            fontsize=max(7, fontsize - 2),
-            color=INK,
+            fig = ax.figure
+            _created = False
+
+        # Gradient coloring by score (journal sequential map)
+        _register_scat_colormaps()
+        vmin = float(plot_df["active_score"].min())
+        vmax = float(plot_df["active_score"].max())
+        if vmin == vmax:
+            vmax = vmin + 1e-9  # avoid singular Normalize when all scores identical
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        _cmap = plt.get_cmap(_DEFAULT_CMAP_SEQUENTIAL)
+        colors = [_cmap(float(v)) for v in norm(plot_df["active_score"].to_numpy(dtype=float))]
+
+        bars = sns.barplot(
+            data=plot_df,
+            y=plot_df.index,
+            x="active_score",
+            ax=ax,
+            palette=colors,
+            hue=plot_df.index,
+            legend=False,
+            edgecolor="white",
+            linewidth=0.4,
         )
 
-    ax.set_xlabel("Active Score", fontsize=fontsize)
-    ax.tick_params(axis="y", labelsize=_gene_label_fontsize(label_fontsize, fontsize))
-    ax.tick_params(axis="x", labelsize=max(7, fontsize - 1))
-    ax.set_ylabel("")
-    ax.set_title(
-        kwargs.get("title", "Top Active Drivers (rank)"),
-        fontsize=fontsize + 1,
-        pad=8,
-        fontweight="bold",
-    )
-    setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
+        # Add value labels on bars (clean, small). Use data range for offset (works for negative scores too).
+        score_min = plot_df["active_score"].min()
+        score_max = plot_df["active_score"].max()
+        x_range = (score_max - score_min) if score_max > score_min else 1.0
+        offset = 0.02 * x_range
+        for bar, val in zip(bars.patches, plot_df["active_score"]):
+            if val >= 0:
+                x = val + offset
+                ha = "left"
+            else:
+                x = val - offset
+                ha = "right"
+            ax.text(
+                x,
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:.2f}",
+                va="center",
+                ha=ha,
+                fontsize=max(7, fontsize - 2),
+                color=INK,
+            )
 
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
-    return fig, ax
+        ax.set_xlabel("Active Score", fontsize=fontsize)
+        ax.tick_params(axis="y", labelsize=_gene_label_fontsize(label_fontsize, fontsize))
+        ax.tick_params(axis="x", labelsize=max(7, fontsize - 1))
+        ax.set_ylabel("")
+        ax.set_title(
+            kwargs.get("title", "Top Active Drivers (rank)"),
+            fontsize=fontsize + 1,
+            pad=8,
+            fontweight="bold",
+        )
+        setup_ax(ax, labelsize=fontsize, ticksize=max(7, fontsize - 2))
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=_created)
+        return fig, ax
 
 
 def active_genes_heatmap(
@@ -6382,81 +6648,94 @@ def active_genes_heatmap(
 
     show/use_style are accepted for API consistency with other pl.* functions.
     """
-    if use_style:
-        set_style()
+    with _style_context_if(use_style):
+        dpi = kwargs.pop("dpi", _DEFAULT_DPI)
 
-    if genes is None:
-        # try to guess from var
-        if "active_score" in adata.var.columns:
-            genes = adata.var.nlargest(20, "active_score").index.tolist()
-        else:
-            logger.warning("No genes provided and no active_score column found.")
-            fig, ax = _empty_placeholder_fig("No active genes to heatmap")
-            return fig, ax
+        if genes is None:
+            # try to guess from var
+            if "active_score" in adata.var.columns:
+                genes = adata.var.nlargest(20, "active_score").index.tolist()
+            else:
+                logger.warning("No genes provided and no active_score column found.")
+                fig, ax = _empty_placeholder_fig("No active genes to heatmap")
+                _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+                return fig, ax
 
-    if gene_annotation is not None:
-        if isinstance(gene_annotation, str):
-            ann_series = adata.var[gene_annotation]
-        elif isinstance(gene_annotation, pd.Series):
-            ann_series = gene_annotation
-        else:
-            ann_series = pd.Series(dict(gene_annotation))
+        if gene_annotation is not None:
+            if isinstance(gene_annotation, str):
+                ann_series = adata.var[gene_annotation]
+            elif isinstance(gene_annotation, pd.Series):
+                ann_series = gene_annotation
+            else:
+                ann_series = pd.Series(dict(gene_annotation))
 
-        cats = ann_series.reindex(genes)
-        cats = cats.where(cats.notna(), "NA").astype(str)
+            cats = ann_series.reindex(genes)
+            cats = cats.where(cats.notna(), "NA").astype(str)
 
-        if annotation_order is not None:
-            cat_order = [c for c in annotation_order if c in set(cats)]
-            cat_order += [c for c in dict.fromkeys(cats) if c not in cat_order]
-        else:
-            cat_order = [c for c in dict.fromkeys(cats) if c != "NA"]
-            if "NA" in set(cats):
-                cat_order.append("NA")
+            if annotation_order is not None:
+                cat_order = [c for c in annotation_order if c in set(cats)]
+                cat_order += [c for c in dict.fromkeys(cats) if c not in cat_order]
+            else:
+                cat_order = [c for c in dict.fromkeys(cats) if c != "NA"]
+                if "NA" in set(cats):
+                    cat_order.append("NA")
 
-        gene_by_cat: dict[str, list[str]] = {c: [] for c in cat_order}
-        for g, c in zip(genes, cats):
-            gene_by_cat[c].append(g)
+            gene_by_cat: dict[str, list[str]] = {c: [] for c in cat_order}
+            for g, c in zip(genes, cats):
+                gene_by_cat[c].append(g)
 
-        ordered_genes: list[str] = []
-        var_group_positions: list[tuple[int, int]] = []
-        var_group_labels: list[str] = []
-        for c in cat_order:
-            block = gene_by_cat[c]
-            if not block:
-                continue
-            start = len(ordered_genes)
-            ordered_genes.extend(block)
-            var_group_positions.append((start, len(ordered_genes) - 1))
-            var_group_labels.append(c)
-        genes = ordered_genes
+            ordered_genes: list[str] = []
+            var_group_positions: list[tuple[int, int]] = []
+            var_group_labels: list[str] = []
+            for c in cat_order:
+                block = gene_by_cat[c]
+                if not block:
+                    continue
+                start = len(ordered_genes)
+                ordered_genes.extend(block)
+                var_group_positions.append((start, len(ordered_genes) - 1))
+                var_group_labels.append(c)
+            genes = ordered_genes
 
-        kwargs.setdefault("var_group_positions", var_group_positions)
-        kwargs.setdefault("var_group_labels", var_group_labels)
+            kwargs.setdefault("var_group_positions", var_group_positions)
+            kwargs.setdefault("var_group_labels", var_group_labels)
 
-    logger.info(
-        "active_genes_heatmap: delegating to scanpy.pl.heatmap (recommended for full control)"
-    )
-    try:
-        sc = __import__("scanpy", fromlist=["pl"])
-        fig = sc.pl.heatmap(
-            adata,
-            var_names=genes,
-            groupby=groupby,
-            show=False,  # we control final show below for consistency
-            save=None,
-            **kwargs,
+        logger.info(
+            "active_genes_heatmap: delegating to scanpy.pl.heatmap (recommended for full control)"
         )
-        if save_path:
-            target = fig if hasattr(fig, "savefig") else plt.gcf()
-            savefig(target, save_path, dpi=300, bbox_inches="tight")
-            logger.info("Heatmap saved → %s", save_path)
-        if show:
-            plt.show()
-        return fig, None
-    except Exception as e:
-        logger.warning("active_genes_heatmap could not render via scanpy: %s", e)
-        fig, ax = _empty_placeholder_fig("active_genes_heatmap failed")
-        return fig, ax
+        try:
+            sc = __import__("scanpy", fromlist=["pl"])
+            ret = sc.pl.heatmap(
+                adata,
+                var_names=genes,
+                groupby=groupby,
+                show=False,  # we control final show below for consistency
+                save=None,
+                **kwargs,
+            )
+            fig = plt.gcf()
+            ax_or_dict = ret
+            if isinstance(ret, plt.Figure):
+                fig = ret
+                ax_or_dict = fig.axes[0] if fig.axes else None
+            elif isinstance(ret, dict):
+                ax_or_dict = ret
+                for v in ret.values():
+                    if hasattr(v, "figure"):
+                        fig = v.figure
+                        break
+            elif hasattr(ret, "figure"):
+                fig = ret.figure
+                ax_or_dict = ret
+            if not isinstance(fig, plt.Figure):
+                fig = plt.gcf()
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax_or_dict
+        except Exception as e:
+            logger.warning("active_genes_heatmap could not render via scanpy: %s", e)
+            fig, ax = _empty_placeholder_fig("active_genes_heatmap failed")
+            _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+            return fig, ax
 
 
 def set_nature_style(**kwargs):
@@ -6514,139 +6793,187 @@ def velocity_phase_portraits(
     if not genes:
         logger.warning("No genes provided for phase portraits.")
         fig, ax = _empty_placeholder_fig("No genes for phase portraits", figsize=(2, 2))
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
         return fig, [ax]  # minimal list for axes compat; callers should check
 
-    if use_style:
-        set_style()
-
-    # Validate layers early (clear error instead of opaque KeyError later)
-    missing = [lyr for lyr in (spliced_layer, unspliced_layer) if lyr not in adata.layers]
-    if missing:
-        raise KeyError(
-            f"velocity_phase_portraits: missing layers in adata.layers: {missing}. "
-            f"Available layers: {list(adata.layers.keys())}"
-        )
-
-    n = len(genes)
-    ncols = min(3, n)
-    nrows = math.ceil(n / ncols)
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
-        dpi=dpi,
-        squeeze=False,
-        constrained_layout=True,
-    )
-    axes = axes.flatten()
-
-    for i, g in enumerate(genes):
-        ax = axes[i]
-        if g not in adata.var_names:
-            ax.text(0.5, 0.5, f"{g}\n(not found)", ha="center", va="center", transform=ax.transAxes)
-            ax.axis("off")
-            continue
-
-        gidx = adata.var_names.get_loc(g)
-        u = adata.layers[unspliced_layer][:, gidx]
-        s = adata.layers[spliced_layer][:, gidx]
-        # Robust to sparse, numpy matrix, 2D ndarray etc: always ensure 1D float array
-        if sparse.issparse(u):
-            u = u.toarray()
-        if sparse.issparse(s):
-            s = s.toarray()
-        u = np.asarray(u).ravel()
-        s = np.asarray(s).ravel()
-
-        color = None
-        if groupby:
-            if groupby not in adata.obs:
-                logger.warning(
-                    "groupby='%s' not found in adata.obs. Available obs columns: %s. "
-                    "Falling back to uniform color.",
-                    groupby,
-                    list(adata.obs.columns),
-                )
-            else:
-                # Convert labels to numeric codes for scatter c= (avoids matplotlib error on string arrays)
-                try:
-                    color = pd.Categorical(adata.obs[groupby]).codes
-                except Exception:
-                    color = None
-
-        if color is not None and np.asarray(color).size == len(s):
-            # qualitative cycle (Nature-like) instead of tab20 rainbow
-            n_cats = int(np.max(color)) + 1 if np.size(color) else 1
-            cat_colors = palette("nature", n=max(n_cats, 1))
-            from matplotlib.colors import ListedColormap
-
-            ax.scatter(
-                s,
-                u,
-                c=color,
-                cmap=ListedColormap(cat_colors),
-                s=7,
-                alpha=0.55,
-                edgecolors="none",
-                **_rasterize_kwargs(),
+    with _style_context_if(use_style):
+        # Validate layers early (clear error instead of opaque KeyError later)
+        missing = [lyr for lyr in (spliced_layer, unspliced_layer) if lyr not in adata.layers]
+        if missing:
+            raise KeyError(
+                f"velocity_phase_portraits: missing layers in adata.layers: {missing}. "
+                f"Available layers: {list(adata.layers.keys())}"
             )
-        else:
-            ax.scatter(s, u, c=TEAL, s=7, alpha=0.55, edgecolors="none", **_rasterize_kwargs())
-        ax.set_xlabel("Spliced", fontsize=9)
-        ax.set_ylabel("Unspliced", fontsize=9)
-        ax.set_title(str(g), fontsize=10, fontweight="bold")
-        setup_ax(ax, labelsize=9, ticksize=8)
 
-    # Hide unused subplots
-    for j in range(i + 1, len(axes)):
-        axes[j].axis("off")
+        n = len(genes)
+        ncols = min(3, n)
+        nrows = math.ceil(n / ncols)
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(ncols * figsize_per_gene[0], nrows * figsize_per_gene[1]),
+            dpi=dpi,
+            squeeze=False,
+            constrained_layout=True,
+        )
+        axes = axes.flatten()
 
-    # Add a figure-level legend when coloring by groupby (outside the subplots grid)
-    if groupby and groupby in adata.obs:
-        try:
-            from matplotlib.lines import Line2D
+        for i, g in enumerate(genes):
+            ax = axes[i]
+            if g not in adata.var_names:
+                ax.text(
+                    0.5, 0.5, f"{g}\n(not found)", ha="center", va="center", transform=ax.transAxes
+                )
+                ax.axis("off")
+                continue
 
-            cat = pd.Categorical(adata.obs[groupby].astype(str))
-            groups = list(cat.categories)
-            if len(groups) > 20:
-                logger.warning(
-                    "velocity_phase_portraits: %d groups for '%s'; legend will show only the first 20.",
-                    len(groups),
+            gidx = adata.var_names.get_loc(g)
+            u = adata.layers[unspliced_layer][:, gidx]
+            s = adata.layers[spliced_layer][:, gidx]
+            # Robust to sparse, numpy matrix, 2D ndarray etc: always ensure 1D float array
+            if sparse.issparse(u):
+                u = u.toarray()
+            if sparse.issparse(s):
+                s = s.toarray()
+            u = np.asarray(u).ravel()
+            s = np.asarray(s).ravel()
+
+            color = None
+            cat_obj = None
+            if groupby:
+                if groupby not in adata.obs:
+                    logger.warning(
+                        "groupby='%s' not found in adata.obs. Available obs columns: %s. "
+                        "Falling back to uniform color.",
+                        groupby,
+                        list(adata.obs.columns),
+                    )
+                else:
+                    # codes uses -1 for NaN; do not feed those into ListedColormap
+                    # scaling (max(-1, 0, 1, 2)+1 would make NaN look like a
+                    # real category and collide two groups onto one color).
+                    try:
+                        cat_obj = pd.Categorical(adata.obs[groupby])
+                        color = np.asarray(cat_obj.codes, dtype=int)
+                    except Exception:
+                        color = None
+                        cat_obj = None
+
+            if color is not None and np.asarray(color).size == len(s) and cat_obj is not None:
+                from matplotlib.colors import ListedColormap
+
+                n_cats = len(cat_obj.categories)
+                cat_colors = colors_from_uns(
+                    adata,
                     groupby,
+                    categories=[str(c) for c in cat_obj.categories],
+                    palette_name="nature",
                 )
-            legend_colors = palette("nature", n=min(20, len(groups)))
-            handles = [
-                Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=legend_colors[i % len(legend_colors)],
-                    markersize=5,
-                    linestyle="None",
-                    label=str(g),
-                )
-                for i, g in enumerate(groups[: min(20, len(groups))])
-            ]
-            if handles:
-                legend_labels: list[str] = [str(h.get_label()) for h in handles]
-                fig.legend(
-                    handles,
-                    legend_labels,
-                    loc="upper right",
-                    frameon=False,
-                    fontsize=8,
-                    title=str(groupby),
-                    bbox_to_anchor=(0.98, 0.98),
-                )
-        except Exception:
-            # Legend is nice-to-have; never let it break the phase portraits
-            pass
+                if len(cat_colors) < max(n_cats, 1):
+                    cat_colors = list(cat_colors) + palette(
+                        "nature", n=max(n_cats, 1) - len(cat_colors)
+                    )
+                valid = color >= 0
+                nan_mask = ~valid
+                if nan_mask.any():
+                    ax.scatter(
+                        s[nan_mask],
+                        u[nan_mask],
+                        c=GRAY,
+                        s=7,
+                        alpha=0.55,
+                        edgecolors="none",
+                        zorder=1,
+                        **_rasterize_kwargs(),
+                    )
+                if valid.any() and n_cats > 0:
+                    ax.scatter(
+                        s[valid],
+                        u[valid],
+                        c=color[valid],
+                        cmap=ListedColormap(cat_colors),
+                        vmin=0,
+                        vmax=max(n_cats - 1, 0),
+                        s=7,
+                        alpha=0.55,
+                        edgecolors="none",
+                        zorder=2,
+                        **_rasterize_kwargs(),
+                    )
+                elif not valid.any():
+                    pass
+            else:
+                ax.scatter(s, u, c=TEAL, s=7, alpha=0.55, edgecolors="none", **_rasterize_kwargs())
+            ax.set_xlabel("Spliced", fontsize=9)
+            ax.set_ylabel("Unspliced", fontsize=9)
+            ax.set_title(str(g), fontsize=10, fontweight="bold")
+            setup_ax(ax, labelsize=9, ticksize=8)
 
-    # constrained_layout used at creation for the gene grid.
+        # Hide unused subplots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
 
-    _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
-    return fig, axes
+        # Add a figure-level legend when coloring by groupby (outside the subplots grid)
+        if groupby and groupby in adata.obs:
+            try:
+                from matplotlib.lines import Line2D
+
+                cat = pd.Categorical(adata.obs[groupby])
+                groups = [str(c) for c in cat.categories]
+                if len(groups) > 20:
+                    logger.warning(
+                        "velocity_phase_portraits: %d groups for '%s'; legend will show only the first 20.",
+                        len(groups),
+                        groupby,
+                    )
+                legend_colors = colors_from_uns(
+                    adata, groupby, categories=groups, palette_name="nature"
+                )
+                handles = [
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=legend_colors[i % len(legend_colors)],
+                        markersize=5,
+                        linestyle="None",
+                        label=str(g),
+                    )
+                    for i, g in enumerate(groups[: min(20, len(groups))])
+                ]
+                if pd.isna(adata.obs[groupby]).any():
+                    handles.append(
+                        Line2D(
+                            [0],
+                            [0],
+                            marker="o",
+                            color="w",
+                            markerfacecolor=GRAY,
+                            markersize=5,
+                            linestyle="None",
+                            label="NA",
+                        )
+                    )
+                if handles:
+                    legend_labels: list[str] = [str(h.get_label()) for h in handles]
+                    fig.legend(
+                        handles,
+                        legend_labels,
+                        loc="upper right",
+                        frameon=False,
+                        fontsize=8,
+                        title=str(groupby),
+                        bbox_to_anchor=(0.98, 0.98),
+                    )
+            except Exception:
+                # Legend is nice-to-have; never let it break the phase portraits
+                pass
+
+        # constrained_layout used at creation for the gene grid.
+
+        _save_and_maybe_show(fig, save_path=save_path, dpi=dpi, show=show, created=True)
+        return fig, axes
 
 
 def gamma_shrinkage_plot(
@@ -6759,6 +7086,7 @@ __all__ = [
     "setup_ax",
     "add_panel_label",
     "palette",
+    "colors_from_uns",
     "list_palettes",
     "get_cmap",
     "figure_export_context",
